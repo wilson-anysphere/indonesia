@@ -14,6 +14,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
+    time::Duration,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -377,4 +378,115 @@ async fn llm_cache_misses_when_temperature_is_none_vs_zero() {
     );
 
     mock.assert_hits(2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn llm_chat_coalesces_concurrent_identical_requests() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": "Pong" }))
+            .delay(Duration::from_millis(150));
+    });
+
+    let mut cfg = http_config(
+        Url::parse(&format!("{}/complete", server.base_url())).unwrap(),
+        "default",
+    );
+    cfg.provider.concurrency = Some(16);
+
+    let client = Arc::new(AiClient::from_config(&cfg).unwrap());
+    let request = ChatRequest {
+        messages: vec![ChatMessage::user("Ping")],
+        max_tokens: Some(5),
+        temperature: Some(0.2),
+    };
+
+    let tasks = 10usize;
+    let barrier = Arc::new(tokio::sync::Barrier::new(tasks));
+    let mut handles = Vec::with_capacity(tasks);
+    for _ in 0..tasks {
+        let client = client.clone();
+        let request = request.clone();
+        let barrier = barrier.clone();
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            client.chat(request, CancellationToken::new()).await
+        }));
+    }
+
+    for handle in handles {
+        let out = handle.await.expect("join").expect("chat ok");
+        assert_eq!(out, "Pong");
+    }
+
+    mock.assert_hits(1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn llm_chat_coalescing_waiter_cancellation_does_not_cancel_underlying_request() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": "Pong" }))
+            .delay(Duration::from_millis(200));
+    });
+
+    let mut cfg = http_config(
+        Url::parse(&format!("{}/complete", server.base_url())).unwrap(),
+        "default",
+    );
+    cfg.provider.concurrency = Some(16);
+
+    let client = Arc::new(AiClient::from_config(&cfg).unwrap());
+    let request = ChatRequest {
+        messages: vec![ChatMessage::user("Ping")],
+        max_tokens: Some(5),
+        temperature: Some(0.2),
+    };
+
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let cancel_a = CancellationToken::new();
+    let cancel_b = CancellationToken::new();
+
+    let handle_a = {
+        let client = client.clone();
+        let request = request.clone();
+        let barrier = barrier.clone();
+        let cancel = cancel_a.clone();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            client.chat(request, cancel).await
+        })
+    };
+
+    let handle_b = {
+        let client = client.clone();
+        let request = request.clone();
+        let barrier = barrier.clone();
+        let cancel = cancel_b.clone();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            client.chat(request, cancel).await
+        })
+    };
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while mock.hits() < 1 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("expected request to start");
+
+    cancel_a.cancel();
+
+    let out_a = handle_a.await.expect("join a");
+    let out_b = handle_b.await.expect("join b");
+
+    assert!(matches!(out_a, Err(nova_ai::AiError::Cancelled)));
+    assert_eq!(out_b.expect("chat b ok"), "Pong");
+    mock.assert_hits(1);
 }

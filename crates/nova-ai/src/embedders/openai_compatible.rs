@@ -79,7 +79,7 @@ impl OpenAiCompatibleEmbedder {
         if err.is_timeout() {
             AiError::Timeout
         } else {
-            AiError::Http(err)
+            AiError::from(err)
         }
     }
 

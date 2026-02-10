@@ -13,11 +13,12 @@ use nova_config::{AiConfig, AiProviderKind};
 use nova_metrics::MetricsRegistry;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex as TokioMutex, Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use url::Host;
@@ -65,6 +66,7 @@ const AI_CHAT_METRIC: &str = "ai/chat";
 const AI_CHAT_CACHE_HIT_METRIC: &str = "ai/chat/cache_hit";
 const AI_CHAT_CACHE_MISS_METRIC: &str = "ai/chat/cache_miss";
 const AI_CHAT_RETRY_METRIC: &str = "ai/chat/retry";
+const AI_CHAT_COALESCED_WAITER_METRIC: &str = "ai/chat/coalesced_waiter";
 
 const AI_CHAT_ERROR_TIMEOUT_METRIC: &str = "ai/chat/error/timeout";
 const AI_CHAT_ERROR_CANCELLED_METRIC: &str = "ai/chat/error/cancelled";
@@ -124,6 +126,29 @@ impl Default for RetryConfig {
     }
 }
 
+#[derive(Debug)]
+struct InFlightChat {
+    cancel: CancellationToken,
+    done: Notify,
+    result: TokioMutex<Option<Result<String, AiError>>>,
+}
+
+impl InFlightChat {
+    fn new() -> Self {
+        Self {
+            cancel: CancellationToken::new(),
+            done: Notify::new(),
+            result: TokioMutex::new(None),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct InFlightChatState {
+    entry: Arc<InFlightChat>,
+    waiters: usize,
+}
+
 pub struct AiClient {
     provider_kind: AiProviderKind,
     provider: Arc<dyn LlmProvider>,
@@ -138,6 +163,7 @@ pub struct AiClient {
     endpoint: url::Url,
     azure_cache_key: Option<(String, String)>,
     cache: Option<Arc<LlmResponseCache>>,
+    in_flight: Arc<TokioMutex<HashMap<CacheKey, InFlightChatState>>>,
     retry: RetryConfig,
 }
 
@@ -312,6 +338,7 @@ impl AiClient {
             endpoint,
             azure_cache_key,
             cache,
+            in_flight: Arc::new(TokioMutex::new(HashMap::new())),
             retry: RetryConfig {
                 max_retries: config.provider.retry_max_retries,
                 initial_backoff: Duration::from_millis(config.provider.retry_initial_backoff_ms),
@@ -357,6 +384,23 @@ impl AiClient {
             _ = cancel.cancelled() => Err(AiError::Cancelled),
             permit = self.semaphore.clone().acquire_owned() => permit
                 .map_err(|_| AiError::UnexpectedResponse("ai client shutting down".into())),
+        }
+    }
+
+    async fn cancel_in_flight_waiter(&self, key: CacheKey, entry: &Arc<InFlightChat>) {
+        let mut in_flight = self.in_flight.lock().await;
+        let Some(state) = in_flight.get_mut(&key) else {
+            return;
+        };
+
+        if !Arc::ptr_eq(&state.entry, entry) {
+            return;
+        }
+
+        state.waiters = state.waiters.saturating_sub(1);
+        if state.waiters == 0 {
+            in_flight.remove(&key);
+            entry.cancel.cancel();
         }
     }
 
@@ -490,45 +534,325 @@ impl LlmClient for AiClient {
                 None
             };
 
-            let cache_key = self.cache.as_ref().map(|_| self.build_cache_key(&request));
-            if let (Some(cache), Some(key)) = (&self.cache, cache_key) {
-                match cache.get(key).await {
-                    Some(hit) => {
-                        if let Some(prompt) = prompt_for_log.as_deref() {
-                            let started_at = Instant::now();
-                            audit::log_llm_request(
-                                request_id,
-                                self.provider_label,
-                                &self.model,
-                                prompt,
-                                safe_endpoint.as_deref(),
-                                /*attempt=*/ 0,
-                                /*stream=*/ false,
-                            );
-                            audit::log_llm_response(
-                                request_id,
-                                self.provider_label,
-                                &self.model,
-                                safe_endpoint.as_deref(),
-                                &hit,
-                                started_at.elapsed(),
-                                /*retry_count=*/ 0,
-                                /*stream=*/ false,
-                                /*chunk_count=*/ None,
-                            );
-                        } else {
-                            debug!(
-                                provider = self.provider_label,
-                                model = %self.model,
-                                "llm cache hit"
-                            );
+            if let Some(cache) = &self.cache {
+                let key = self.build_cache_key(&request);
+                if let Some(hit) = cache.get(key).await {
+                    if let Some(prompt) = prompt_for_log.as_deref() {
+                        let started_at = Instant::now();
+                        audit::log_llm_request(
+                            request_id,
+                            self.provider_label,
+                            &self.model,
+                            prompt,
+                            safe_endpoint.as_deref(),
+                            /*attempt=*/ 0,
+                            /*stream=*/ false,
+                        );
+                        audit::log_llm_response(
+                            request_id,
+                            self.provider_label,
+                            &self.model,
+                            safe_endpoint.as_deref(),
+                            &hit,
+                            started_at.elapsed(),
+                            /*retry_count=*/ 0,
+                            /*stream=*/ false,
+                            /*chunk_count=*/ None,
+                        );
+                    } else {
+                        debug!(
+                            provider = self.provider_label,
+                            model = %self.model,
+                            "llm cache hit"
+                        );
+                    }
+
+                    metrics.record_request(AI_CHAT_CACHE_HIT_METRIC, Duration::from_micros(1));
+                    break 'chat_result Ok(hit);
+                }
+
+                metrics.record_request(AI_CHAT_CACHE_MISS_METRIC, Duration::from_micros(1));
+
+                let (entry, is_leader) = {
+                    let mut in_flight = self.in_flight.lock().await;
+                    if let Some(state) = in_flight.get_mut(&key) {
+                        state.waiters = state.waiters.saturating_add(1);
+                        metrics.record_request(
+                            AI_CHAT_COALESCED_WAITER_METRIC,
+                            Duration::from_micros(1),
+                        );
+                        (state.entry.clone(), false)
+                    } else {
+                        let entry = Arc::new(InFlightChat::new());
+                        in_flight.insert(
+                            key,
+                            InFlightChatState {
+                                entry: entry.clone(),
+                                waiters: 1,
+                            },
+                        );
+                        (entry, true)
+                    }
+                };
+
+                if is_leader {
+                    let provider_kind = self.provider_kind.clone();
+                    let provider = self.provider.clone();
+                    let semaphore = self.semaphore.clone();
+                    let provider_label = self.provider_label;
+                    let model = self.model.clone();
+                    let request = request.clone();
+                    let timeout = self.request_timeout;
+                    let retry = self.retry.clone();
+                    let prompt_for_log = prompt_for_log.clone();
+                    let request_id = request_id;
+                    let safe_endpoint = safe_endpoint.clone();
+                    let cache = cache.clone();
+                    let in_flight = self.in_flight.clone();
+                    let entry_for_task = entry.clone();
+
+                    tokio::spawn(async move {
+                        fn should_retry(err: &AiError) -> bool {
+                            match err {
+                                AiError::Cancelled => false,
+                                AiError::Timeout => true,
+                                AiError::Http(err) => {
+                                    if err.is_timeout() || err.is_connect() {
+                                        return true;
+                                    }
+                                    let Some(status) = err.status() else {
+                                        // Network errors without a status are generally worth retrying.
+                                        return true;
+                                    };
+                                    status.as_u16() == 408
+                                        || status.as_u16() == 429
+                                        || status.is_server_error()
+                                }
+                                _ => false,
+                            }
                         }
 
-                        metrics.record_request(AI_CHAT_CACHE_HIT_METRIC, Duration::from_micros(1));
-                        break 'chat_result Ok(hit);
+                        async fn acquire_permit(
+                            semaphore: &Arc<Semaphore>,
+                            cancel: &CancellationToken,
+                        ) -> Result<tokio::sync::OwnedSemaphorePermit, AiError> {
+                            tokio::select! {
+                                _ = cancel.cancelled() => Err(AiError::Cancelled),
+                                permit = semaphore.clone().acquire_owned() => permit
+                                    .map_err(|_| AiError::UnexpectedResponse("ai client shutting down".into())),
+                            }
+                        }
+
+                        async fn backoff_sleep(
+                            retry: &RetryConfig,
+                            attempt: usize,
+                            max_delay: Duration,
+                            cancel: &CancellationToken,
+                        ) -> Result<(), AiError> {
+                            let factor =
+                                2u32.saturating_pow((attempt.saturating_sub(1)).min(16) as u32);
+                            let mut delay = retry.initial_backoff.saturating_mul(factor);
+                            if delay > retry.max_backoff {
+                                delay = retry.max_backoff;
+                            }
+                            if delay > max_delay {
+                                delay = max_delay;
+                            }
+
+                            tokio::select! {
+                                _ = cancel.cancelled() => Err(AiError::Cancelled),
+                                _ = tokio::time::sleep(delay) => Ok(()),
+                            }
+                        }
+
+                        let metrics = MetricsRegistry::global();
+                        let operation_start = Instant::now();
+                        let mut attempt = 0usize;
+                        let cancel = entry_for_task.cancel.clone();
+
+                        let result: Result<String, AiError> = 'provider_result: loop {
+                            if cancel.is_cancelled() {
+                                break 'provider_result Err(AiError::Cancelled);
+                            }
+
+                            let remaining = timeout.saturating_sub(operation_start.elapsed());
+                            if remaining == Duration::ZERO {
+                                break 'provider_result Err(AiError::Timeout);
+                            }
+
+                            if attempt > 0 {
+                                metrics.record_request(
+                                    AI_CHAT_RETRY_METRIC,
+                                    Duration::from_micros(1),
+                                );
+                            }
+
+                            let (started_at, result) = {
+                                let permit = match tokio::time::timeout(
+                                    remaining,
+                                    acquire_permit(&semaphore, &cancel),
+                                )
+                                .await
+                                {
+                                    Ok(permit) => match permit {
+                                        Ok(permit) => permit,
+                                        Err(err) => break 'provider_result Err(err),
+                                    },
+                                    Err(_) => break 'provider_result Err(AiError::Timeout),
+                                };
+
+                                let remaining = timeout.saturating_sub(operation_start.elapsed());
+                                if remaining == Duration::ZERO {
+                                    drop(permit);
+                                    break 'provider_result Err(AiError::Timeout);
+                                }
+
+                                let started_at = Instant::now();
+                                if let Some(prompt) = prompt_for_log.as_deref() {
+                                    audit::log_llm_request(
+                                        request_id,
+                                        provider_label,
+                                        &model,
+                                        prompt,
+                                        safe_endpoint.as_deref(),
+                                        attempt,
+                                        /*stream=*/ false,
+                                    );
+                                } else {
+                                    debug!(
+                                        provider = provider_label,
+                                        model = %model,
+                                        attempt,
+                                        "llm request"
+                                    );
+                                }
+
+                                let out = match tokio::time::timeout(
+                                    remaining,
+                                    provider.chat(request.clone(), cancel.clone()),
+                                )
+                                .await
+                                {
+                                    Ok(res) => res,
+                                    Err(_) => Err(AiError::Timeout),
+                                };
+
+                                drop(permit);
+                                (started_at, out)
+                            };
+
+                            match result {
+                                Ok(completion) => {
+                                    if prompt_for_log.is_some() {
+                                        audit::log_llm_response(
+                                            request_id,
+                                            provider_label,
+                                            &model,
+                                            safe_endpoint.as_deref(),
+                                            &completion,
+                                            started_at.elapsed(),
+                                            /*retry_count=*/ attempt,
+                                            /*stream=*/ false,
+                                            /*chunk_count=*/ None,
+                                        );
+                                    }
+                                    break 'provider_result Ok(completion);
+                                }
+                                Err(err)
+                                    if attempt < retry.max_retries && should_retry(&err) =>
+                                {
+                                    if prompt_for_log.is_some() {
+                                        audit::log_llm_error(
+                                            request_id,
+                                            provider_label,
+                                            &model,
+                                            &err.to_string(),
+                                            started_at.elapsed(),
+                                            /*retry_count=*/ attempt,
+                                            /*stream=*/ false,
+                                        );
+                                    }
+
+                                    attempt += 1;
+                                    warn!(
+                                        provider = ?provider_kind,
+                                        attempt,
+                                        error = %err,
+                                        "llm request failed, retrying"
+                                    );
+
+                                    let remaining = timeout
+                                        .saturating_sub(operation_start.elapsed());
+                                    if remaining == Duration::ZERO {
+                                        break 'provider_result Err(AiError::Timeout);
+                                    }
+
+                                    if let Err(err) =
+                                        backoff_sleep(&retry, attempt, remaining, &cancel).await
+                                    {
+                                        if prompt_for_log.is_some() {
+                                            audit::log_llm_error(
+                                                request_id,
+                                                provider_label,
+                                                &model,
+                                                &err.to_string(),
+                                                operation_start.elapsed(),
+                                                /*retry_count=*/ attempt,
+                                                /*stream=*/ false,
+                                            );
+                                        }
+                                        break 'provider_result Err(err);
+                                    }
+                                }
+                                Err(err) => {
+                                    if prompt_for_log.is_some() {
+                                        audit::log_llm_error(
+                                            request_id,
+                                            provider_label,
+                                            &model,
+                                            &err.to_string(),
+                                            started_at.elapsed(),
+                                            /*retry_count=*/ attempt,
+                                            /*stream=*/ false,
+                                        );
+                                    }
+                                    break 'provider_result Err(err);
+                                }
+                            }
+                        };
+
+                        let completion_for_cache = result.as_ref().ok().cloned();
+                        {
+                            let mut guard = entry_for_task.result.lock().await;
+                            *guard = Some(result);
+                        }
+                        entry_for_task.done.notify_waiters();
+
+                        if let Some(completion) = completion_for_cache {
+                            cache.insert(key, completion).await;
+                        }
+
+                        let mut in_flight = in_flight.lock().await;
+                        if let Some(state) = in_flight.get(&key) {
+                            if Arc::ptr_eq(&state.entry, &entry_for_task) {
+                                in_flight.remove(&key);
+                            }
+                        }
+                    });
+                }
+
+                loop {
+                    let notified = entry.done.notified();
+                    if let Some(result) = entry.result.lock().await.clone() {
+                        break 'chat_result result;
                     }
-                    None => {
-                        metrics.record_request(AI_CHAT_CACHE_MISS_METRIC, Duration::from_micros(1));
+
+                    tokio::select! {
+                        _ = cancel.cancelled() => {
+                            self.cancel_in_flight_waiter(key, &entry).await;
+                            break 'chat_result Err(AiError::Cancelled);
+                        }
+                        _ = notified => {}
                     }
                 }
             }
@@ -603,9 +927,6 @@ impl LlmClient for AiClient {
 
                 match result {
                     Ok(completion) => {
-                        if let (Some(cache), Some(key)) = (&self.cache, cache_key) {
-                            cache.insert(key, completion.clone()).await;
-                        }
                         if self.audit_enabled {
                             audit::log_llm_response(
                                 request_id,
@@ -1260,6 +1581,7 @@ mod tests {
             endpoint,
             azure_cache_key: None,
             cache: None,
+            in_flight: Arc::new(TokioMutex::new(HashMap::new())),
             retry: RetryConfig::default(),
         }
     }
@@ -1543,6 +1865,7 @@ mod tests {
             endpoint: url::Url::parse("http://localhost").expect("valid url"),
             azure_cache_key: None,
             cache: None,
+            in_flight: Arc::new(TokioMutex::new(HashMap::new())),
             retry: RetryConfig::default(),
         };
 
@@ -1658,6 +1981,7 @@ mod tests {
             endpoint: endpoint.clone(),
             azure_cache_key: None,
             cache: Some(cache.clone()),
+            in_flight: Arc::new(TokioMutex::new(HashMap::new())),
             retry: RetryConfig::default(),
         };
 
@@ -1676,6 +2000,7 @@ mod tests {
             endpoint,
             azure_cache_key: None,
             cache: Some(cache.clone()),
+            in_flight: Arc::new(TokioMutex::new(HashMap::new())),
             retry: RetryConfig::default(),
         };
 
@@ -1734,6 +2059,7 @@ mod tests {
             endpoint: url::Url::parse("http://localhost").expect("valid url"),
             azure_cache_key: None,
             cache: Some(cache),
+            in_flight: Arc::new(TokioMutex::new(HashMap::new())),
             retry: RetryConfig::default(),
         };
 
@@ -1829,6 +2155,7 @@ mod tests {
             endpoint: url::Url::parse("http://localhost").expect("valid url"),
             azure_cache_key: None,
             cache: None,
+            in_flight: Arc::new(TokioMutex::new(HashMap::new())),
             retry: RetryConfig::default(),
         };
 
@@ -1903,7 +2230,7 @@ mod tests {
             .expect_err("expected timeout");
         assert!(timeout_err.is_timeout(), "expected reqwest timeout error");
 
-        let err = AiError::Http(timeout_err);
+        let err = AiError::from(timeout_err);
         record_chat_error_metrics(metrics, &err);
 
         let snap = metrics.snapshot();

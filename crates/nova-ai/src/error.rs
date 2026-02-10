@@ -1,11 +1,12 @@
+use std::sync::Arc;
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum AiError {
     #[error("http error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(Arc<reqwest::Error>),
     #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
+    Json(Arc<serde_json::Error>),
     #[error("url error: {0}")]
     Url(#[from] url::ParseError),
     #[error("invalid config: {0}")]
@@ -16,4 +17,16 @@ pub enum AiError {
     Cancelled,
     #[error("unexpected response: {0}")]
     UnexpectedResponse(String),
+}
+
+impl From<reqwest::Error> for AiError {
+    fn from(err: reqwest::Error) -> Self {
+        Self::Http(Arc::new(err))
+    }
+}
+
+impl From<serde_json::Error> for AiError {
+    fn from(err: serde_json::Error) -> Self {
+        Self::Json(Arc::new(err))
+    }
 }

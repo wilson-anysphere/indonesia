@@ -4,7 +4,7 @@ pub(crate) fn map_reqwest_error(err: reqwest::Error) -> AiError {
     if err.is_timeout() {
         AiError::Timeout
     } else {
-        AiError::Http(err)
+        AiError::from(err)
     }
 }
 
@@ -63,4 +63,3 @@ mod tests {
         let _ = server_handle.await;
     }
 }
-

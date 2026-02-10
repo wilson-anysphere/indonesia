@@ -172,7 +172,7 @@ impl LlmProvider for AnthropicProvider {
                 }?;
 
                 let Some(chunk) = next else { break };
-                let chunk = chunk.map_err(AiError::Http)?;
+                let chunk = chunk.map_err(map_reqwest_error)?;
                 decoder.push(&chunk, &mut events)?;
 
                 for event in events.drain(..) {
@@ -388,7 +388,7 @@ impl LlmProvider for GeminiProvider {
                 }?;
 
                 let Some(chunk) = next else { break };
-                let chunk = chunk.map_err(AiError::Http)?;
+                let chunk = chunk.map_err(map_reqwest_error)?;
 
                 if is_sse {
                     decoder.push(&chunk, &mut events)?;
@@ -700,7 +700,7 @@ impl LlmProvider for AzureOpenAiProvider {
                 }?;
 
                 let Some(chunk) = next else { break };
-                let chunk = chunk.map_err(AiError::Http)?;
+                let chunk = chunk.map_err(map_reqwest_error)?;
                 decoder.push(&chunk, &mut events)?;
 
                 for event in events.drain(..) {
@@ -867,7 +867,7 @@ impl LlmProvider for HttpProvider {
             let bytes = tokio::select! {
                 _ = cancel.cancelled() => return Err(AiError::Cancelled),
                 res = tokio::time::timeout(self.timeout, response.bytes()) => match res {
-                    Ok(out) => out.map_err(AiError::Http),
+                    Ok(out) => out.map_err(map_reqwest_error),
                     Err(_) => Err(AiError::Timeout),
                 },
             }?;
@@ -897,7 +897,7 @@ impl LlmProvider for HttpProvider {
                 }?;
 
                 let Some(chunk) = next else { break };
-                let chunk = chunk.map_err(AiError::Http)?;
+                let chunk = chunk.map_err(map_reqwest_error)?;
                 decoder.push(&chunk, &mut events)?;
 
                 for event in events.drain(..) {
