@@ -4,37 +4,17 @@ use nova_core::{LineIndex, Position as CorePosition, TextSize};
 use nova_db::{Database, FileId};
 
 use crate::code_intelligence::{
-    analyze_for_completion_context, identifier_prefix, receiver_before_dot,
-    skip_whitespace_backwards, CompletionContextAnalysis,
+    analyze_for_completion_context, identifier_prefix, infer_receiver_type_before_dot,
+    member_method_names_for_receiver_type, receiver_before_dot, skip_whitespace_backwards,
+    CompletionContextAnalysis,
 };
-
-const STRING_MEMBER_METHODS: &[(&str, &str)] = &[
-    ("length", "int length()"),
-    (
-        "substring",
-        "String substring(int beginIndex, int endIndex)",
-    ),
-    ("charAt", "char charAt(int index)"),
-    ("isEmpty", "boolean isEmpty()"),
-];
-
-const STREAM_MEMBER_METHODS: &[(&str, &str)] = &[
-    ("filter", "Stream<T> filter(Predicate<? super T> predicate)"),
-    (
-        "map",
-        "<R> Stream<R> map(Function<? super T, ? extends R> mapper)",
-    ),
-    (
-        "collect",
-        "<R, A> R collect(Collector<? super T, A, R> collector)",
-    ),
-];
 
 /// Build a [`MultiTokenCompletionContext`] for Nova's multi-token completion pipeline.
 ///
-/// This is intentionally best-effort and deterministic. It relies on the
-/// lightweight text analysis in `code_intelligence.rs` (tokenization + simple
-/// variable/field inference).
+/// This is intentionally best-effort and deterministic. It reuses the semantic
+/// receiver-type and member enumeration helpers in `code_intelligence.rs` (type
+/// store + minimal JDK / optional classpath) and falls back to lightweight
+/// lexical inference for locals/fields.
 pub fn multi_token_completion_context(
     db: &dyn Database,
     file: FileId,
@@ -60,8 +40,10 @@ pub fn multi_token_completion_context(
     let before = skip_whitespace_backwards(text, prefix_start);
     let after_dot = before > 0 && text.as_bytes().get(before - 1) == Some(&b'.');
 
-    let (_, receiver_type) = receiver_at_offset(text, offset, &analysis);
+    let (_, receiver_type) = receiver_at_offset(db, file, text, offset, &analysis);
     let available_methods = normalize_completion_items(available_methods_for_receiver(
+        db,
+        file,
         receiver_type.as_deref(),
         &analysis,
     ));
@@ -83,6 +65,8 @@ pub fn multi_token_completion_context(
 }
 
 fn receiver_at_offset(
+    db: &dyn Database,
+    file: FileId,
     text: &str,
     offset: usize,
     analysis: &CompletionContextAnalysis,
@@ -100,9 +84,7 @@ fn receiver_at_offset(
         return (Some(receiver), ty);
     }
 
-    // Handle simple call receivers like `people.stream().<cursor>` by looking at
-    // the call name immediately before the final `.`.
-    let ty = infer_receiver_type_from_call_before_dot(text, dot_offset);
+    let ty = infer_receiver_type_before_dot(db, file, dot_offset);
     (None, ty)
 }
 
@@ -125,70 +107,19 @@ fn infer_receiver_type(receiver: &str, analysis: &CompletionContextAnalysis) -> 
         })
 }
 
-fn infer_receiver_type_from_call_before_dot(text: &str, dot_offset: usize) -> Option<String> {
-    let bytes = text.as_bytes();
-
-    let mut end = dot_offset;
-    while end > 0 && (bytes[end - 1] as char).is_ascii_whitespace() {
-        end -= 1;
-    }
-    if end == 0 || bytes[end - 1] != b')' {
-        return None;
-    }
-
-    // Walk backwards to find the matching '(' for the trailing ')'.
-    let mut depth: i32 = 0;
-    let mut i = end;
-    while i > 0 {
-        i -= 1;
-        match bytes[i] {
-            b')' => depth += 1,
-            b'(' => {
-                depth -= 1;
-                if depth == 0 {
-                    let mut name_end = i;
-                    while name_end > 0 && (bytes[name_end - 1] as char).is_ascii_whitespace() {
-                        name_end -= 1;
-                    }
-                    let mut name_start = name_end;
-                    while name_start > 0 {
-                        let ch = bytes[name_start - 1] as char;
-                        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' {
-                            name_start -= 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    let method = text.get(name_start..name_end)?;
-                    return match method {
-                        "stream" => Some("Stream".to_string()),
-                        "toString" => Some("String".to_string()),
-                        _ => None,
-                    };
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
-}
-
 fn available_methods_for_receiver(
+    db: &dyn Database,
+    file: FileId,
     receiver_type: Option<&str>,
     analysis: &CompletionContextAnalysis,
 ) -> Vec<String> {
-    match receiver_type.and_then(simple_type_name) {
-        Some("String") => STRING_MEMBER_METHODS
-            .iter()
-            .map(|(name, _)| (*name).to_string())
-            .collect(),
-        Some("Stream") => STREAM_MEMBER_METHODS
-            .iter()
-            .map(|(name, _)| (*name).to_string())
-            .collect(),
-        _ => analysis.methods.clone(),
+    if let Some(receiver_type) = receiver_type {
+        let methods = member_method_names_for_receiver_type(db, file, receiver_type);
+        if !methods.is_empty() {
+            return methods;
+        }
     }
+    analysis.methods.clone()
 }
 
 fn normalize_completion_items(mut items: Vec<String>) -> Vec<String> {

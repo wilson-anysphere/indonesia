@@ -9626,18 +9626,7 @@ fn completion_type_store(
         // isn't implicitly imported. Provide a minimal stub so member completion and AI context
         // building can enumerate common methods even in dependency-free mode.
         let stream_name = "java.util.stream.Stream";
-        let stream_id = types.class_id(stream_name).unwrap_or_else(|| {
-            types.add_class(nova_types::ClassDef {
-                name: stream_name.to_string(),
-                kind: ClassKind::Interface,
-                type_params: vec![],
-                super_class: None,
-                interfaces: vec![],
-                fields: vec![],
-                constructors: vec![],
-                methods: vec![],
-            })
-        });
+        let stream_id = types.intern_class_id(stream_name);
 
         if types
             .class(stream_id)
