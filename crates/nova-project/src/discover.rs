@@ -739,7 +739,10 @@ fn simple_workspace_root(start: &Path) -> Option<PathBuf> {
     // cause unrelated temp workspaces nested under the temp dir to be misclassified as belonging
     // to the temp dir.
     //
-    // This is intentionally conservative: if callers really want to treat the temp dir as a
+    // Similarly, avoid treating the filesystem root (e.g. `/` or `C:\`) as a workspace root when it
+    // happens to contain an unrelated `src/` directory (common in CI containers).
+    //
+    // This is intentionally conservative: if callers really want to treat these directories as a
     // workspace, they can still do so via the `UnknownProjectType` fallback (which uses the
     // caller-provided root).
     let temp_dir = {
@@ -753,7 +756,11 @@ fn simple_workspace_root(start: &Path) -> Option<PathBuf> {
             break;
         }
         if dir.join("src").is_dir() {
-            return Some(dir.to_path_buf());
+            // Never treat the filesystem root (e.g. `/` or `C:\`) as a "simple project" root for
+            // arbitrary paths inside it.
+            if dir.parent().is_some() {
+                return Some(dir.to_path_buf());
+            }
         }
 
         let Some(parent) = dir.parent() else {
