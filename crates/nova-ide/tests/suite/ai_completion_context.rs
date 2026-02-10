@@ -101,6 +101,64 @@ class A {
 }
 
 #[test]
+fn context_handles_dotted_field_chain_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class B {
+  String s = "x";
+}
+
+class A {
+  B b = new B();
+
+  void m() {
+    this.b.s.<|>
+  }
+}
+"#,
+    );
+
+    let ctx = multi_token_completion_context(&db, file, pos);
+    let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+    assert!(
+        receiver_ty.contains("String"),
+        "expected receiver type to contain `String`, got {receiver_ty:?}"
+    );
+    assert!(ctx.available_methods.iter().any(|m| m == "length"));
+    assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    assert!(ctx.surrounding_code.contains("this.b.s."));
+    assert!(ctx.importable_paths.is_empty());
+}
+
+#[test]
+fn context_static_receiver_lists_static_methods_only() {
+    let (db, file, pos) = fixture(
+        r#"
+class Util {
+  static int foo() { return 0; }
+  int bar() { return 0; }
+  static void baz() {}
+}
+
+class A {
+  void m() {
+    Util.<|>
+  }
+}
+"#,
+    );
+
+    let ctx = multi_token_completion_context(&db, file, pos);
+    assert!(ctx.available_methods.iter().any(|m| m == "foo"));
+    assert!(ctx.available_methods.iter().any(|m| m == "baz"));
+    assert!(
+        !ctx.available_methods.iter().any(|m| m == "bar"),
+        "expected static receiver to exclude instance methods; got {:?}",
+        ctx.available_methods
+    );
+}
+
+#[test]
 fn context_uses_utf16_positions_for_non_bmp_characters() {
     // The caret is after the `.` in the same line as a non-BMP character. If we
     // accidentally treat `Position.character` as a Unicode scalar offset, the
