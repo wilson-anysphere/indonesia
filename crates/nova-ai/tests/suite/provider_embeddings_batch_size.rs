@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn provider_embeddings_respect_configured_batch_size() {
     let server = MockServer::start();
 
