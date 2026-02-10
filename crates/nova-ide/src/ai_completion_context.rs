@@ -207,29 +207,62 @@ fn call_chain_field_access_type(
         return None;
     }
 
-    let (receiver_start, field_name) = identifier_prefix(text, receiver_end);
-    if field_name.is_empty() {
+    // Parse a dotted identifier chain ending at `receiver_end` (e.g. `bar` or `bar.baz` in
+    // `foo().bar.baz.<cursor>`). Stop when we hit a non-identifier segment so we can recover
+    // chains that start after a call expression.
+    let bytes = text.as_bytes();
+    let mut cursor_end = receiver_end;
+    let mut chain_start = receiver_end;
+    let mut segments_rev = Vec::new();
+    loop {
+        let (seg_start, segment) = identifier_prefix(text, cursor_end);
+        if segment.is_empty() || !is_valid_identifier_token(segment.as_str()) {
+            if segments_rev.is_empty() {
+                return None;
+            }
+            break;
+        }
+
+        segments_rev.push(segment);
+        chain_start = seg_start;
+
+        let before_seg = skip_whitespace_backwards(text, seg_start);
+        if before_seg == 0 || bytes.get(before_seg - 1) != Some(&b'.') {
+            break;
+        }
+        let dot = before_seg - 1;
+        cursor_end = skip_whitespace_backwards(text, dot);
+        if cursor_end == 0 {
+            break;
+        }
+    }
+
+    let mut segments: Vec<String> = segments_rev.into_iter().rev().collect();
+    if segments.is_empty() {
         return None;
     }
 
-    let before_field = skip_whitespace_backwards(text, receiver_start);
-    let prev_dot = before_field
+    // Find the dot immediately before the start of the chain and ensure the segment before it ends
+    // with `)`, i.e. `<call>().<field_chain>.<cursor>`.
+    let before_chain = skip_whitespace_backwards(text, chain_start);
+    let dot_before_chain = before_chain
         .checked_sub(1)
-        .filter(|idx| text.as_bytes().get(*idx) == Some(&b'.'))?;
-
-    // Only attempt this recovery when the previous segment ends in `)`, i.e. when we have
-    // `<call>().<field>.<cursor>`.
-    let prev_end = skip_whitespace_backwards(text, prev_dot);
-    if prev_end == 0 || text.as_bytes().get(prev_end - 1) != Some(&b')') {
+        .filter(|idx| bytes.get(*idx) == Some(&b'.'))?;
+    let prev_end = skip_whitespace_backwards(text, dot_before_chain);
+    if prev_end == 0 || bytes.get(prev_end - 1) != Some(&b')') {
         return None;
     }
 
-    let receiver_ty = infer_receiver_type_before_dot(db, file, prev_dot)?;
-    let items = member_completions_for_receiver_type(db, file, &receiver_ty, "");
-    items
-        .into_iter()
-        .find(|item| item.kind == Some(CompletionItemKind::FIELD) && item.label == field_name)
-        .and_then(|item| item.detail)
+    let mut receiver_ty = infer_receiver_type_before_dot(db, file, dot_before_chain)?;
+    for segment in segments.drain(..) {
+        let items = member_completions_for_receiver_type(db, file, &receiver_ty, "");
+        let item = items.into_iter().find(|item| {
+            item.kind == Some(CompletionItemKind::FIELD) && item.label == segment
+        })?;
+        receiver_ty = item.detail?;
+    }
+
+    Some(receiver_ty)
 }
 
 fn available_methods_for_receiver(
@@ -595,6 +628,37 @@ class A {
 
   void m() {
     b().s.<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "length"));
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
+    fn call_chain_dotted_field_chain_receiver_type_and_methods_are_semantic() {
+        let ctx = ctx_for(
+            r#"
+class Inner {
+  String s = "x";
+}
+
+class B {
+  Inner inner = new Inner();
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    b().inner.s.<cursor>
   }
 }
 "#,
