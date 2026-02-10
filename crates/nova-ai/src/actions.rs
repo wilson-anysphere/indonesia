@@ -1,16 +1,9 @@
 use std::borrow::Cow;
 
+use crate::util::markdown::escape_markdown_fence_payload;
+
 fn escape_triple_backticks(text: &str) -> Cow<'_, str> {
-    if text.contains("```") {
-        // `nova-ai` privacy sanitization relies on fenced code blocks. Ensure user-provided
-        // content cannot terminate the fence early by breaking up triple backtick sequences.
-        //
-        // Note: we intentionally use a zero-width space so the text is still readable to humans
-        // and LLMs, but no longer matches the literal "```" fence delimiter.
-        Cow::Owned(text.replace("```", "``\u{200B}`"))
-    } else {
-        Cow::Borrowed(text)
-    }
+    escape_markdown_fence_payload(text)
 }
 
 pub fn explain_error_prompt(diagnostic_message: &str, context: &str) -> String {
