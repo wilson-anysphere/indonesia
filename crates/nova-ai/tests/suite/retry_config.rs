@@ -325,12 +325,14 @@ async fn chat_stream_does_not_retry_after_first_chunk() {
 
             request_count.fetch_add(1, Ordering::SeqCst);
 
-            // Emit a single valid chunk, then stall forever. This forces a timeout *after* we
-            // yielded partial output; the client must not retry in that case.
+            // Emit a single valid chunk, then abort the body stream with an I/O error. This
+            // produces a retriable transport error *after* we yielded partial output; the client
+            // must not retry in that case.
             let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"P\"}}]}\n\n";
             let body = Body::wrap_stream(async_stream::stream! {
                 yield Ok::<_, io::Error>(sse.to_string());
-                futures::future::pending::<()>().await;
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                yield Err(io::Error::new(io::ErrorKind::ConnectionReset, "boom"));
             });
             Response::builder()
                 .status(StatusCode::OK)
@@ -347,8 +349,8 @@ async fn chat_stream_does_not_retry_after_first_chunk() {
     cfg.provider.retry_max_retries = 3;
     cfg.provider.retry_initial_backoff_ms = 1;
     cfg.provider.retry_max_backoff_ms = 1;
-    // Keep the idle-timeout failure path fast.
-    cfg.provider.timeout_ms = 100;
+    // Leave some slack for the server to deliver the first chunk before it aborts the body.
+    cfg.provider.timeout_ms = 1_000;
 
     let client = AiClient::from_config(&cfg).expect("client");
     let mut stream = client
@@ -371,10 +373,7 @@ async fn chat_stream_does_not_retry_after_first_chunk() {
     assert_eq!(first, "P");
 
     let err = stream.try_next().await.expect_err("expected stream to error");
-    assert!(
-        matches!(err, AiError::Timeout | AiError::Http(_)),
-        "expected timeout-style error; got {err:?}"
-    );
+    assert!(matches!(err, AiError::Http(_)), "expected transport error; got {err:?}");
 
     assert_eq!(
         request_count.load(Ordering::SeqCst),
