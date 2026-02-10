@@ -193,4 +193,18 @@ fn related_code_query_skips_empty_queries() {
         req.related_code.is_empty(),
         "expected no related code when max_results=0"
     );
+
+    // The helper should clear any pre-populated related code when it skips search.
+    let mut req = base_request("something");
+    req.related_code.push(nova_ai::context::RelatedCode {
+        path: PathBuf::from("src/Dummy.java"),
+        range: 0..0,
+        kind: "file".to_string(),
+        snippet: "dummy".to_string(),
+    });
+    let req = req.with_related_code_from_search(&search, "", 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected related code to be cleared when search is skipped"
+    );
 }

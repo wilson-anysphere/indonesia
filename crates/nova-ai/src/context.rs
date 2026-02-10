@@ -498,6 +498,7 @@ impl ContextRequest {
         max_results: usize,
     ) -> Self {
         if max_results == 0 || query.trim().is_empty() {
+            self.related_code.clear();
             return self;
         }
 
