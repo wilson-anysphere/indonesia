@@ -161,6 +161,40 @@ class A {
 }
 
 #[test]
+fn context_handles_call_chain_dotted_field_chain_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class Inner {
+  String s = "x";
+}
+
+class B {
+  Inner inner = new Inner();
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    b().inner.s.<|>
+  }
+}
+"#,
+    );
+
+    let ctx = multi_token_completion_context(&db, file, pos);
+    let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+    assert!(
+        receiver_ty.contains("String"),
+        "expected receiver type to contain `String`, got {receiver_ty:?}"
+    );
+    assert!(ctx.available_methods.iter().any(|m| m == "length"));
+    assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    assert!(ctx.surrounding_code.contains("b().inner.s."));
+    assert!(ctx.importable_paths.is_empty());
+}
+
+#[test]
 fn context_static_receiver_lists_static_methods_only() {
     let (db, file, pos) = fixture(
         r#"
