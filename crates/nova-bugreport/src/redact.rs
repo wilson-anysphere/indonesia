@@ -7,6 +7,7 @@ pub(crate) fn redact_string(input: &str) -> String {
     let mut out = input.to_owned();
     out = redact_urls(&out);
     out = redact_bearer_tokens(&out);
+    out = redact_bare_auth_tokens(&out);
     out = redact_sensitive_header_values(&out);
     out = redact_api_keys(&out);
     out = redact_sensitive_kv_pairs(&out);
@@ -37,6 +38,20 @@ fn redact_bearer_tokens(input: &str) -> String {
     });
 
     re.replace_all(input, format!("$1$2{REDACTION}")).into_owned()
+}
+
+fn redact_bare_auth_tokens(input: &str) -> String {
+    static BEARER_RE: OnceLock<Regex> = OnceLock::new();
+    static BASIC_RE: OnceLock<Regex> = OnceLock::new();
+    let bearer = BEARER_RE.get_or_init(|| {
+        Regex::new(r"(?i)(bearer\s+)[A-Za-z0-9\-._=+/]{16,}").expect("bearer token regex should compile")
+    });
+    let basic = BASIC_RE.get_or_init(|| {
+        Regex::new(r"(?i)(basic\s+)[A-Za-z0-9\-._=+/]{16,}").expect("basic token regex should compile")
+    });
+
+    let out = bearer.replace_all(input, format!("$1{REDACTION}"));
+    basic.replace_all(&out, format!("$1{REDACTION}")).into_owned()
 }
 
 fn redact_sensitive_header_values(input: &str) -> String {
@@ -199,11 +214,31 @@ mod tests {
     }
 
     #[test]
+    fn redacts_bare_bearer_tokens() {
+        let secret = "abcdefghijklmnopqrstuvwxyz0123456789._-+/=";
+        let input = format!("Bearer {secret}");
+        let out = redact_string(&input);
+
+        assert_eq!(out, "Bearer <redacted>");
+        assert!(!out.contains(secret));
+    }
+
+    #[test]
     fn redacts_basic_tokens() {
         let input = "Authorization: Basic dXNlcjpwYXNz";
         let out = redact_string(input);
 
         assert_eq!(out, "Authorization: Basic <redacted>");
+    }
+
+    #[test]
+    fn redacts_bare_basic_tokens() {
+        let secret = "dXNlcjpwYXNzMTIzNDU2Nzg5";
+        let input = format!("Basic {secret}");
+        let out = redact_string(&input);
+
+        assert_eq!(out, "Basic <redacted>");
+        assert!(!out.contains(secret));
     }
 
     #[test]
