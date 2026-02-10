@@ -775,6 +775,17 @@ fn parse_diff_git_paths_with_unquoted_spaces(rest: &str) -> Option<(String, Stri
         if !(new.starts_with("b/") || new == "/dev/null") {
             return;
         }
+
+        // Only accept headers we can reason about reliably:
+        // - new file / deleted file diffs may use `/dev/null` for one side
+        // - otherwise, `diff --git` headers without quoting should refer to the *same* path on both
+        //   sides (renames/copies have explicit metadata lines we can parse instead).
+        if old != "/dev/null"
+            && new != "/dev/null"
+            && old.strip_prefix("a/") != new.strip_prefix("b/")
+        {
+            return;
+        }
         candidates.push((old.to_string(), new.to_string()));
     }
 
