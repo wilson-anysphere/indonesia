@@ -172,11 +172,49 @@ impl LlmProvider for OpenAiCompatibleProvider {
                     return;
                 }
 
-                let parsed: OpenAiChatCompletionStreamResponse = serde_json::from_str(data)?;
-                for choice in parsed.choices {
-                    if let Some(content) = choice.delta.content {
-                        if !content.is_empty() {
-                            yield content;
+                match serde_json::from_str::<OpenAiChatCompletionStreamResponse>(data) {
+                    Ok(parsed) => {
+                        for choice in parsed.choices {
+                            if let Some(content) = choice.delta.content {
+                                if !content.is_empty() {
+                                    yield content;
+                                }
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        // Most OpenAI-compatible backends emit one JSON object per SSE event.
+                        // However, some implementations incorrectly send multiple JSON objects as
+                        // separate `data:` fields within a single event (terminated by a blank
+                        // line). The SSE spec concatenates `data:` lines with `\n`, which would
+                        // produce invalid JSON like `{...}\n{...}`.
+                        //
+                        // If parsing the concatenated payload fails, fall back to parsing each
+                        // non-empty line as an independent JSON payload.
+                        let mut parsed_any = false;
+                        for line in data.lines() {
+                            let line = line.trim();
+                            if line.is_empty() {
+                                continue;
+                            }
+                            if line == "[DONE]" {
+                                return;
+                            }
+
+                            let parsed: OpenAiChatCompletionStreamResponse =
+                                serde_json::from_str(line)?;
+                            parsed_any = true;
+                            for choice in parsed.choices {
+                                if let Some(content) = choice.delta.content {
+                                    if !content.is_empty() {
+                                        yield content;
+                                    }
+                                }
+                            }
+                        }
+
+                        if !parsed_any {
+                            Err(err)?;
                         }
                     }
                 }
