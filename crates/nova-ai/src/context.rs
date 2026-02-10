@@ -599,8 +599,17 @@ fn related_code_query_from_focal_code(focal_code: &str) -> String {
     });
 
     const MAX_TOKENS: usize = 16;
+    let mut selected: Vec<Scored<'_>> = scored.into_iter().take(MAX_TOKENS).collect();
+    // Preserve source order for better lexical substring matches in the trigram fallback while
+    // still choosing the highest-scoring tokens.
+    selected.sort_by(|a, b| {
+        a.first_pos
+            .cmp(&b.first_pos)
+            .then_with(|| a.tok.cmp(b.tok))
+    });
+
     let mut out = String::new();
-    for cand in scored.into_iter().take(MAX_TOKENS) {
+    for cand in selected {
         if !push_query_token(&mut out, cand.tok, RELATED_CODE_QUERY_MAX_BYTES) {
             break;
         }
@@ -668,40 +677,10 @@ fn looks_like_path_token(token: &str) -> bool {
         .count();
 
     if sep_count > 0 {
-        if token.contains("://") {
-            return true;
-        }
-        if token.starts_with('/') || token.starts_with("\\\\") {
-            return true;
-        }
-        if token.contains("..")
-            || token.contains("./")
-            || token.contains(".\\")
-            || token.contains("/.")
-            || token.contains("\\.")
-            || token.starts_with('.')
-        {
-            return true;
-        }
-        if token.as_bytes().windows(3).any(|w| w[1] == b':' && (w[2] == b'\\' || w[2] == b'/')) {
-            // Windows drive prefix, possibly preceded by punctuation (e.g. `(C:\Users\...)`).
-            return true;
-        }
-        if sep_count >= 2 {
-            return true;
-        }
-
-        // Single-segment relative paths that end in a well-known source/doc extension are still
-        // paths (e.g. `src/Main.java`).
-        let last_segment = token
-            .rsplit(|c| c == '/' || c == '\\')
-            .next()
-            .unwrap_or(token);
-        if looks_like_file_name(last_segment) {
-            return true;
-        }
-
-        return false;
+        // Keep this conservative: any whitespace token containing a path separator could leak
+        // filesystem information (e.g. `secret/credentials`, `../src/Main.java`, `C:\Users\...`),
+        // and Java identifiers cannot legally contain `/` or `\\` anyway.
+        return true;
     }
 
     looks_like_file_name(token)

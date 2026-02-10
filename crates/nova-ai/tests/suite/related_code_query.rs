@@ -165,6 +165,46 @@ fn related_code_query_avoids_path_segments() {
 }
 
 #[test]
+fn related_code_query_avoids_relative_path_segments_without_extensions() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let search = CapturingSearch::default();
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+    let focal_code = format!("{private_segment}/credentials\nreturn foo.bar();\n");
+
+    let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+    let query = search
+        .last_query
+        .lock()
+        .expect("lock poisoned")
+        .clone()
+        .expect("query captured");
+
+    assert!(
+        !query.contains(private_segment),
+        "query should not include path segments: {query}"
+    );
+    assert!(
+        !query.to_ascii_lowercase().contains("credentials"),
+        "query should not include path segments: {query}"
+    );
+    assert!(
+        query.contains("foo") || query.contains("bar"),
+        "expected query to retain non-path identifiers, got: {query}"
+    );
+}
+
+#[test]
 fn related_code_query_skips_empty_queries() {
     struct PanicSearch;
 
