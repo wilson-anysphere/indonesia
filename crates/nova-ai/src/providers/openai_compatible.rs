@@ -5,6 +5,7 @@ use crate::{
 };
 use async_stream::try_stream;
 use async_trait::async_trait;
+use bytes::BytesMut;
 use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
@@ -145,29 +146,23 @@ impl LlmProvider for OpenAiCompatibleProvider {
         let timeout = self.timeout;
 
         let stream = try_stream! {
-            let mut buffer = String::new();
+            let mut buffer = BytesMut::new();
 
             loop {
-                let next = tokio::select! {
-                    _ = cancel.cancelled() => Err(AiError::Cancelled),
-                    chunk = tokio::time::timeout(timeout, bytes_stream.next()) => {
-                        match chunk {
-                            Ok(item) => Ok(item),
-                            Err(_) => Err(AiError::Timeout),
-                        }
+                // Drain all complete lines already buffered before waiting for more bytes.
+                while let Some(newline_pos) = buffer.iter().position(|&b| b == b'\n') {
+                    // Split off the line (including the trailing '\n') so `buffer` stays valid.
+                    let mut line = buffer.split_to(newline_pos + 1);
+                    // Drop the trailing '\n'.
+                    line.truncate(newline_pos);
+                    // Handle CRLF line endings.
+                    if line.last() == Some(&b'\r') {
+                        line.truncate(line.len() - 1);
                     }
-                }?;
 
-                let Some(chunk) = next else { break };
-                let chunk = chunk.map_err(AiError::Http)?;
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
-
-                while let Some(pos) = buffer.find('\n') {
-                    let mut line = buffer[..pos].to_string();
-                    buffer = buffer[pos + 1..].to_string();
-                    if line.ends_with('\r') {
-                        line.pop();
-                    }
+                    let line = std::str::from_utf8(&line).map_err(|e| {
+                        AiError::UnexpectedResponse(format!("invalid UTF-8 in SSE stream: {e}"))
+                    })?;
 
                     let line = line.trim();
                     if line.is_empty() {
@@ -191,6 +186,20 @@ impl LlmProvider for OpenAiCompatibleProvider {
                         }
                     }
                 }
+
+                let next = tokio::select! {
+                    _ = cancel.cancelled() => Err(AiError::Cancelled),
+                    chunk = tokio::time::timeout(timeout, bytes_stream.next()) => {
+                        match chunk {
+                            Ok(item) => Ok(item),
+                            Err(_) => Err(AiError::Timeout),
+                        }
+                    }
+                }?;
+
+                let Some(chunk) = next else { break };
+                let chunk = chunk.map_err(AiError::Http)?;
+                buffer.extend_from_slice(&chunk);
             }
         };
 

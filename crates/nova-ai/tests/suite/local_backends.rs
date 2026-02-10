@@ -469,6 +469,118 @@ async fn openai_compatible_streaming_parsing() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn openai_compatible_stream_parses_sse_line_split_across_chunks() {
+    let handler = move |req: Request<Body>| async move {
+        if req.uri().path() != "/v1/chat/completions" {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::empty())
+                .unwrap();
+        }
+
+        let _ = hyper::body::to_bytes(req.into_body())
+            .await
+            .expect("read request body");
+
+        // Split the SSE line across multiple "TCP chunks", including splitting CRLF across chunks.
+        let chunks = vec![
+            Ok::<_, std::io::Error>(hyper::body::Bytes::from("data: {\"choices\"")),
+            Ok::<_, std::io::Error>(hyper::body::Bytes::from(
+                ":[{\"delta\":{\"content\":\"Hello\"}}]}\r",
+            )),
+            Ok::<_, std::io::Error>(hyper::body::Bytes::from("\n\r\n")),
+            Ok::<_, std::io::Error>(hyper::body::Bytes::from("data: [DONE]\r\n\r\n")),
+        ];
+
+        Response::builder()
+            .header("content-type", "text/event-stream")
+            .body(Body::wrap_stream(iter(chunks)))
+            .unwrap()
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}")).unwrap();
+    let client = AiClient::from_config(&openai_config(url)).unwrap();
+
+    let mut stream = client
+        .chat_stream(
+            ChatRequest {
+                messages: vec![ChatMessage::user("hi")],
+                max_tokens: Some(5),
+                temperature: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let mut output = String::new();
+    while let Some(item) = stream.next().await {
+        output.push_str(&item.unwrap());
+    }
+    assert_eq!(output, "Hello");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn openai_compatible_stream_parses_multibyte_utf8_split_across_chunks() {
+    let handler = move |req: Request<Body>| async move {
+        if req.uri().path() != "/v1/chat/completions" {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::empty())
+                .unwrap();
+        }
+
+        let _ = hyper::body::to_bytes(req.into_body())
+            .await
+            .expect("read request body");
+
+        // Split the UTF-8 bytes for `世` across chunks to ensure the client buffers bytes and only
+        // decodes once a full line is assembled.
+        let payload = "data: {\"choices\":[{\"delta\":{\"content\":\"世\"}}]}\n\n";
+        let bytes = payload.as_bytes();
+        let split_at = payload.find('世').expect("payload contains multibyte char") + 1;
+
+        let chunks = vec![
+            Ok::<_, std::io::Error>(hyper::body::Bytes::from(bytes[..split_at].to_vec())),
+            Ok::<_, std::io::Error>(hyper::body::Bytes::from(bytes[split_at..].to_vec())),
+            Ok::<_, std::io::Error>(hyper::body::Bytes::from("data: [DONE]\n\n")),
+        ];
+
+        Response::builder()
+            .header("content-type", "text/event-stream")
+            .body(Body::wrap_stream(iter(chunks)))
+            .unwrap()
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}")).unwrap();
+    let client = AiClient::from_config(&openai_config(url)).unwrap();
+
+    let mut stream = client
+        .chat_stream(
+            ChatRequest {
+                messages: vec![ChatMessage::user("hi")],
+                max_tokens: Some(5),
+                temperature: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let mut output = String::new();
+    while let Some(item) = stream.next().await {
+        output.push_str(&item.unwrap());
+    }
+    assert_eq!(output, "世");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn cancellation_stops_in_flight_request() {
     let (started_tx, mut started_rx) = mpsc::channel::<()>(1);
 
