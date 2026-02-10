@@ -92,7 +92,10 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
         // Note: Java commonly emits `file:/...` for absolute file URIs (single slash), while other
         // tooling emits `file:///...`. We treat any `file:` token with an immediate, non-delimited
         // payload as a potential path leak.
-        Regex::new(r#"(?mi)(?P<path>\bfile:[^\s"'<>)\]}]+)"#).expect("valid file uri regex")
+        //
+        // This intentionally allows spaces so we also catch sloppy/unescaped URIs like
+        // `file:///Users/alice/My Project/secret.txt`.
+        Regex::new(r#"(?mi)(?P<path>\bfile:[^\r\n"'<>)\]}]+)"#).expect("valid file uri regex")
     });
 
     // UNC paths / network shares (e.g. `\\server\share\path\file.txt`), including the escaped form
@@ -422,6 +425,17 @@ mod tests {
         assert!(!out.to_lowercase().contains("file:"), "{out}");
         assert!(!out.contains("localhost"), "{out}");
         assert!(!out.contains("Secret.java"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_file_uris_with_spaces() {
+        let prompt = r#"opening file:///Users/alice/My Project/secret.txt"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.to_lowercase().contains("file:"), "{out}");
+        assert!(!out.contains("/Users/alice"), "{out}");
+        assert!(!out.contains("My Project"), "{out}");
+        assert!(!out.contains("secret.txt"), "{out}");
     }
 
     #[test]
