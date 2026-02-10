@@ -120,10 +120,17 @@ impl MultiTokenCompletionProvider for CloudMultiTokenCompletionProvider {
 
             if let Some(reverse_map) = reverse_map {
                 for completion in &mut completions {
-                    crate::anonymizer::deanonymize_multi_token_completion(
-                        completion,
-                        &reverse_map,
-                    );
+                    completion.label = deanonymize_identifiers(&completion.label, &reverse_map);
+                    completion.insert_text =
+                        deanonymize_identifiers(&completion.insert_text, &reverse_map);
+
+                    for edit in &mut completion.additional_edits {
+                        match edit {
+                            AdditionalEdit::AddImport { path } => {
+                                *path = deanonymize_identifiers(path, &reverse_map);
+                            }
+                        }
+                    }
 
                     // Re-apply clamping limits after de-anonymization; identifiers can get longer
                     // when expanded back to their original names.
@@ -141,6 +148,138 @@ impl MultiTokenCompletionProvider for CloudMultiTokenCompletionProvider {
             Ok(completions)
         })
     }
+}
+
+/// Rewrites anonymous identifier placeholders (e.g. `id_0`) back to their original names using the
+/// same lightweight lexical model as the anonymizer.
+///
+/// Only identifier *tokens* are replaced; placeholders inside Java string/char literals and
+/// line/block comments are left untouched.
+fn deanonymize_identifiers(text: &str, reverse_map: &ReverseIdentifierMap) -> String {
+    if reverse_map.is_empty() || text.is_empty() {
+        return text.to_string();
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum State {
+        Normal,
+        LineComment,
+        BlockComment,
+        String,
+        Char,
+    }
+
+    let bytes = text.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    let mut state = State::Normal;
+
+    while i < bytes.len() {
+        match state {
+            State::Normal => match bytes[i] {
+                b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                    out.extend_from_slice(b"//");
+                    i += 2;
+                    state = State::LineComment;
+                }
+                b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                    out.extend_from_slice(b"/*");
+                    i += 2;
+                    state = State::BlockComment;
+                }
+                b'"' => {
+                    out.push(b'"');
+                    i += 1;
+                    state = State::String;
+                }
+                b'\'' => {
+                    out.push(b'\'');
+                    i += 1;
+                    state = State::Char;
+                }
+                b if is_ident_start(b) => {
+                    let start = i;
+                    i += 1;
+                    while i < bytes.len() && is_ident_continue(bytes[i]) {
+                        i += 1;
+                    }
+
+                    let ident = &text[start..i];
+                    if let Some(original) = reverse_map.get(ident) {
+                        out.extend_from_slice(original.as_bytes());
+                    } else {
+                        out.extend_from_slice(ident.as_bytes());
+                    }
+                }
+                other => {
+                    out.push(other);
+                    i += 1;
+                }
+            },
+            State::LineComment => {
+                let b = bytes[i];
+                out.push(b);
+                i += 1;
+                if b == b'\n' || b == b'\r' {
+                    state = State::Normal;
+                }
+            }
+            State::BlockComment => {
+                if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                    out.extend_from_slice(b"*/");
+                    i += 2;
+                    state = State::Normal;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            State::String => {
+                if bytes[i] == b'\\' {
+                    out.push(b'\\');
+                    i += 1;
+                    if i < bytes.len() {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                } else if bytes[i] == b'"' {
+                    out.push(b'"');
+                    i += 1;
+                    state = State::Normal;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            State::Char => {
+                if bytes[i] == b'\\' {
+                    out.push(b'\\');
+                    i += 1;
+                    if i < bytes.len() {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                } else if bytes[i] == b'\'' {
+                    out.push(b'\'');
+                    i += 1;
+                    state = State::Normal;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    String::from_utf8(out).unwrap_or_else(|_| text.to_string())
+}
+
+fn is_ident_start(b: u8) -> bool {
+    b == b'_' || b == b'$' || b.is_ascii_alphabetic()
+}
+
+fn is_ident_continue(b: u8) -> bool {
+    is_ident_start(b) || b.is_ascii_digit()
 }
 
 fn map_ai_error(err: AiError) -> AiProviderError {
@@ -508,31 +647,28 @@ mod tests {
     #[test]
     fn rewrites_identifiers_in_code() {
         let reverse = reverse_map();
-        let out = crate::anonymizer::deanonymize_java_like_code("id_0.foo()", &reverse);
+        let out = deanonymize_identifiers("id_0.foo()", &reverse);
         assert_eq!(out, "Secret.foo()");
     }
 
     #[test]
     fn does_not_rewrite_inside_string_literals() {
         let reverse = reverse_map();
-        let out = crate::anonymizer::deanonymize_java_like_code(
-            r#"System.out.println("id_0");"#,
-            &reverse,
-        );
+        let out = deanonymize_identifiers(r#"System.out.println("id_0");"#, &reverse);
         assert_eq!(out, r#"System.out.println("id_0");"#);
     }
 
     #[test]
     fn does_not_rewrite_inside_line_comments() {
         let reverse = reverse_map();
-        let out = crate::anonymizer::deanonymize_java_like_code("// id_0\nid_0.foo()", &reverse);
+        let out = deanonymize_identifiers("// id_0\nid_0.foo()", &reverse);
         assert_eq!(out, "// id_0\nSecret.foo()");
     }
 
     #[test]
     fn does_not_rewrite_inside_block_comments() {
         let reverse = reverse_map();
-        let out = crate::anonymizer::deanonymize_java_like_code("/* id_0 */ id_0.foo()", &reverse);
+        let out = deanonymize_identifiers("/* id_0 */ id_0.foo()", &reverse);
         assert_eq!(out, "/* id_0 */ Secret.foo()");
     }
 
@@ -540,7 +676,7 @@ mod tests {
     fn escaped_quotes_in_strings_and_chars_do_not_break_scanner() {
         let reverse = reverse_map();
         let input = r#"char q = '\''; String s = "a\"id_0\""; id_0.foo();"#;
-        let out = crate::anonymizer::deanonymize_java_like_code(input, &reverse);
+        let out = deanonymize_identifiers(input, &reverse);
         assert_eq!(
             out,
             r#"char q = '\''; String s = "a\"id_0\""; Secret.foo();"#
@@ -550,7 +686,7 @@ mod tests {
     #[test]
     fn rewrites_only_identifier_segments_in_qualified_names() {
         let reverse = reverse_map();
-        let out = crate::anonymizer::deanonymize_java_like_code("java.util.id_0", &reverse);
+        let out = deanonymize_identifiers("java.util.id_0", &reverse);
         assert_eq!(out, "java.util.Secret");
     }
 }
