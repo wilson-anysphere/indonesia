@@ -1053,8 +1053,10 @@ async fn openai_compatible_stream_timeout_is_idle_based_not_total_duration() {
                 "data: [DONE]\n\n",
             ];
 
-            for part in parts {
-                tokio::time::sleep(Duration::from_millis(50)).await;
+            for (idx, part) in parts.into_iter().enumerate() {
+                if idx != 0 {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
                 yield Ok::<_, std::io::Error>(hyper::body::Bytes::from(part));
             }
         };
