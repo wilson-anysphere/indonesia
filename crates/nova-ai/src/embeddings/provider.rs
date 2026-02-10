@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+use crate::audit;
 use crate::client::validate_local_only_url;
 use crate::http::map_reqwest_error;
 use crate::llm_privacy::PrivacyFilter;
@@ -160,7 +161,7 @@ pub(super) fn provider_embeddings_client_from_config(
                     tracing::warn!(
                         target = "nova.ai",
                         provider_kind = ?config.provider.kind,
-                        url = %config.provider.url,
+                        url = %audit::sanitize_url_for_log(&config.provider.url),
                         ?err,
                         "ai.privacy.local_only=true forbids provider-backed embeddings to non-loopback urls; falling back to hash embeddings"
                     );

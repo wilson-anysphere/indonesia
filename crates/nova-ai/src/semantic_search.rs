@@ -483,6 +483,7 @@ fn prefix_char_range(text: &str, max_chars: usize) -> Range<usize> {
 #[cfg(feature = "embeddings")]
 mod embeddings {
     use super::{SearchResult, SemanticSearch};
+    use crate::audit;
     use crate::client::validate_local_only_url;
     use crate::embeddings::cache::{
         EmbeddingCacheKey as MemoryCacheKey, EmbeddingCacheKeyBuilder, EmbeddingVectorCache,
@@ -1169,7 +1170,7 @@ mod embeddings {
                         warn!(
                             target = "nova.ai",
                             provider = ?provider_kind,
-                            url = %config.provider.url,
+                            url = %audit::sanitize_url_for_log(&config.provider.url),
                             "ai.privacy.local_only=true forbids provider-backed embeddings to non-loopback urls ({err}); falling back to hash embeddings"
                         );
                         return None;

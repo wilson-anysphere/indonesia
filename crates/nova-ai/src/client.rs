@@ -1588,9 +1588,10 @@ pub(crate) fn validate_local_only_url(url: &url::Url) -> Result<(), AiError> {
         return Ok(());
     }
 
+    let safe_url = audit::sanitize_url_for_log(url);
     Err(AiError::InvalidConfig(format!(
         "ai.privacy.local_only=true requires ai.provider.url to use a loopback host \
-        (localhost/127.0.0.1/[::1]); got {url}"
+        (localhost/127.0.0.1/[::1]); got {safe_url}"
     )))
 }
 
@@ -1710,6 +1711,28 @@ mod tests {
 
     const SECRET: &str = "sk-proj-012345678901234567890123456789";
 
+    #[test]
+    fn validate_local_only_url_redacts_secrets_in_error() {
+        let url = url::Url::parse("http://user:pass@example.com/path?token=supersecret")
+            .expect("valid url");
+
+        let err = validate_local_only_url(&url).expect_err("expected non-loopback to be rejected");
+        let message = err.to_string();
+
+        assert!(
+            !message.contains("user:pass"),
+            "expected userinfo to be removed from error message: {message}"
+        );
+        assert!(
+            !message.contains("token="),
+            "expected query params to be removed from error message: {message}"
+        );
+        assert!(
+            !message.contains("supersecret"),
+            "expected query param value to be removed from error message: {message}"
+        );
+    }
+
     #[async_trait]
     impl LlmProvider for DummyProvider {
         async fn chat(
@@ -1819,6 +1842,89 @@ mod tests {
             .filter(|event| event.target == nova_config::AI_AUDIT_TARGET)
             .cloned()
             .collect()
+    }
+
+    #[cfg(feature = "embeddings")]
+    #[test]
+    fn local_only_fallback_warnings_do_not_log_raw_provider_secrets() {
+        use nova_config::AiEmbeddingsBackend;
+
+        let events = Arc::new(Mutex::new(Vec::<CapturedEvent>::new()));
+        let layer = CapturingLayer {
+            events: events.clone(),
+        };
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let mut config = nova_config::AiConfig::default();
+        config.privacy.local_only = true;
+        config.provider.kind = AiProviderKind::Http;
+        config.provider.url = url::Url::parse("http://user:pass@example.com/path?token=supersecret")
+            .expect("valid url");
+
+        // Trigger provider-backed embeddings fallback warning.
+        config.embeddings.backend = AiEmbeddingsBackend::Provider;
+        let _ = crate::embeddings::embeddings_client_from_config(&config)
+            .expect("provider embeddings should fall back to local embeddings client");
+
+        // Trigger semantic-search provider embedder fallback warning.
+        config.enabled = true;
+        config.features.semantic_search = true;
+        config.embeddings.enabled = true;
+        let model_dir = tempfile::tempdir().expect("tempdir");
+        config.embeddings.model_dir = model_dir.path().join("embeddings");
+        let _ = crate::semantic_search_from_config(&config)
+            .expect("semantic search should fall back to hash embeddings");
+
+        let events = events.lock().expect("events mutex poisoned");
+
+        // Ensure we actually captured fallback warnings (avoid vacuous secret checks).
+        let provider_fallback_count = events
+            .iter()
+            .filter(|event| {
+                event.fields.contains_key("provider_kind")
+                    && event
+                        .fields
+                        .values()
+                        .any(|value| value.contains("falling back to hash embeddings"))
+            })
+            .count();
+        assert!(
+            provider_fallback_count >= 1,
+            "expected provider embeddings local_only fallback warn to be emitted"
+        );
+
+        let semantic_fallback_count = events
+            .iter()
+            .filter(|event| {
+                event.fields.contains_key("provider")
+                    && event
+                        .fields
+                        .values()
+                        .any(|value| value.contains("falling back to hash embeddings"))
+            })
+            .count();
+        assert!(
+            semantic_fallback_count >= 1,
+            "expected semantic search local_only fallback warn to be emitted"
+        );
+
+        for event in events.iter() {
+            for (field, value) in &event.fields {
+                assert!(
+                    !value.contains("user:pass"),
+                    "event field `{field}` leaked userinfo: {value}"
+                );
+                assert!(
+                    !value.contains("token="),
+                    "event field `{field}` leaked query key: {value}"
+                );
+                assert!(
+                    !value.contains("supersecret"),
+                    "event field `{field}` leaked query value: {value}"
+                );
+            }
+        }
     }
 
     #[test]
