@@ -2979,6 +2979,96 @@ mod embeddings {
             search.index_file(PathBuf::from("a.txt"), "hello".to_string());
             assert!(search.docs_by_path.is_empty());
         }
+
+        #[test]
+        fn semantic_search_records_timeout_metrics_when_embedding_fails() {
+            let _guard = crate::test_support::metrics_lock()
+                .lock()
+                .expect("metrics lock poisoned");
+            let metrics = nova_metrics::MetricsRegistry::global();
+
+            let before = metrics.snapshot();
+            let before_index_req = before
+                .methods
+                .get(super::super::AI_SEMANTIC_SEARCH_INDEX_FILE_METRIC)
+                .map(|m| m.request_count)
+                .unwrap_or(0);
+            let before_index_timeout = before
+                .methods
+                .get(super::super::AI_SEMANTIC_SEARCH_INDEX_FILE_METRIC)
+                .map(|m| m.timeout_count)
+                .unwrap_or(0);
+            let before_search_req = before
+                .methods
+                .get(super::super::AI_SEMANTIC_SEARCH_SEARCH_METRIC)
+                .map(|m| m.request_count)
+                .unwrap_or(0);
+            let before_search_timeout = before
+                .methods
+                .get(super::super::AI_SEMANTIC_SEARCH_SEARCH_METRIC)
+                .map(|m| m.timeout_count)
+                .unwrap_or(0);
+
+            #[derive(Debug, Clone, Copy)]
+            struct TimeoutEmbedder;
+
+            impl Embedder for TimeoutEmbedder {
+                fn embed(&self, _text: &str) -> Result<Vec<f32>, AiError> {
+                    Err(AiError::Timeout)
+                }
+
+                fn embed_batch(&self, _inputs: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+                    Err(AiError::Timeout)
+                }
+            }
+
+            let mut search = EmbeddingSemanticSearch::new(TimeoutEmbedder);
+            search.index_file(PathBuf::from("a.txt"), "hello world".to_string());
+            let results = search.search("query");
+            assert!(
+                results.is_empty(),
+                "expected empty results on embed timeout"
+            );
+
+            let after = metrics.snapshot();
+            let after_index_req = after
+                .methods
+                .get(super::super::AI_SEMANTIC_SEARCH_INDEX_FILE_METRIC)
+                .map(|m| m.request_count)
+                .unwrap_or(0);
+            let after_index_timeout = after
+                .methods
+                .get(super::super::AI_SEMANTIC_SEARCH_INDEX_FILE_METRIC)
+                .map(|m| m.timeout_count)
+                .unwrap_or(0);
+            let after_search_req = after
+                .methods
+                .get(super::super::AI_SEMANTIC_SEARCH_SEARCH_METRIC)
+                .map(|m| m.request_count)
+                .unwrap_or(0);
+            let after_search_timeout = after
+                .methods
+                .get(super::super::AI_SEMANTIC_SEARCH_SEARCH_METRIC)
+                .map(|m| m.timeout_count)
+                .unwrap_or(0);
+
+            assert!(
+                after_index_req >= before_index_req.saturating_add(1),
+                "expected index_file request_count to increment"
+            );
+            assert!(
+                after_index_timeout >= before_index_timeout.saturating_add(1),
+                "expected index_file timeout_count to increment on embed timeout"
+            );
+            assert!(
+                after_search_req >= before_search_req.saturating_add(1),
+                "expected search request_count to increment"
+            );
+            assert!(
+                after_search_timeout >= before_search_timeout.saturating_add(1),
+                "expected search timeout_count to increment on embed timeout"
+            );
+        }
     }
 }
 
