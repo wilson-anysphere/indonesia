@@ -579,7 +579,7 @@ fn parse_unified_diff(diff: &str) -> Result<UnifiedDiffPatch, PatchParseError> {
         }
 
         if line.starts_with("--- ") {
-            let (file, next_idx) = parse_unified_file_block(&lines, idx)?;
+            let (file, next_idx) = parse_unified_file_block(&lines, idx, None)?;
             files.push(file);
             idx = next_idx;
             continue;
@@ -597,6 +597,17 @@ fn parse_unified_diff(diff: &str) -> Result<UnifiedDiffPatch, PatchParseError> {
     Ok(UnifiedDiffPatch { files })
 }
 
+fn should_strip_git_diff_prefixes(old_path: &str, new_path: &str) -> bool {
+    // Git-style unified diffs prefix the old/new paths with `a/` and `b/`. However, diffs can also
+    // be emitted with `git diff --no-prefix`, where the real path may start with `a/` or `b/` and
+    // must *not* be treated as a pseudo prefix.
+    //
+    // Treat the paths as git-prefixed only when both sides match the expected prefix form.
+    let old_ok = old_path == "/dev/null" || old_path.starts_with("a/");
+    let new_ok = new_path == "/dev/null" || new_path.starts_with("b/");
+    old_ok && new_ok
+}
+
 fn parse_git_file_block(
     lines: &[&str],
     start_idx: usize,
@@ -608,9 +619,11 @@ fn parse_git_file_block(
 
     let mut old_path = String::new();
     let mut new_path = String::new();
+    let mut strip_git_prefixes: Option<bool> = None;
     if let Some((old, new)) = parse_diff_git_paths(header)? {
         old_path = old;
         new_path = new;
+        strip_git_prefixes = Some(should_strip_git_diff_prefixes(&old_path, &new_path));
     }
     let mut idx = start_idx + 1;
 
@@ -643,7 +656,7 @@ fn parse_git_file_block(
 
     let mut hunks = Vec::new();
     if idx < lines.len() && lines[idx].starts_with("--- ") {
-        let (file, next_idx) = parse_unified_file_block(lines, idx)?;
+        let (file, next_idx) = parse_unified_file_block(lines, idx, strip_git_prefixes)?;
         old_path = file.old_path;
         new_path = file.new_path;
         hunks = file.hunks;
@@ -658,8 +671,10 @@ fn parse_git_file_block(
     }
 
     if !paths_already_normalized {
-        old_path = normalize_diff_path(&old_path);
-        new_path = normalize_diff_path(&new_path);
+        if strip_git_prefixes.unwrap_or(true) {
+            old_path = normalize_diff_path(&old_path);
+            new_path = normalize_diff_path(&new_path);
+        }
     }
 
     if hunks.is_empty() && old_path == new_path && old_path != "/dev/null" {
@@ -681,6 +696,7 @@ fn parse_git_file_block(
 fn parse_unified_file_block(
     lines: &[&str],
     start_idx: usize,
+    strip_git_prefixes: Option<bool>,
 ) -> Result<(UnifiedDiffFile, usize), PatchParseError> {
     let old_header = lines
         .get(start_idx)
@@ -725,8 +741,18 @@ fn parse_unified_file_block(
         idx = next_idx;
     }
 
-    let old_path = normalize_diff_path(&old_path);
-    let new_path = normalize_diff_path(&new_path);
+    let strip_git_prefixes =
+        strip_git_prefixes.unwrap_or_else(|| should_strip_git_diff_prefixes(&old_path, &new_path));
+    let old_path = if strip_git_prefixes {
+        normalize_diff_path(&old_path)
+    } else {
+        old_path
+    };
+    let new_path = if strip_git_prefixes {
+        normalize_diff_path(&new_path)
+    } else {
+        new_path
+    };
 
     if hunks.is_empty() && old_path == new_path && old_path != "/dev/null" {
         return Err(PatchParseError::InvalidDiff(format!(
@@ -1124,6 +1150,39 @@ index e69de29..4b825dc 100644
         let file = patch.files.first().expect("expected file patch");
         assert_eq!(file.old_path, "b/foo.txt");
         assert_eq!(file.new_path, "b/foo.txt");
+    }
+
+    #[test]
+    fn does_not_strip_real_b_prefix_for_no_prefix_git_diffs() {
+        // `git diff --no-prefix` emits `diff --git <path> <path>` and `--- <path>`/`+++ <path>`
+        // without the synthetic `a/` and `b/` prefixes. If the real path itself starts with `b/`,
+        // we must preserve it.
+        let diff = r#"diff --git b/foo.txt b/foo.txt
+--- b/foo.txt
++++ b/foo.txt
+@@ -1 +1 @@
+-old
++new"#;
+
+        let patch = parse_unified_diff(diff).expect("parse diff");
+        let file = patch.files.first().expect("expected file patch");
+        assert_eq!(file.old_path, "b/foo.txt");
+        assert_eq!(file.new_path, "b/foo.txt");
+    }
+
+    #[test]
+    fn does_not_strip_real_a_prefix_for_no_prefix_unified_headers() {
+        // Similar to the `b/` case above, but for a file whose real path starts with `a/`.
+        let diff = r#"--- a/foo.txt
++++ a/foo.txt
+@@ -1 +1 @@
+-old
++new"#;
+
+        let patch = parse_unified_diff(diff).expect("parse diff");
+        let file = patch.files.first().expect("expected file patch");
+        assert_eq!(file.old_path, "a/foo.txt");
+        assert_eq!(file.new_path, "a/foo.txt");
     }
 
     #[test]
