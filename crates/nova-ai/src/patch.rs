@@ -1326,4 +1326,11 @@ index e69de29..4b825dc 100644\n\
         let err = parse_structured_patch(raw).expect_err("expected failure");
         assert!(matches!(err, PatchParseError::InvalidDiff(_)));
     }
+
+    #[test]
+    fn diff_git_header_tokenization_errors_on_missing_tokens() {
+        assert!(super::parse_diff_git_paths("diff --git a/foo.txt").is_err());
+        assert!(super::parse_diff_git_paths("diff --git a/foo.txt \"b/foo.txt").is_err());
+    }
+
 }
