@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { routeWorkspaceFolderUri, type WorkspaceFolderData } from './workspaceRouting';
+import { routeWorkspaceFolderUri, type WorkspaceFolderData } from '../workspaceRouting';
 
 function makeWorkspaceFolders(): { root: string; folders: WorkspaceFolderData[] } {
   const root = process.platform === 'win32' ? 'C:\\ws' : '/ws';
@@ -229,6 +229,64 @@ describe('routeWorkspaceFolderUri', () => {
     ).toBe(folders[0].uri);
   });
 
+  it('routes projectRoot to the deepest matching workspace folder', () => {
+    const root = process.platform === 'win32' ? 'C:\\ws' : '/ws';
+    const outer = path.join(root, 'outer');
+    const inner = path.join(outer, 'inner');
+
+    const folders: WorkspaceFolderData[] = [
+      { name: 'outer', fsPath: outer, uri: pathToFileURL(outer).toString() },
+      { name: 'inner', fsPath: inner, uri: pathToFileURL(inner).toString() },
+    ];
+
+    const projectRoot = path.join(inner, 'src', 'main', 'java');
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'nova/semanticSearch',
+        params: { projectRoot },
+      }),
+    ).toBe(folders[1].uri);
+  });
+
+  it('routes by params.uri using prefix matching for non-file URI schemes', () => {
+    const folders: WorkspaceFolderData[] = [
+      { name: 'a', fsPath: '/remote/a', uri: 'vscode-remote://ssh-remote+myhost/home/user/a' },
+      { name: 'b', fsPath: '/remote/b', uri: 'vscode-remote://ssh-remote+myhost/home/user/b' },
+    ];
+
+    const fileInB = `${folders[1].uri}/src/Main.java`;
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'nova/ai/explainError',
+        params: { uri: fileInB },
+      }),
+    ).toBe(folders[1].uri);
+  });
+
+  it('treats params.projectRoot as URI routing when it is a URI string', () => {
+    const folders: WorkspaceFolderData[] = [
+      { name: 'a', fsPath: '/remote/a', uri: 'vscode-remote://ssh-remote+myhost/home/user/a' },
+      { name: 'b', fsPath: '/remote/b', uri: 'vscode-remote://ssh-remote+myhost/home/user/b' },
+    ];
+
+    const projectRoot = `${folders[1].uri}/subproject`;
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'nova/semanticSearch',
+        params: { projectRoot },
+      }),
+    ).toBe(folders[1].uri);
+  });
+
   it('routes workspace/executeCommand by arguments[].uri', () => {
     const { folders, root } = makeWorkspaceFolders();
     const fileInB = pathToFileURL(path.join(root, 'b', 'src', 'Main.java')).toString();
@@ -254,6 +312,35 @@ describe('routeWorkspaceFolderUri', () => {
         params: { command: 'nova.test', arguments: [{ projectRoot: folders[0].fsPath }] },
       }),
     ).toBe(folders[0].uri);
+  });
+
+  it('returns undefined when multi-root workspace has no hints and no active document', () => {
+    const { folders } = makeWorkspaceFolders();
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'nova/semanticSearch',
+        params: { query: 'java record equals' },
+      }),
+    ).toBeUndefined();
+  });
+
+  it('does not misclassify Windows drive-letter roots as URI schemes', () => {
+    const folders: WorkspaceFolderData[] = [
+      { name: 'a', fsPath: 'C:\\ws\\a', uri: 'file:///c:/ws/a' },
+      { name: 'b', fsPath: 'C:\\ws\\b', uri: 'file:///c:/ws/b' },
+    ];
+
+    expect(
+      routeWorkspaceFolderUri({
+        workspaceFolders: folders,
+        activeDocumentUri: undefined,
+        method: 'initialize',
+        params: { root: 'C:\\ws\\b' },
+      }),
+    ).toBe(folders[1].uri);
   });
 
   it('falls back to active document uri when params contain no routing hints', () => {
