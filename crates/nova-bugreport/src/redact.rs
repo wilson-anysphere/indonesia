@@ -30,7 +30,9 @@ fn redact_urls(input: &str) -> String {
 fn redact_bearer_tokens(input: &str) -> String {
     static BEARER_RE: OnceLock<Regex> = OnceLock::new();
     let re = BEARER_RE.get_or_init(|| {
-        Regex::new(r#"(?i)\b(authorization\s*[:=]\s*(?:bearer|basic)\s+)([^\s"']+)"#)
+        Regex::new(
+            r#"(?i)(['"]?\bauthorization\b['"]?\s*[:=]\s*['"]?\s*(?:bearer|basic)\s+)([^\s"']+)"#,
+        )
             .expect("bearer regex should compile")
     });
 
@@ -195,6 +197,16 @@ mod tests {
         assert!(out.contains("x-goog-api-key: <redacted>"));
         assert!(out.contains("api-key: <redacted>"));
         assert!(out.contains("token: <redacted>"));
+    }
+
+    #[test]
+    fn redacts_json_style_authorization_headers() {
+        let secret = "SUPERSECRET-TOKEN";
+        let input = format!(r#"{{"authorization": "Bearer {secret}"}}"#);
+        let out = redact_string(&input);
+
+        assert!(!out.contains(secret));
+        assert!(out.contains(r#""authorization": "Bearer <redacted>""#));
     }
 
     #[test]
