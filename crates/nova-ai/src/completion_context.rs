@@ -56,6 +56,8 @@ impl CompletionContextBuilder {
         // Always put the closing fence on its own line (preceded by a newline) so that a payload
         // ending in backticks cannot accidentally form a fence boundary by spanning the join.
         const FOOTER: &str = "\n```\n";
+        const HEADER_SUFFIX: &str = "\nSurrounding code:\n```java\n";
+        const IMPORTABLE_SECTION_HEADER: &str = "\nImportable symbols:\n";
 
         // Keep the formatting stable for tests and provider caching.
         let receiver_type =
@@ -63,6 +65,18 @@ impl CompletionContextBuilder {
         let expected_type =
             escape_markdown_fence_payload(ctx.expected_type.as_deref().unwrap_or("<unknown>"));
         let surrounding_code = escape_markdown_fence_payload(&ctx.surrounding_code);
+
+        // When truncation is enabled, we bound the header so that we can always preserve the
+        // closing fence and still keep the overall prompt <= max_prompt_chars.
+        //
+        // We intentionally never truncate the header mid-line; instead we stop adding list items
+        // (methods/imports) once we run out of header budget.
+        let header_budget = if self.max_prompt_chars > 0 {
+            self.max_prompt_chars.saturating_sub(FOOTER.len())
+        } else {
+            usize::MAX
+        };
+        let pre_suffix_budget = header_budget.saturating_sub(HEADER_SUFFIX.len());
 
         // ---------------------------------------------------------------------
         // Fixed header (instructions, metadata, lists, opening fence)
@@ -94,25 +108,35 @@ impl CompletionContextBuilder {
             .iter()
             .take(MultiTokenCompletionContext::MAX_AVAILABLE_METHODS)
         {
+            let escaped = escape_markdown_fence_payload(method);
+            let line_len = 2 + escaped.as_ref().len() + 1;
+            if header.len() + line_len > pre_suffix_budget {
+                break;
+            }
             header.push_str("- ");
-            header.push_str(escape_markdown_fence_payload(method).as_ref());
+            header.push_str(escaped.as_ref());
             header.push('\n');
         }
         if !ctx.importable_paths.is_empty() {
-            header.push('\n');
-            header.push_str("Importable symbols:\n");
-            for path in ctx
-                .importable_paths
-                .iter()
-                .take(MultiTokenCompletionContext::MAX_IMPORTABLE_PATHS)
-            {
-                header.push_str("- ");
-                header.push_str(escape_markdown_fence_payload(path).as_ref());
-                header.push('\n');
+            if header.len() + IMPORTABLE_SECTION_HEADER.len() <= pre_suffix_budget {
+                header.push_str(IMPORTABLE_SECTION_HEADER);
+                for path in ctx
+                    .importable_paths
+                    .iter()
+                    .take(MultiTokenCompletionContext::MAX_IMPORTABLE_PATHS)
+                {
+                    let escaped = escape_markdown_fence_payload(path);
+                    let line_len = 2 + escaped.as_ref().len() + 1;
+                    if header.len() + line_len > pre_suffix_budget {
+                        break;
+                    }
+                    header.push_str("- ");
+                    header.push_str(escaped.as_ref());
+                    header.push('\n');
+                }
             }
         }
-        header.push('\n');
-        header.push_str("Surrounding code:\n```java\n");
+        header.push_str(HEADER_SUFFIX);
 
         // ---------------------------------------------------------------------
         // Fenced body (surrounding code)
@@ -308,6 +332,46 @@ mod tests {
             prompt.match_indices("```java\n").count(),
             1,
             "expected exactly one opening fence: {prompt}"
+        );
+    }
+
+    #[test]
+    fn prompt_respects_max_prompt_chars_even_when_header_lists_are_large() {
+        let methods = (0..(MultiTokenCompletionContext::MAX_AVAILABLE_METHODS + 10))
+            .map(|idx| format!("method{idx:04}_{}", "x".repeat(80)))
+            .collect::<Vec<_>>();
+
+        let ctx = MultiTokenCompletionContext {
+            receiver_type: Some("Foo".into()),
+            expected_type: Some("Bar".into()),
+            surrounding_code: "foo.".into(),
+            available_methods: methods.clone(),
+            importable_paths: vec![],
+        };
+
+        // Small enough that the full method list would overflow the budget, but large enough to
+        // include the fixed header + fences.
+        let max_prompt_chars = 1_200usize;
+        let prompt =
+            CompletionContextBuilder::new(max_prompt_chars).build_completion_prompt(&ctx, 1);
+
+        assert!(
+            prompt.len() <= max_prompt_chars,
+            "prompt should respect max_prompt_chars (got {} > {max_prompt_chars})",
+            prompt.len()
+        );
+        assert!(
+            prompt.ends_with("```\n"),
+            "prompt should always end with a closing fence: {prompt:?}"
+        );
+        assert_eq!(
+            prompt.match_indices("```").count(),
+            2,
+            "expected exactly one opening and one closing fence: {prompt}"
+        );
+        assert!(
+            !prompt.contains(&methods[methods.len() - 1]),
+            "expected long method list to be truncated to fit header budget"
         );
     }
 }
