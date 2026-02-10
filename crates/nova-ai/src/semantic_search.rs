@@ -11,6 +11,7 @@ use nova_metrics::MetricsRegistry;
 
 const AI_SEMANTIC_SEARCH_SEARCH_METRIC: &str = "ai/semantic_search/search";
 const AI_SEMANTIC_SEARCH_INDEX_FILE_METRIC: &str = "ai/semantic_search/index_file";
+const AI_SEMANTIC_SEARCH_INDEX_PROJECT_METRIC: &str = "ai/semantic_search/index_project";
 const AI_SEMANTIC_SEARCH_FINALIZE_INDEXING_METRIC: &str = "ai/semantic_search/finalize_indexing";
 
 #[cfg(feature = "embeddings")]
@@ -99,6 +100,7 @@ pub trait SemanticSearch: Send + Sync {
     /// followed by [`SemanticSearch::index_file`] for every file returned by
     /// [`ProjectDatabase::project_files`].
     fn index_project(&mut self, db: &dyn ProjectDatabase) {
+        let _guard = MetricGuard::new(AI_SEMANTIC_SEARCH_INDEX_PROJECT_METRIC);
         self.clear();
         for path in db.project_files() {
             let Some(text) = db.file_text(&path) else {
@@ -106,6 +108,7 @@ pub trait SemanticSearch: Send + Sync {
             };
             self.index_file(path, text);
         }
+        self.finalize_indexing();
     }
 
     /// Convenience helper to index a `nova_db::Database`.
@@ -231,7 +234,9 @@ pub fn semantic_search_from_config(
 pub struct NoopSemanticSearch;
 
 impl SemanticSearch for NoopSemanticSearch {
-    fn index_project(&mut self, _db: &dyn ProjectDatabase) {}
+    fn index_project(&mut self, _db: &dyn ProjectDatabase) {
+        let _guard = MetricGuard::new(AI_SEMANTIC_SEARCH_INDEX_PROJECT_METRIC);
+    }
 
     fn index_file(&mut self, _path: PathBuf, _text: String) {
         let _guard = MetricGuard::new(AI_SEMANTIC_SEARCH_INDEX_FILE_METRIC);
@@ -1997,6 +2002,8 @@ mod embeddings {
         }
 
         fn index_project(&mut self, db: &dyn ProjectDatabase) {
+            let _guard =
+                super::MetricGuard::new(super::AI_SEMANTIC_SEARCH_INDEX_PROJECT_METRIC);
             // Bulk indexing is often triggered during project open/refresh. Pre-build the HNSW
             // structure here so the first `search()` call doesn't pay the full rebuild cost.
             self.clear();

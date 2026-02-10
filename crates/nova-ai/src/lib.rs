@@ -399,6 +399,11 @@ mod tests {
         let metrics = nova_metrics::MetricsRegistry::global();
 
         let before_snapshot = metrics.snapshot();
+        let before_index_project = before_snapshot
+            .methods
+            .get("ai/semantic_search/index_project")
+            .map(|m| m.request_count)
+            .unwrap_or(0);
         let before_index = before_snapshot
             .methods
             .get("ai/semantic_search/index_file")
@@ -420,6 +425,11 @@ mod tests {
         let _results = search.search("hello");
 
         let after_snapshot = metrics.snapshot();
+        let after_index_project = after_snapshot
+            .methods
+            .get("ai/semantic_search/index_project")
+            .map(|m| m.request_count)
+            .unwrap_or(0);
         let after_index = after_snapshot
             .methods
             .get("ai/semantic_search/index_file")
@@ -431,6 +441,10 @@ mod tests {
             .map(|m| m.request_count)
             .unwrap_or(0);
 
+        assert!(
+            after_index_project >= before_index_project.saturating_add(1),
+            "expected ai/semantic_search/index_project to record requests"
+        );
         assert!(
             after_index >= before_index.saturating_add(2),
             "expected ai/semantic_search/index_file to record at least one update per indexed file"
