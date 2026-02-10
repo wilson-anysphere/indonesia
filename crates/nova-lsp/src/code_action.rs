@@ -1110,6 +1110,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn generate_method_body_rejects_unified_diff_patch_outside_insert_range() {
+        let patch = r#"diff --git a/Example.java b/Example.java
+--- a/Example.java
++++ b/Example.java
+@@ -1,5 +1,6 @@
++// not allowed
+ public class Example {
+     public int add(int a, int b) {
+         return 0;
+     }
+ }
+"#;
+
+        let provider = MockAiProvider::new(vec![Ok(patch.into())]);
+        let mut config = CodeGenerationConfig::default();
+        config.allow_repair = false;
+        config.max_repair_attempts = 0;
+
+        let executor = AiCodeActionExecutor::new(&provider, config, AiPrivacyConfig::default());
+        let workspace = example_workspace();
+        let cancel = CancellationToken::new();
+
+        let err = executor
+            .execute(example_action(), &workspace, &root_uri(), &cancel, None)
+            .await
+            .unwrap_err();
+        assert_eq!(provider.call_count(), 1);
+
+        match err {
+            CodeActionError::Codegen(CodeGenerationError::EditRangeSafety(message)) => assert!(
+                message.contains("outside the allowed range"),
+                "expected range-safety message, got: {message}"
+            ),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn generate_method_body_accepts_unified_diff_patch_within_insert_range() {
+        let patch = r#"diff --git a/Example.java b/Example.java
+--- a/Example.java
++++ b/Example.java
+@@ -1,5 +1,5 @@
+ public class Example {
+     public int add(int a, int b) {
+-        return 0;
++        return a + b;
+     }
+ }
+"#;
+
+        let provider = MockAiProvider::new(vec![Ok(patch.into())]);
+        let mut config = CodeGenerationConfig::default();
+        config.allow_repair = false;
+        config.max_repair_attempts = 0;
+
+        let executor = AiCodeActionExecutor::new(&provider, config, AiPrivacyConfig::default());
+        let workspace = example_workspace();
+        let cancel = CancellationToken::new();
+
+        let outcome = executor
+            .execute(example_action(), &workspace, &root_uri(), &cancel, None)
+            .await
+            .expect("success");
+        assert_eq!(provider.call_count(), 1);
+
+        let CodeActionOutcome::WorkspaceEdit(edit) = outcome else {
+            panic!("expected workspace edit");
+        };
+        let changes = edit.changes.expect("changes");
+        let uri = crate::workspace_edit::join_uri(&root_uri(), Path::new("Example.java"));
+        let edits = changes.get(&uri).expect("edit for file");
+        assert_eq!(edits.len(), 1);
+        assert!(edits[0].new_text.contains("return a + b;"));
+    }
+
+    #[tokio::test]
     async fn cancellation_stops_repair_loop() {
         let invalid_patch = r#"{
   "edits": [
