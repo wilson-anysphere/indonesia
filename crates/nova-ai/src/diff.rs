@@ -144,6 +144,18 @@ where
         };
         let mut candidates = raw_paths.paths;
 
+        // Git diffs support `--src-prefix` / `--dst-prefix`, which can change the default `a/` and
+        // `b/` pseudo prefixes to arbitrary strings. These prefixes are not typically part of the
+        // repository-relative path patterns used by `excluded_paths`.
+        //
+        // Best-effort: if we have both an old and new path, also consider their common suffix
+        // (split on `/`) as an exclusion match candidate.
+        if candidates.len() == 2 {
+            if let Some(suffix) = common_path_suffix(&candidates[0], &candidates[1]) {
+                candidates.push(suffix);
+            }
+        }
+
         // Also consider `rename from/to` and `copy from/to` metadata within the section. This
         // prevents bypasses where the `diff --git` header paths are truncated or inconsistent
         // with the rest of the section.
@@ -317,6 +329,42 @@ fn count_unified_file_headers(lines: &[&str]) -> usize {
         }
     }
     count
+}
+
+fn common_path_suffix(old: &str, new: &str) -> Option<String> {
+    let old = old.trim();
+    let new = new.trim();
+    if old.is_empty() || new.is_empty() {
+        return None;
+    }
+    if old == "/dev/null" || new == "/dev/null" {
+        return None;
+    }
+
+    let old_parts: Vec<&str> = old.split('/').filter(|part| !part.is_empty()).collect();
+    let new_parts: Vec<&str> = new.split('/').filter(|part| !part.is_empty()).collect();
+    if old_parts.is_empty() || new_parts.is_empty() {
+        return None;
+    }
+
+    let mut common = Vec::<&str>::new();
+    let mut i = old_parts.len();
+    let mut j = new_parts.len();
+    while i > 0 && j > 0 {
+        if old_parts[i - 1] != new_parts[j - 1] {
+            break;
+        }
+        common.push(old_parts[i - 1]);
+        i -= 1;
+        j -= 1;
+    }
+
+    if common.is_empty() {
+        return None;
+    }
+
+    common.reverse();
+    Some(common.join("/"))
 }
 
 fn parse_git_section_paths_fallback(section: &[&str]) -> Option<DiffSectionPaths> {

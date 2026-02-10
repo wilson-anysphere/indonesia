@@ -183,6 +183,42 @@ index 0000000..1111111 100644
 }
 
 #[test]
+fn git_diff_custom_src_dst_prefixes_are_stripped_for_exclusion_matching() {
+    // Git can customize `a/` and `b/` prefixes via `--src-prefix` / `--dst-prefix`. Ensure we can
+    // still match repo-relative excluded_paths by considering the common suffix of old/new paths.
+    let excluded_path = "src/secrets/Secret.java";
+
+    let excluded_section = r#"diff --git old/src/secrets/Secret.java new/src/secrets/Secret.java
+index 0000000..1111111 100644
+--- old/src/secrets/Secret.java
++++ new/src/secrets/Secret.java
+@@ -1 +1 @@
+-old
++CUSTOM_PREFIX_SECRET
+"#;
+
+    let allowed_section = r#"diff --git a/src/Ok.java b/src/Ok.java
+index 2222222..3333333 100644
+--- a/src/Ok.java
++++ b/src/Ok.java
+@@ -1 +1 @@
+-class Ok {}
++class Ok { int x = 13; }
+"#;
+
+    let diff = format!("{excluded_section}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("CUSTOM_PREFIX_SECRET"));
+    assert!(filtered.contains(allowed_section));
+}
+
+#[test]
 fn git_diff_unquoted_paths_with_backslashes_are_not_unescaped() {
     // Some diffs may contain literal backslashes in file names (valid on Unix) when
     // `core.quotePath=false`. These must be treated as literal characters, not C-style escapes.
