@@ -294,13 +294,9 @@ impl FrameworkDatabase for FrameworkIdeDatabase {
         let names = index.binary_names_sorted();
         let has_match = |prefix: &str| {
             let start = names.partition_point(|name| name.as_str() < prefix);
-            for name in &names[start..] {
-                if name.starts_with(prefix) {
-                    return true;
-                }
-                break;
-            }
-            false
+            names
+                .get(start)
+                .is_some_and(|name| name.starts_with(prefix))
         };
 
         if prefix.contains('/') {
