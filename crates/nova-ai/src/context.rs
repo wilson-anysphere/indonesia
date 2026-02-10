@@ -497,6 +497,10 @@ impl ContextRequest {
         query: &str,
         max_results: usize,
     ) -> Self {
+        if max_results == 0 || query.trim().is_empty() {
+            return self;
+        }
+
         self.related_code = search
             .search(query)
             .into_iter()

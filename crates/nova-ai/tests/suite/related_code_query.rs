@@ -163,3 +163,34 @@ fn related_code_query_avoids_path_segments() {
         "expected query to retain non-path identifiers, got: {query}"
     );
 }
+
+#[test]
+fn related_code_query_skips_empty_queries() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for empty related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let req = base_request("").with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for empty focal code"
+    );
+
+    let req = base_request("   \n\t").with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for whitespace-only focal code"
+    );
+
+    // Explicitly verify the `max_results=0` early-return path as well.
+    let req = base_request("something").with_related_code_from_focal(&search, 0);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code when max_results=0"
+    );
+}
