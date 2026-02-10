@@ -119,6 +119,12 @@ enum AiCommand {
 
 #[derive(Args)]
 struct AiModelsArgs {
+    /// Workspace root / target directory (defaults to current directory).
+    ///
+    /// This is used for config discovery.
+    #[arg(long, default_value = ".")]
+    path: PathBuf,
+
     /// Emit JSON suitable for CI
     #[arg(long)]
     json: bool,
@@ -748,8 +754,8 @@ fn workspace_root_for_config_discovery(cli: &Cli) -> PathBuf {
         Command::Diagnostics(args) => Some(args.path.as_path()),
         Command::Symbols(args) => Some(args.path.as_path()),
         Command::Ai(args) => match &args.command {
+            AiCommand::Models(args) => Some(args.path.as_path()),
             AiCommand::Review(args) => Some(args.path.as_path()),
-            _ => None,
         },
         Command::Cache(args) => match &args.command {
             CacheCommand::Clean(args) | CacheCommand::Status(args) | CacheCommand::Warm(args) => {
