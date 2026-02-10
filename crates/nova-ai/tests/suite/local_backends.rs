@@ -103,6 +103,31 @@ fn ollama_config(url: Url) -> AiConfig {
     }
 }
 
+fn http_config(url: Url) -> AiConfig {
+    AiConfig {
+        provider: AiProviderConfig {
+            kind: AiProviderKind::Http,
+            url,
+            model: "test-model".to_string(),
+            azure_deployment: None,
+            azure_api_version: None,
+            max_tokens: 128,
+            temperature: None,
+            timeout_ms: 500,
+            retry_max_retries: 2,
+            retry_initial_backoff_ms: 200,
+            retry_max_backoff_ms: 2_000,
+            concurrency: Some(1),
+            in_process_llama: None,
+        },
+        privacy: AiPrivacyConfig {
+            ..AiPrivacyConfig::default()
+        },
+        enabled: true,
+        ..AiConfig::default()
+    }
+}
+
 #[test]
 fn local_only_allows_loopback_urls() {
     let url = Url::parse("http://localhost:11434").expect("valid url");
@@ -675,6 +700,123 @@ async fn openai_compatible_stream_parses_sse_line_split_across_chunks() {
         output.push_str(&item.unwrap());
     }
     assert_eq!(output, "Hello");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn http_provider_streaming_parsing_and_request_format() {
+    let (body_tx, mut body_rx) = mpsc::channel::<Value>(1);
+
+    let handler = move |req: Request<Body>| {
+        let body_tx = body_tx.clone();
+        async move {
+            if req.uri().path() != "/complete" {
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Body::empty())
+                    .unwrap();
+            }
+
+            let bytes = hyper::body::to_bytes(req.into_body())
+                .await
+                .expect("read body");
+            let json: Value = serde_json::from_slice(&bytes).expect("parse json");
+            let _ = body_tx.send(json).await;
+
+            let chunks = vec![
+                Ok::<_, std::io::Error>(hyper::body::Bytes::from(
+                    "data: {\"completion\":\"Hello\"}\n\n",
+                )),
+                Ok::<_, std::io::Error>(hyper::body::Bytes::from(
+                    "data: {\"completion\":\" world\"}\n\n",
+                )),
+                Ok::<_, std::io::Error>(hyper::body::Bytes::from("data: [DONE]\n\n")),
+            ];
+
+            Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(Body::wrap_stream(iter(chunks)))
+                .unwrap()
+        }
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}/complete")).unwrap();
+    let client = AiClient::from_config(&http_config(url)).unwrap();
+
+    let mut stream = client
+        .chat_stream(
+            ChatRequest {
+                messages: vec![ChatMessage::user("hi")],
+                max_tokens: Some(5),
+                temperature: Some(0.2),
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let mut output = String::new();
+    while let Some(item) = stream.next().await {
+        output.push_str(&item.unwrap());
+    }
+    assert_eq!(output, "Hello world");
+
+    let body = body_rx.recv().await.expect("request body");
+    assert_eq!(body["stream"], true);
+    assert_eq!(body["model"], "test-model");
+    assert!(body["prompt"].as_str().unwrap_or_default().contains("User:"));
+    assert_eq!(body["max_tokens"], 5);
+    let temp = body["temperature"]
+        .as_f64()
+        .expect("temperature should be a JSON number");
+    assert!((temp - 0.2).abs() < 1e-6, "unexpected temperature: {temp}");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn http_provider_streaming_falls_back_to_json_body_when_response_is_not_sse() {
+    let handler = move |req: Request<Body>| async move {
+        if req.uri().path() != "/complete" {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::empty())
+                .unwrap();
+        }
+
+        let _ = hyper::body::to_bytes(req.into_body())
+            .await
+            .expect("read request body");
+
+        Response::builder()
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"completion":"ok"}"#))
+            .unwrap()
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}/complete")).unwrap();
+    let client = AiClient::from_config(&http_config(url)).unwrap();
+
+    let mut stream = client
+        .chat_stream(
+            ChatRequest {
+                messages: vec![ChatMessage::user("hi")],
+                max_tokens: Some(5),
+                temperature: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let mut chunks = Vec::new();
+    while let Some(item) = stream.next().await {
+        chunks.push(item.unwrap());
+    }
+    assert_eq!(chunks, vec!["ok".to_string()]);
 
     handle.abort();
 }
