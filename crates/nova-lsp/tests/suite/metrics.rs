@@ -4,14 +4,37 @@ use nova_metrics::MetricsSnapshot;
 use serde_json::json;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use crate::support::{read_response_with_id, write_jsonrpc_message};
 
 #[test]
 fn stdio_server_exposes_metrics_snapshot() {
     let _lock = crate::support::stdio_server_lock();
+
+    let workspace = tempfile::tempdir().expect("temp workspace");
+    let root = workspace.path();
+
+    let file_path = root.join("Foo.java");
+    std::fs::write(&file_path, "class Foo { void bar() {} }\n").expect("write Foo.java");
+
+    let config_path = root.join("nova.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[ai]
+enabled = true
+
+[ai.features]
+semantic_search = true
+"#,
+    )
+    .expect("write nova.toml");
+
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -27,7 +50,10 @@ fn stdio_server_exposes_metrics_snapshot() {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
-            "params": { "capabilities": {} }
+            "params": {
+                "capabilities": {},
+                "rootUri": crate::support::file_uri_string(root),
+            }
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
@@ -36,27 +62,70 @@ fn stdio_server_exposes_metrics_snapshot() {
         &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
     );
 
-    // Trigger a couple more methods so the snapshot isn't empty.
-    let uri = "file:///test/Foo.java";
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": { "textDocument": { "uri": uri, "text": "class Foo{}\n" } }
-        }),
-    );
+    // Wait for background semantic-search workspace indexing to finish so the indexing metrics are
+    // recorded before we snapshot `nova/metrics`.
+    let mut indexing_done = false;
+    for attempt in 0..200 {
+        let id = 10 + attempt;
+        write_jsonrpc_message(
+            &mut stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "nova/semanticSearch/indexStatus",
+                "params": null,
+            }),
+        );
+        let resp = read_response_with_id(&mut stdout, id);
+        let result = resp.get("result").cloned().expect("indexStatus result");
+        let done = result
+            .get("done")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if done {
+            indexing_done = true;
+            break;
+        }
 
+        // If indexing never started, fail early with the server's reason to avoid long timeouts.
+        let current = result
+            .get("currentRunId")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        if current == 0 {
+            let reason = result
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<missing>");
+            panic!("expected semantic-search indexing to start, got reason: {reason}");
+        }
+
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(indexing_done, "timed out waiting for workspace indexing");
+
+    // Trigger semantic search itself so the AI search metric is recorded.
     write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
             "id": 2,
+            "method": "nova/semanticSearch/search",
+            "params": { "query": "Foo", "limit": 5 },
+        }),
+    );
+    let _search_resp = read_response_with_id(&mut stdout, 2);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
             "method": "nova/metrics",
             "params": null
         }),
     );
-    let metrics_resp = read_response_with_id(&mut stdout, 2);
+    let metrics_resp = read_response_with_id(&mut stdout, 3);
     let result = metrics_resp.get("result").cloned().expect("result");
     let snapshot: MetricsSnapshot = serde_json::from_value(result).expect("decode snapshot");
 
@@ -68,12 +137,40 @@ fn stdio_server_exposes_metrics_snapshot() {
             .is_some_and(|m| m.request_count > 0),
         "expected initialize to be recorded"
     );
+    assert!(
+        snapshot
+            .methods
+            .get("ai/semantic_search/index_file")
+            .is_some_and(|m| m.request_count > 0),
+        "expected semantic-search index_file to be recorded"
+    );
+    assert!(
+        snapshot
+            .methods
+            .get("ai/semantic_search/search")
+            .is_some_and(|m| m.request_count > 0),
+        "expected semantic-search search to be recorded"
+    );
+    assert!(
+        snapshot
+            .methods
+            .get("lsp/semantic_search/workspace_index")
+            .is_some_and(|m| m.request_count > 0),
+        "expected workspace-indexing duration metric to be recorded"
+    );
+    assert!(
+        snapshot
+            .methods
+            .get("lsp/semantic_search/workspace_index/file")
+            .is_some_and(|m| m.request_count > 0),
+        "expected workspace-indexing file count metric to be recorded"
+    );
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 

@@ -2,10 +2,35 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use crate::AiError;
 use nova_core::ProjectDatabase;
 use nova_fuzzy::{fuzzy_match, MatchKind};
+use nova_metrics::MetricsRegistry;
+
+const AI_SEMANTIC_SEARCH_SEARCH_METRIC: &str = "ai/semantic_search/search";
+const AI_SEMANTIC_SEARCH_INDEX_FILE_METRIC: &str = "ai/semantic_search/index_file";
+
+struct MetricGuard {
+    metric: &'static str,
+    started_at: Instant,
+}
+
+impl MetricGuard {
+    fn new(metric: &'static str) -> Self {
+        Self {
+            metric,
+            started_at: Instant::now(),
+        }
+    }
+}
+
+impl Drop for MetricGuard {
+    fn drop(&mut self) {
+        MetricsRegistry::global().record_request(self.metric, self.started_at.elapsed());
+    }
+}
 
 /// A single semantic search match.
 #[derive(Debug, Clone, PartialEq)]
@@ -190,7 +215,12 @@ pub struct NoopSemanticSearch;
 impl SemanticSearch for NoopSemanticSearch {
     fn index_project(&mut self, _db: &dyn ProjectDatabase) {}
 
+    fn index_file(&mut self, _path: PathBuf, _text: String) {
+        let _guard = MetricGuard::new(AI_SEMANTIC_SEARCH_INDEX_FILE_METRIC);
+    }
+
     fn search(&self, _query: &str) -> Vec<SearchResult> {
+        let _guard = MetricGuard::new(AI_SEMANTIC_SEARCH_SEARCH_METRIC);
         Vec::new()
     }
 }
@@ -225,6 +255,7 @@ impl SemanticSearch for TrigramSemanticSearch {
     }
 
     fn index_file(&mut self, path: PathBuf, text: String) {
+        let _guard = MetricGuard::new(AI_SEMANTIC_SEARCH_INDEX_FILE_METRIC);
         let (normalized, trigrams) = Self::index_text(&text);
         self.docs.insert(
             path,
@@ -241,6 +272,7 @@ impl SemanticSearch for TrigramSemanticSearch {
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
+        let _guard = MetricGuard::new(AI_SEMANTIC_SEARCH_SEARCH_METRIC);
         let normalized_query = normalize(query);
         let query_trigrams = unique_sorted_trigrams(&normalized_query);
 
@@ -1941,6 +1973,8 @@ mod embeddings {
         }
 
         fn index_file(&mut self, path: PathBuf, text: String) {
+            let _guard =
+                super::MetricGuard::new(super::AI_SEMANTIC_SEARCH_INDEX_FILE_METRIC);
             let mut changed = false;
 
             if let Some(existing) = self.docs_by_path.remove(&path) {
@@ -2133,6 +2167,7 @@ mod embeddings {
         }
 
         fn search(&self, query: &str) -> Vec<SearchResult> {
+            let _guard = super::MetricGuard::new(super::AI_SEMANTIC_SEARCH_SEARCH_METRIC);
             let mut query_embedding = match self.embedder.embed(query) {
                 Ok(embedding) => embedding,
                 Err(err) => {

@@ -2,11 +2,23 @@ use crate::ServerState;
 
 use lsp_types::Uri as LspUri;
 use nova_db::FileId as DbFileId;
+use nova_metrics::MetricsRegistry;
 use serde_json::json;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
+
+const SEMANTIC_SEARCH_WORKSPACE_INDEX_METRIC: &str = "lsp/semantic_search/workspace_index";
+const SEMANTIC_SEARCH_WORKSPACE_INDEX_FILE_METRIC: &str =
+    "lsp/semantic_search/workspace_index/file";
+const SEMANTIC_SEARCH_WORKSPACE_INDEX_SKIPPED_SAFE_MODE_METRIC: &str =
+    "lsp/semantic_search/workspace_index/skipped_safe_mode";
+const SEMANTIC_SEARCH_WORKSPACE_INDEX_SKIPPED_MISSING_ROOT_METRIC: &str =
+    "lsp/semantic_search/workspace_index/skipped_missing_workspace_root";
+const SEMANTIC_SEARCH_WORKSPACE_INDEX_SKIPPED_RUNTIME_UNAVAILABLE_METRIC: &str =
+    "lsp/semantic_search/workspace_index/skipped_runtime_unavailable";
 
 #[derive(Debug, Default)]
 pub(super) struct SemanticSearchWorkspaceIndexStatus {
@@ -271,15 +283,29 @@ impl ServerState {
             return;
         }
 
+        let metrics = MetricsRegistry::global();
+
         let (safe_mode, _) = nova_lsp::hardening::safe_mode_snapshot();
         if safe_mode {
+            metrics.record_request(
+                SEMANTIC_SEARCH_WORKSPACE_INDEX_SKIPPED_SAFE_MODE_METRIC,
+                Duration::ZERO,
+            );
             return;
         }
 
         let Some(root) = self.project_root.clone() else {
+            metrics.record_request(
+                SEMANTIC_SEARCH_WORKSPACE_INDEX_SKIPPED_MISSING_ROOT_METRIC,
+                Duration::ZERO,
+            );
             return;
         };
         if !root.is_dir() {
+            metrics.record_request(
+                SEMANTIC_SEARCH_WORKSPACE_INDEX_SKIPPED_MISSING_ROOT_METRIC,
+                Duration::ZERO,
+            );
             return;
         }
 
@@ -287,6 +313,10 @@ impl ServerState {
             // Semantic search can still work without the AI runtime, but workspace indexing is
             // intentionally best-effort. Callers without a runtime (e.g. AI misconfigured) will
             // fall back to open-document indexing.
+            metrics.record_request(
+                SEMANTIC_SEARCH_WORKSPACE_INDEX_SKIPPED_RUNTIME_UNAVAILABLE_METRIC,
+                Duration::ZERO,
+            );
             return;
         };
 
@@ -348,6 +378,7 @@ impl ServerState {
         let cancel = self.semantic_search_workspace_index_cancel.clone();
         let runtime = self.runtime.as_ref().expect("checked runtime");
         runtime.spawn_blocking(move || {
+            let run_started_at = Instant::now();
             let mut indexed_files = 0u64;
             let mut indexed_bytes = 0u64;
 
@@ -414,6 +445,7 @@ impl ServerState {
                     break;
                 }
 
+                let file_started_at = Instant::now();
                 let text = match std::fs::read_to_string(&path) {
                     Ok(text) => text,
                     Err(_) => continue,
@@ -470,6 +502,10 @@ impl ServerState {
                 indexed_bytes = indexed_bytes.saturating_add(len);
                 status.indexed_files.store(indexed_files, Ordering::SeqCst);
                 status.indexed_bytes.store(indexed_bytes, Ordering::SeqCst);
+                MetricsRegistry::global().record_request(
+                    SEMANTIC_SEARCH_WORKSPACE_INDEX_FILE_METRIC,
+                    file_started_at.elapsed(),
+                );
             }
 
             // Avoid races with reindexing: if a newer run has been started, do not overwrite the
@@ -481,6 +517,10 @@ impl ServerState {
                         .unwrap_or_else(|err| err.into_inner());
                     search.finalize_indexing();
                 }
+                MetricsRegistry::global().record_request(
+                    SEMANTIC_SEARCH_WORKSPACE_INDEX_METRIC,
+                    run_started_at.elapsed(),
+                );
                 status.completed_run_id.store(run_id, Ordering::SeqCst);
             }
         });
