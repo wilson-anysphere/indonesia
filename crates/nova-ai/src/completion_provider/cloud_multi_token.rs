@@ -491,3 +491,63 @@ fn preview(text: &str) -> String {
     let prefix: String = trimmed.chars().take(max).collect();
     format!("{prefix}…")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reverse_map() -> ReverseIdentifierMap {
+        let mut reverse = ReverseIdentifierMap::new();
+        reverse.insert("id_0".to_string(), "Secret".to_string());
+        reverse
+    }
+
+    #[test]
+    fn rewrites_identifiers_in_code() {
+        let reverse = reverse_map();
+        let out = crate::anonymizer::deanonymize_java_like_code("id_0.foo()", &reverse);
+        assert_eq!(out, "Secret.foo()");
+    }
+
+    #[test]
+    fn does_not_rewrite_inside_string_literals() {
+        let reverse = reverse_map();
+        let out = crate::anonymizer::deanonymize_java_like_code(
+            r#"System.out.println("id_0");"#,
+            &reverse,
+        );
+        assert_eq!(out, r#"System.out.println("id_0");"#);
+    }
+
+    #[test]
+    fn does_not_rewrite_inside_line_comments() {
+        let reverse = reverse_map();
+        let out = crate::anonymizer::deanonymize_java_like_code("// id_0\nid_0.foo()", &reverse);
+        assert_eq!(out, "// id_0\nSecret.foo()");
+    }
+
+    #[test]
+    fn does_not_rewrite_inside_block_comments() {
+        let reverse = reverse_map();
+        let out = crate::anonymizer::deanonymize_java_like_code("/* id_0 */ id_0.foo()", &reverse);
+        assert_eq!(out, "/* id_0 */ Secret.foo()");
+    }
+
+    #[test]
+    fn escaped_quotes_in_strings_and_chars_do_not_break_scanner() {
+        let reverse = reverse_map();
+        let input = r#"char q = '\''; String s = "a\"id_0\""; id_0.foo();"#;
+        let out = crate::anonymizer::deanonymize_java_like_code(input, &reverse);
+        assert_eq!(
+            out,
+            r#"char q = '\''; String s = "a\"id_0\""; Secret.foo();"#
+        );
+    }
+
+    #[test]
+    fn rewrites_only_identifier_segments_in_qualified_names() {
+        let reverse = reverse_map();
+        let out = crate::anonymizer::deanonymize_java_like_code("java.util.id_0", &reverse);
+        assert_eq!(out, "java.util.Secret");
+    }
+}
