@@ -114,6 +114,8 @@ struct AiArgs {
 enum AiCommand {
     /// List models (best effort) or validate backend connectivity.
     Models(AiModelsArgs),
+    /// Print effective AI configuration + feature gating without starting the LSP.
+    Status(AiStatusArgs),
     /// Review a unified diff (from stdin, a file, or `git diff`) using the configured AI backend.
     Review(AiReviewArgs),
     /// Run an offline semantic-search query against the configured semantic-search engine.
@@ -157,6 +159,19 @@ struct AiReviewArgs {
     staged: bool,
 
     /// Emit JSON suitable for scripting: `{ "review": "..." }`.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct AiStatusArgs {
+    /// Workspace root / target directory (defaults to current directory).
+    ///
+    /// This is used for config discovery.
+    #[arg(long, default_value = ".")]
+    path: PathBuf,
+
+    /// Emit JSON suitable for CI
     #[arg(long)]
     json: bool,
 }
@@ -779,6 +794,7 @@ fn workspace_root_for_config_discovery(cli: &Cli) -> PathBuf {
         Command::Symbols(args) => Some(args.path.as_path()),
         Command::Ai(args) => match &args.command {
             AiCommand::Models(args) => Some(args.path.as_path()),
+            AiCommand::Status(args) => Some(args.path.as_path()),
             AiCommand::Review(args) => Some(args.path.as_path()),
             AiCommand::SemanticSearch(args) => Some(args.path.as_path()),
         },
@@ -1290,6 +1306,100 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
                     for model in models {
                         println!("{model}");
                     }
+                }
+
+                Ok(0)
+            }
+            AiCommand::Status(args) => {
+                let env_truthy = |name: &str| {
+                    matches!(
+                        std::env::var(name).as_deref(),
+                        Ok("1") | Ok("true") | Ok("TRUE")
+                    )
+                };
+
+                let disable_ai = env_truthy("NOVA_DISABLE_AI");
+                let disable_ai_completions = env_truthy("NOVA_DISABLE_AI_COMPLETIONS");
+                let disable_ai_code_actions = env_truthy("NOVA_DISABLE_AI_CODE_ACTIONS");
+                let disable_ai_code_review = env_truthy("NOVA_DISABLE_AI_CODE_REVIEW");
+
+                let privacy = nova_ai::PrivacyMode::from_ai_privacy_config(&config.ai.privacy);
+                let configured = config.ai.enabled && AiClient::from_config(&config.ai).is_ok();
+
+                let payload = serde_json::json!({
+                    "enabled": config.ai.enabled,
+                    "configured": configured,
+                    "providerKind": &config.ai.provider.kind,
+                    "model": &config.ai.provider.model,
+                    "privacy": {
+                        "localOnly": config.ai.privacy.local_only,
+                        "anonymizeIdentifiers": privacy.anonymize_identifiers,
+                        "includeFilePaths": privacy.include_file_paths,
+                        "excludedPathsCount": config.ai.privacy.excluded_paths.len(),
+                    },
+                    "features": {
+                        "completion_ranking": config.ai.features.completion_ranking,
+                        "semantic_search": config.ai.features.semantic_search,
+                        "multi_token_completion": config.ai.features.multi_token_completion,
+                        "explain_errors": config.ai.features.explain_errors,
+                        "code_actions": config.ai.features.code_actions,
+                        "code_review": config.ai.features.code_review,
+                        "code_review_max_diff_chars": config.ai.features.code_review_max_diff_chars,
+                    },
+                    "cacheEnabled": config.ai.cache_enabled,
+                    "auditLogEnabled": config.ai.audit_log.enabled,
+                    "envOverrides": {
+                        "disableAi": disable_ai,
+                        "disableAiCompletions": disable_ai_completions,
+                        "disableAiCodeActions": disable_ai_code_actions,
+                        "disableAiCodeReview": disable_ai_code_review,
+                    }
+                });
+
+                if args.json {
+                    print_output(&payload, true)?;
+                } else {
+                    let provider_kind = serde_json::to_value(&config.ai.provider.kind)
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_string))
+                        .unwrap_or_else(|| format!("{:?}", config.ai.provider.kind));
+
+                    println!(
+                        "AI: enabled={} configured={} providerKind={} model={}",
+                        config.ai.enabled, configured, provider_kind, config.ai.provider.model
+                    );
+                    println!(
+                        "Privacy: localOnly={} anonymizeIdentifiers={} includeFilePaths={} excludedPathsCount={}",
+                        config.ai.privacy.local_only,
+                        privacy.anonymize_identifiers,
+                        privacy.include_file_paths,
+                        config.ai.privacy.excluded_paths.len(),
+                    );
+                    println!(
+                        "Features: completion_ranking={} semantic_search={} multi_token_completion={} explain_errors={} code_actions={} code_review={} code_review_max_diff_chars={}",
+                        config.ai.features.completion_ranking,
+                        config.ai.features.semantic_search,
+                        config.ai.features.multi_token_completion,
+                        config.ai.features.explain_errors,
+                        config.ai.features.code_actions,
+                        config.ai.features.code_review,
+                        config.ai.features.code_review_max_diff_chars,
+                    );
+                    println!(
+                        "Cache: enabled={} auditLogEnabled={}",
+                        config.ai.cache_enabled, config.ai.audit_log.enabled
+                    );
+                    println!(
+                        "Env overrides: disableAi={} disableAiCompletions={} disableAiCodeActions={} disableAiCodeReview={}",
+                        disable_ai,
+                        disable_ai_completions,
+                        disable_ai_code_actions,
+                        disable_ai_code_review
+                    );
+                    println!();
+                    println!(
+                        "Hint: edit nova.toml keys `ai.enabled`, `ai.provider.kind`, `ai.provider.model`, `ai.privacy.*`, `ai.features.*`."
+                    );
                 }
 
                 Ok(0)

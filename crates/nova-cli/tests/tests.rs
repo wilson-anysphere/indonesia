@@ -174,3 +174,4 @@ fn maven_resolver_cli_smoke() {
         "src/main/java/org/eclipse/aether/RepositorySystem.java",
     );
 }
+
