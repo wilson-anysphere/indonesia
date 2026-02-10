@@ -48,18 +48,6 @@ fn provider_for_server(server: &MockServer) -> CloudMultiTokenCompletionProvider
         })
 }
 
-fn provider_for_server_with_privacy(
-    server: &MockServer,
-    privacy: PrivacyMode,
-) -> CloudMultiTokenCompletionProvider {
-    let cfg = http_config(server);
-    let client = Arc::new(AiClient::from_config(&cfg).unwrap());
-    CloudMultiTokenCompletionProvider::new(client)
-        .with_max_output_tokens(50)
-        .with_temperature(0.1)
-        .with_privacy_mode(privacy)
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn sends_prompt_with_context_and_parses_raw_json() {
     let server = MockServer::start();
@@ -101,25 +89,11 @@ async fn sends_prompt_with_context_and_parses_raw_json() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn cloud_multi_token_is_disabled_when_identifier_anonymization_is_enabled() {
-    let server = MockServer::start();
-    let mock = server.mock(|when, then| {
-        when.method(POST).path("/complete");
-        then.status(200)
-            .json_body(json!({ "completion": "{\"completions\":[]}" }));
-    });
+async fn anonymizes_prompt_and_deanonymizes_completion_when_identifier_anonymization_is_enabled() {
+    let secret = "SecretIdentifier";
+    let llm = Arc::new(PromptEchoLlm::default());
 
-    let ctx = MultiTokenCompletionContext {
-        receiver_type: Some("Stream<Person>".into()),
-        expected_type: Some("List<String>".into()),
-        surrounding_code: "people.stream().".into(),
-        available_methods: vec!["filter".into(), "getSecretToken".into(), "collect".into()],
-        importable_paths: vec!["com.example.SecretTokenProvider".into()],
-    };
-    let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx, 3);
-
-    let provider = provider_for_server_with_privacy(
-        &server,
+    let provider = CloudMultiTokenCompletionProvider::new(llm.clone()).with_privacy_mode(
         PrivacyMode {
             anonymize_identifiers: true,
             include_file_paths: false,
@@ -127,19 +101,122 @@ async fn cloud_multi_token_is_disabled_when_identifier_anonymization_is_enabled(
         },
     );
 
+    let ctx = MultiTokenCompletionContext {
+        receiver_type: Some(secret.into()),
+        expected_type: Some(secret.into()),
+        surrounding_code: format!("{secret}."),
+        available_methods: vec![secret.into()],
+        importable_paths: vec![format!("java.util.{secret}")],
+    };
+    let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx, 1);
+
     let out = provider
         .complete_multi_token(MultiTokenCompletionRequest {
             prompt,
-            max_items: 3,
+            max_items: 1,
             timeout: Duration::from_secs(1),
             cancel: CancellationToken::new(),
         })
         .await
         .expect("provider call succeeds");
 
-    // Privacy gate: no network calls, empty suggestions.
-    assert!(out.is_empty());
-    mock.assert_hits(0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].label, secret);
+    assert_eq!(out[0].insert_text, secret);
+    assert_eq!(out[0].format, MultiTokenInsertTextFormat::PlainText);
+    assert_eq!(
+        out[0].additional_edits,
+        vec![nova_ai::AdditionalEdit::AddImport {
+            path: format!("java.util.{secret}")
+        }]
+    );
+
+    let captured = llm
+        .prompt
+        .lock()
+        .expect("prompt mutex")
+        .clone()
+        .expect("captured prompt");
+    assert!(
+        !captured.contains(secret),
+        "expected prompt to be anonymized; leaked identifier: {captured}"
+    );
+    assert!(
+        captured.contains("Receiver type: id_0"),
+        "expected receiver type to be anonymized: {captured}"
+    );
+    assert!(
+        captured.contains("Expected type: id_0"),
+        "expected expected type to be anonymized: {captured}"
+    );
+    assert!(
+        captured.contains("- id_0"),
+        "expected available method to be anonymized: {captured}"
+    );
+    assert!(
+        captured.contains("- java.util.id_0"),
+        "expected importable symbol to be anonymized: {captured}"
+    );
+    assert!(
+        captured.contains("```java\nid_0.\n```"),
+        "expected surrounding code to be anonymized: {captured}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reapplies_clamps_after_deanonymization() {
+    let long_secret = "SecretIdentifierWithAVeryLongNameThatShouldBeClamped_".repeat(4);
+    assert!(long_secret.chars().count() > 120);
+
+    let llm = Arc::new(PromptEchoLlm::default());
+    let provider = CloudMultiTokenCompletionProvider::new(llm).with_privacy_mode(PrivacyMode {
+        anonymize_identifiers: true,
+        include_file_paths: false,
+        ..PrivacyMode::default()
+    });
+
+    // Force a tiny insert_text clamp so the anonymized completion ("id_0") fits, but the
+    // de-anonymized completion would exceed the limit unless we clamp again.
+    let provider = provider.with_max_insert_text_chars(16);
+
+    let ctx = MultiTokenCompletionContext {
+        receiver_type: Some(long_secret.clone()),
+        expected_type: Some(long_secret.clone()),
+        surrounding_code: format!("{long_secret}."),
+        available_methods: vec![long_secret.clone()],
+        importable_paths: vec![format!("java.util.{long_secret}")],
+    };
+    let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx, 1);
+
+    let out = provider
+        .complete_multi_token(MultiTokenCompletionRequest {
+            prompt,
+            max_items: 1,
+            timeout: Duration::from_secs(1),
+            cancel: CancellationToken::new(),
+        })
+        .await
+        .expect("provider call succeeds");
+
+    assert_eq!(out.len(), 1);
+    assert!(
+        out[0].label.chars().count() <= 120,
+        "label should be clamped after de-anonymization"
+    );
+    assert!(
+        out[0].insert_text.chars().count() <= 16,
+        "insert_text should be clamped after de-anonymization"
+    );
+    assert!(
+        !out[0].label.contains("id_"),
+        "expected label to be de-anonymized; got: {:?}",
+        out[0].label
+    );
+    assert!(
+        !out[0].insert_text.contains("id_"),
+        "expected insert_text to be de-anonymized; got: {:?}",
+        out[0].insert_text
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -216,6 +293,45 @@ impl LlmClient for CapturingLlm {
         *self.prompt.lock().expect("prompt mutex") = Some(content);
 
         Ok(r#"{"completions":[{"label":"x","insert_text":"y","format":"plain","additional_edits":[],"confidence":0.5}]}"#.to_string())
+    }
+
+    async fn chat_stream(
+        &self,
+        _request: ChatRequest,
+        _cancel: CancellationToken,
+    ) -> Result<AiStream, AiError> {
+        Err(AiError::UnexpectedResponse(
+            "streaming not supported in test".into(),
+        ))
+    }
+
+    async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+        Ok(Vec::new())
+    }
+}
+
+#[derive(Default)]
+struct PromptEchoLlm {
+    prompt: std::sync::Mutex<Option<String>>,
+}
+
+#[async_trait::async_trait]
+impl LlmClient for PromptEchoLlm {
+    async fn chat(
+        &self,
+        request: ChatRequest,
+        _cancel: CancellationToken,
+    ) -> Result<String, AiError> {
+        let content = request
+            .messages
+            .first()
+            .map(|msg| msg.content.clone())
+            .unwrap_or_default();
+        *self.prompt.lock().expect("prompt mutex") = Some(content);
+
+        // The prompt is anonymized in privacy mode, so we can safely return placeholders and let
+        // the provider de-anonymize before returning to the IDE.
+        Ok(r#"{"completions":[{"label":"id_0","insert_text":"id_0","format":"plain","additional_edits":[{"add_import":"java.util.id_0"}],"confidence":0.5}]}"#.to_string())
     }
 
     async fn chat_stream(

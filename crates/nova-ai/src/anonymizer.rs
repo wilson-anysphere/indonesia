@@ -58,6 +58,23 @@ impl CodeAnonymizer {
         }
     }
 
+    /// Returns the identifier mapping collected so far (`original -> anonymized`).
+    pub fn identifier_map(&self) -> &HashMap<String, String> {
+        &self.name_map
+    }
+
+    /// Returns a reverse identifier mapping (`anonymized -> original`).
+    ///
+    /// This is useful for prompt pipelines that need to de-anonymize LLM output
+    /// before returning it to the user.
+    pub fn reverse_identifier_map(&self) -> HashMap<String, String> {
+        let mut out = HashMap::with_capacity(self.name_map.len());
+        for (original, anon) in &self.name_map {
+            out.insert(anon.clone(), original.clone());
+        }
+        out
+    }
+
     pub fn anonymize(&mut self, code: &str) -> String {
         let mut out = String::with_capacity(code.len());
 

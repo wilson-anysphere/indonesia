@@ -8,9 +8,9 @@ use crate::{
 use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::Value;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::debug;
 
 #[derive(Clone)]
 pub struct CloudMultiTokenCompletionProvider {
@@ -18,7 +18,6 @@ pub struct CloudMultiTokenCompletionProvider {
     max_output_tokens: u32,
     temperature: f32,
     privacy: PrivacyMode,
-    anonymization_gate_warned: Arc<AtomicBool>,
     max_insert_text_chars: usize,
     max_label_chars: usize,
     max_additional_edits: usize,
@@ -48,7 +47,6 @@ impl CloudMultiTokenCompletionProvider {
                 include_file_paths: false,
                 ..PrivacyMode::default()
             },
-            anonymization_gate_warned: Arc::new(AtomicBool::new(false)),
             max_insert_text_chars: 4_096,
             max_label_chars: 120,
             max_additional_edits: 8,
@@ -87,23 +85,7 @@ impl MultiTokenCompletionProvider for CloudMultiTokenCompletionProvider {
                 return Ok(Vec::new());
             }
 
-            // Privacy policy: cloud multi-token completion prompts include project-specific
-            // identifier lists (available methods + importable symbols). These cannot be
-            // anonymized/reversed safely today, so refuse in this mode to avoid leaking raw
-            // identifiers when `ai.privacy.anonymize_identifiers=true` (the default in cloud
-            // mode).
-            if self.privacy.anonymize_identifiers {
-                if !self.anonymization_gate_warned.swap(true, Ordering::Relaxed) {
-                    warn!(
-                        "cloud multi-token completions are disabled when identifier anonymization is enabled \
-                         (ai.privacy.anonymize_identifiers=true). \
-                         To enable cloud multi-token completions, set ai.privacy.anonymize_identifiers=false."
-                    );
-                }
-                return Ok(Vec::new());
-            }
-
-            let sanitized_prompt = sanitize_prompt(&request.prompt, &self.privacy);
+            let (sanitized_prompt, reverse_map) = sanitize_prompt(&request.prompt, &self.privacy);
             let full_prompt = format!("{sanitized_prompt}\n\n{}", json_instructions(max_items));
 
             // Use a child token so dropping this request cancels only this request (and not the
@@ -128,13 +110,24 @@ impl MultiTokenCompletionProvider for CloudMultiTokenCompletionProvider {
                     .map_err(|_| AiProviderError::Timeout)?
                     .map_err(map_ai_error)?
             };
-            Ok(parse_completions(
+            let mut completions = parse_completions(
                 &response,
                 max_items,
                 self.max_insert_text_chars,
                 self.max_label_chars,
                 self.max_additional_edits,
-            ))
+            );
+
+            if let Some(reverse_map) = reverse_map {
+                deanonymize_completions(
+                    &mut completions,
+                    &reverse_map,
+                    self.max_insert_text_chars,
+                    self.max_label_chars,
+                );
+            }
+
+            Ok(completions)
         })
     }
 }
@@ -147,7 +140,9 @@ fn map_ai_error(err: AiError) -> AiProviderError {
     }
 }
 
-fn sanitize_prompt(prompt: &str, privacy: &PrivacyMode) -> String {
+type ReverseIdentifierMap = HashMap<String, String>;
+
+fn sanitize_prompt(prompt: &str, privacy: &PrivacyMode) -> (String, Option<ReverseIdentifierMap>) {
     // Always apply literal redaction to reduce the chance of leaking tokens or IDs.
     let mut out = redact_suspicious_literals(prompt, &privacy.redaction);
 
@@ -157,13 +152,23 @@ fn sanitize_prompt(prompt: &str, privacy: &PrivacyMode) -> String {
     }
 
     if privacy.anonymize_identifiers {
-        out = anonymize_prompt_context(&out, privacy.redaction.redact_comments);
+        let (anonymized, reverse_map) =
+            anonymize_prompt_context(&out, privacy.redaction.redact_comments);
+        debug!(
+            reverse_map_len = reverse_map.len(),
+            "cloud multi-token completion prompt anonymized identifiers"
+        );
+        out = anonymized;
+        return (out, Some(reverse_map));
     }
 
-    out
+    (out, None)
 }
 
-fn anonymize_prompt_context(prompt: &str, redact_comments: bool) -> String {
+fn anonymize_prompt_context(
+    prompt: &str,
+    redact_comments: bool,
+) -> (String, ReverseIdentifierMap) {
     // The completion prompt has a stable structure: only anonymize the values in the
     // semantic-context sections (types + surrounding code) so we don't corrupt the
     // instructions or the structured output schema below.
@@ -178,6 +183,7 @@ fn anonymize_prompt_context(prompt: &str, redact_comments: bool) -> String {
     let mut lines = prompt.lines();
     let mut in_java_block = false;
     let mut java_block = String::new();
+    let mut list_section: Option<ListSection> = None;
 
     while let Some(line) = lines.next() {
         if in_java_block {
@@ -215,6 +221,40 @@ fn anonymize_prompt_context(prompt: &str, redact_comments: bool) -> String {
             continue;
         }
 
+        if line == "Available methods:" {
+            list_section = Some(ListSection::AvailableMethods);
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+
+        if line == "Importable symbols:" {
+            list_section = Some(ListSection::ImportableSymbols);
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+
+        if list_section.is_some() && line.trim_start().starts_with("- ") {
+            let indent_len = line.len() - line.trim_start().len();
+            let indent = &line[..indent_len];
+            let rest = &line[indent_len..];
+            if let Some(value) = rest.strip_prefix("- ") {
+                let sanitized = anonymizer.anonymize(value);
+                out.push_str(indent);
+                out.push_str("- ");
+                out.push_str(&sanitized);
+                out.push('\n');
+                continue;
+            }
+        } else if list_section.is_some() && line.trim().is_empty() {
+            // Blank line ends the list section.
+            list_section = None;
+        } else if list_section.is_some() && !line.trim_start().starts_with("- ") {
+            // A non-bullet line ends the list section; fall through to normal handling.
+            list_section = None;
+        }
+
         if line.trim() == "```java" {
             in_java_block = true;
             out.push_str("```java\n");
@@ -229,7 +269,80 @@ fn anonymize_prompt_context(prompt: &str, redact_comments: bool) -> String {
         out.push_str(&anonymizer.anonymize(&java_block));
     }
 
+    (out, anonymizer.reverse_identifier_map())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListSection {
+    AvailableMethods,
+    ImportableSymbols,
+}
+
+fn deanonymize_completions(
+    completions: &mut [MultiTokenCompletion],
+    reverse_map: &ReverseIdentifierMap,
+    max_insert_text_chars: usize,
+    max_label_chars: usize,
+) {
+    for completion in completions {
+        completion.label = clamp_chars(
+            deanonymize_identifiers(&completion.label, reverse_map),
+            max_label_chars,
+        );
+        completion.insert_text = clamp_chars(
+            deanonymize_identifiers(&completion.insert_text, reverse_map),
+            max_insert_text_chars,
+        );
+
+        for edit in &mut completion.additional_edits {
+            match edit {
+                AdditionalEdit::AddImport { path } => {
+                    *path = deanonymize_identifiers(path, reverse_map);
+                }
+            }
+        }
+    }
+}
+
+fn deanonymize_identifiers(text: &str, reverse_map: &ReverseIdentifierMap) -> String {
+    if reverse_map.is_empty() || text.is_empty() {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if is_ident_start(ch) {
+            let mut ident = String::new();
+            ident.push(ch);
+            while let Some(&next) = chars.peek() {
+                if is_ident_continue(next) {
+                    ident.push(next);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+
+            if let Some(original) = reverse_map.get(&ident) {
+                out.push_str(original);
+            } else {
+                out.push_str(&ident);
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+
     out
+}
+
+fn is_ident_start(c: char) -> bool {
+    c == '_' || c == '$' || c.is_ascii_alphabetic()
+}
+
+fn is_ident_continue(c: char) -> bool {
+    is_ident_start(c) || c.is_ascii_digit()
 }
 
 fn json_instructions(max_items: usize) -> String {
