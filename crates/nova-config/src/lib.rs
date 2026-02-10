@@ -1051,11 +1051,11 @@ pub enum AiProviderKind {
     /// Streaming response (optional): providers may reply using Server-Sent Events (SSE) with
     /// `Content-Type: text/event-stream`.
     ///
-    /// Each chunk is emitted as:
-    /// `data: {"completion":"..."}`
+    /// Each chunk is emitted as a separate SSE event (terminated by a blank line), e.g.:
+    /// `data: {"completion":"..."}\n\n`
     ///
     /// The stream terminates with:
-    /// `data: [DONE]`
+    /// `data: [DONE]\n\n`
     ///
     /// Fallback: if the response is not SSE, Nova reads a single JSON response body
     /// (`{ "completion": "..." }`) and yields it as one chunk.

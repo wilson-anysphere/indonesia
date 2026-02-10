@@ -530,8 +530,9 @@ and **tests**.
   If the server responds with SSE (`Content-Type: text/event-stream`), Nova accepts the following
   format:
 
-  - `data: {"completion":"..."}` for each chunk
-  - `data: [DONE]` terminator
+  - `data: {"completion":"..."}` for each chunk (each SSE event must be terminated by a blank line,
+    i.e. `\n\n`)
+  - `data: [DONE]` terminator (also terminated by a blank line)
 
   If the response is not SSE, Nova falls back to reading a single JSON response body and yields it
   as one chunk (to preserve compatibility with non-streaming proxies).
