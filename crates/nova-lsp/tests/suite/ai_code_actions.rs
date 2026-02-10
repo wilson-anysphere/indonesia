@@ -1291,6 +1291,177 @@ fn stdio_server_nova_ai_generate_method_body_request_returns_null_and_applies_wo
 }
 
 #[test]
+fn stdio_server_nova_ai_generate_method_body_accepts_boundary_deletion_patch() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let root_uri = uri_for_path(root);
+
+    let file_rel = "Test.java";
+    let file_path = root.join(file_rel);
+    let file_uri = uri_for_path(&file_path);
+    let source = "class Test { int answer() { } }\n";
+    std::fs::write(&file_path, source).expect("write Test.java");
+
+    let selection = "int answer() { }";
+    let start_offset = source.find(selection).expect("selection start");
+    let end_offset = start_offset + selection.len();
+    let open_brace_offset = start_offset
+        + selection
+            .find('{')
+            .expect("expected method selection to include '{'");
+    let close_brace_offset = start_offset
+        + selection
+            .rfind('}')
+            .expect("expected method selection to include '}'");
+
+    let pos = TextPos::new(source);
+    let selection_start = pos
+        .lsp_position(start_offset)
+        .expect("selection start pos");
+    let selection_end = pos.lsp_position(end_offset).expect("selection end pos");
+    let insert_start = pos
+        .lsp_position(open_brace_offset + 1)
+        .expect("insert start pos");
+    let insert_end = pos.lsp_position(close_brace_offset).expect("insert end pos");
+
+    // Delete the space between `{` and `}`. This is within the allowed method-body range, but
+    // would be rejected by implementations that validate `AppliedPatch.touched_ranges` (output
+    // offsets) because empty insert spans are expanded by ±1 byte.
+    let patch = json!({
+        "edits": [{
+            "file": file_rel,
+            "range": { "start": insert_start, "end": insert_end },
+            "text": ""
+        }]
+    })
+    .to_string();
+    let ai_server = crate::support::TestAiServer::start(json!({ "completion": patch }));
+    let endpoint = format!("{}/complete", ai_server.base_url());
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .current_dir(root)
+        .env_remove("NOVA_CONFIG")
+        .env_remove("NOVA_CONFIG_PATH")
+        .env("NOVA_AI_PROVIDER", "http")
+        .env("NOVA_AI_ENDPOINT", &endpoint)
+        .env("NOVA_AI_MODEL", "default")
+        .env("NOVA_AI_LOCAL_ONLY", "1")
+        .env("NOVA_AI_ANONYMIZE_IDENTIFIERS", "0")
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "rootUri": root_uri, "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": source
+                }
+            }
+        }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/generateMethodBody",
+            "params": {
+                "methodSignature": "int answer()",
+                "context": null,
+                "uri": file_uri,
+                "range": Range::new(selection_start, selection_end)
+            }
+        }),
+    );
+
+    let mut apply_edit = None;
+    let resp = loop {
+        let msg = read_jsonrpc_message(&mut stdout);
+        if msg.get("method").and_then(|v| v.as_str()) == Some("workspace/applyEdit") {
+            let id = msg.get("id").cloned().expect("applyEdit id");
+            apply_edit = Some(msg.clone());
+            write_jsonrpc_message(
+                &mut stdin,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "applied": true }
+                }),
+            );
+            continue;
+        }
+        if msg.get("id").and_then(|v| v.as_i64()) == Some(2) {
+            break msg;
+        }
+    };
+
+    assert!(
+        resp.get("error").is_none(),
+        "expected nova/ai/generateMethodBody success, got: {resp:#?}"
+    );
+    assert_eq!(
+        resp.get("result"),
+        Some(&serde_json::Value::Null),
+        "expected nova/ai/generateMethodBody result to be JSON null"
+    );
+
+    let apply_edit = apply_edit.expect("server emitted workspace/applyEdit request");
+    assert_eq!(
+        apply_edit.pointer("/params/label").and_then(|v| v.as_str()),
+        Some("AI: Generate method body"),
+        "unexpected workspace/applyEdit label: {apply_edit:#?}"
+    );
+
+    ai_server.assert_hits(1);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_nova_ai_generate_method_body_includes_method_signature_and_context_in_prompt() {
     let _lock = crate::support::stdio_server_lock();
 
