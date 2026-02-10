@@ -486,7 +486,9 @@ url = "http://localhost:11434"
 # Default max tokens for responses (used when callers don't provide `max_tokens`).
 max_tokens = 1024
 
-# Total request budget (including retries + backoff).
+# Request timeout (in milliseconds).
+# - Non-streaming (`chat`): total request budget (including retries + backoff).
+# - Streaming (`chat_stream`): idle timeout between chunks (and also bounds response establishment).
 timeout_ms = 60000
 
 # Optional default sampling temperature applied when callers don't set `temperature`.
@@ -501,8 +503,8 @@ retry_initial_backoff_ms = 200
 retry_max_backoff_ms = 2000
 ```
 
-Note: retries are always bounded by `ai.provider.timeout_ms`—Nova clamps each retry's backoff delay
-to the remaining timeout budget.
+Note: for **non-streaming** requests, retries are always bounded by `ai.provider.timeout_ms`—Nova
+clamps each retry's backoff delay to the remaining timeout budget.
 
 #### HTTP provider (`kind = "http"`)
 

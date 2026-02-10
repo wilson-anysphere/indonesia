@@ -1223,7 +1223,7 @@ expression: schema
           "minimum": 0.0
         },
         "timeout_ms": {
-          "description": "Per-request timeout.",
+          "description": "Per-request timeout (in milliseconds).\n\nFor non-streaming requests (`chat`), this bounds the total request duration.\n\nFor streaming requests (`chat_stream`), this is treated as an *idle timeout* while reading the stream (maximum time between chunks) and as a timeout for establishing the response (send + headers). It does **not** cap the total stream duration as long as chunks keep arriving.",
           "default": 60000,
           "type": "integer",
           "format": "uint64",
