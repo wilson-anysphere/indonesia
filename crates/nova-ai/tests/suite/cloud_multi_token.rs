@@ -192,9 +192,9 @@ async fn cloud_multi_token_round_trips_identifier_anonymization_and_deanonymizat
         });
 
     let ctx = MultiTokenCompletionContext {
-        receiver_type: Some("SecretReceiver".into()),
-        expected_type: Some("SecretExpected".into()),
-        surrounding_code: "SecretVar.".into(),
+        receiver_type: Some("SecretTokenProvider".into()),
+        expected_type: Some("SecretTokenProvider".into()),
+        surrounding_code: "SecretTokenProvider.".into(),
         available_methods: vec!["getSecretToken".into(), "filter".into()],
         importable_paths: vec!["com.example.SecretTokenProvider".into()],
     };
@@ -240,8 +240,8 @@ async fn cloud_multi_token_round_trips_identifier_anonymization_and_deanonymizat
     );
 
     assert_eq!(out.len(), 1);
-    assert_eq!(out[0].label, "SecretReceiver -> SecretExpected");
-    assert_eq!(out[0].insert_text, "getSecretToken(SecretVar)");
+    assert_eq!(out[0].label, "SecretTokenProvider -> SecretTokenProvider");
+    assert_eq!(out[0].insert_text, "getSecretToken(SecretTokenProvider)");
     assert_eq!(
         out[0].additional_edits,
         vec![AdditionalEdit::AddImport {
@@ -529,16 +529,8 @@ impl LlmClient for AnonymizationRoundTripLlm {
             "expected prompt to not leak raw import path\n{prompt}"
         );
         assert!(
-            !prompt.contains("SecretReceiver"),
-            "expected prompt to not leak raw receiver type identifier\n{prompt}"
-        );
-        assert!(
-            !prompt.contains("SecretExpected"),
-            "expected prompt to not leak raw expected type identifier\n{prompt}"
-        );
-        assert!(
-            !prompt.contains("SecretVar"),
-            "expected prompt to not leak raw surrounding code identifier\n{prompt}"
+            !prompt.contains("SecretTokenProvider"),
+            "expected prompt to not leak raw identifier that appears in multiple sections\n{prompt}"
         );
         assert!(
             prompt.contains("id_"),
@@ -551,6 +543,32 @@ impl LlmClient for AnonymizationRoundTripLlm {
         let import_token = extract_first_section_bullet(&prompt, "Importable symbols:");
         let code_line = extract_first_code_block_line(&prompt, "```java");
         let code_token = extract_first_identifier_token(&code_line);
+
+        // Stable per-request mapping: when receiver/expected/code identifiers are anonymized into
+        // placeholders, the same original identifier should map to the same placeholder across all
+        // prompt sections. (Stdlib identifiers may be preserved and thus won't have placeholders.)
+        let receiver_is_placeholder = receiver_token.contains("id_");
+        let expected_is_placeholder = expected_token.contains("id_");
+        let code_is_placeholder = code_token.contains("id_");
+
+        if receiver_is_placeholder && expected_is_placeholder {
+            assert_eq!(
+                receiver_token, expected_token,
+                "expected receiver/expected types to share placeholder\n{prompt}"
+            );
+        }
+        if receiver_is_placeholder && code_is_placeholder {
+            assert_eq!(
+                receiver_token, code_token,
+                "expected fenced code identifier to share placeholder\n{prompt}"
+            );
+        }
+        if receiver_is_placeholder {
+            assert!(
+                import_token.ends_with(&format!(".{receiver_token}")),
+                "expected import path to end with receiver placeholder\n{prompt}"
+            );
+        }
         assert!(
             method_token.contains("id_"),
             "expected available method to be anonymized\n{prompt}"
