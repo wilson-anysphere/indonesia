@@ -30,6 +30,9 @@ async fn ollama_provider_embeddings_prefers_batch_embed_endpoint() {
     config.enabled = true;
     config.embeddings.enabled = true;
     config.embeddings.backend = AiEmbeddingsBackend::Provider;
+    // Avoid cross-test / cross-run interference from the on-disk embeddings cache (enabled by
+    // default via `ai.embeddings.model_dir`).
+    config.embeddings.model_dir = std::path::PathBuf::new();
     config.embeddings.model = Some("test-embed-model".to_string());
     config.provider.kind = AiProviderKind::Ollama;
     config.provider.url = Url::parse(&server.base_url()).unwrap();
@@ -72,6 +75,8 @@ async fn ollama_provider_embeddings_supports_base_url_with_api_suffix() {
     config.enabled = true;
     config.embeddings.enabled = true;
     config.embeddings.backend = AiEmbeddingsBackend::Provider;
+    // Avoid cross-test / cross-run interference from the on-disk embeddings cache.
+    config.embeddings.model_dir = std::path::PathBuf::new();
     config.embeddings.model = Some("test-embed-model".to_string());
     config.provider.kind = AiProviderKind::Ollama;
     config.provider.url = Url::parse(&format!("{}/api", server.base_url())).unwrap();
@@ -132,6 +137,7 @@ async fn ollama_provider_embeddings_falls_back_to_legacy_embeddings_endpoint() {
     config.enabled = true;
     config.embeddings.enabled = true;
     config.embeddings.backend = AiEmbeddingsBackend::Provider;
+    config.embeddings.model_dir = std::path::PathBuf::new();
     config.provider.kind = AiProviderKind::Ollama;
     config.provider.url = Url::parse(&server.base_url()).unwrap();
     config.provider.model = "test-provider-model".to_string();
@@ -185,6 +191,7 @@ async fn ollama_provider_embeddings_caches_embed_endpoint_probe_when_missing() {
     config.enabled = true;
     config.embeddings.enabled = true;
     config.embeddings.backend = AiEmbeddingsBackend::Provider;
+    config.embeddings.model_dir = std::path::PathBuf::new();
     config.provider.kind = AiProviderKind::Ollama;
     config.provider.url = Url::parse(&server.base_url()).unwrap();
     config.provider.model = "test-provider-model".to_string();
