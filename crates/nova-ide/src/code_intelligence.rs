@@ -10865,7 +10865,7 @@ fn infer_call_return_type(
     }
 
     let (receiver_ty, call_kind) =
-        infer_call_receiver_lexical(&mut types, analysis, &file_ctx, text, call);
+        infer_call_receiver_lexical(&mut types, analysis, &file_ctx, text, call, 6);
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
         return fallback_receiver_type_for_call(call.name.as_str());
     }
@@ -10928,6 +10928,7 @@ fn infer_call_receiver_lexical(
     file_ctx: &CompletionResolveCtx,
     text: &str,
     call: &CallExpr,
+    budget: u8,
 ) -> (Type, CallKind) {
     if let Some(receiver) = call.receiver.as_deref() {
         let (mut receiver_ty, call_kind) =
@@ -10958,7 +10959,7 @@ fn infer_call_receiver_lexical(
 
         // Handle common complex receivers like `new Foo().bar()`.
         if let Some(receiver_ty) =
-            infer_receiver_type_of_expr_ending_at(types, analysis, file_ctx, text, dot_offset)
+            infer_receiver_type_of_expr_ending_at(types, analysis, file_ctx, text, dot_offset, budget)
         {
             let receiver_ty = ensure_local_class_receiver(types, analysis, receiver_ty);
             return (receiver_ty, CallKind::Instance);
@@ -10989,7 +10990,12 @@ fn infer_receiver_type_of_expr_ending_at(
     file_ctx: &CompletionResolveCtx,
     text: &str,
     expr_end: usize,
+    budget: u8,
 ) -> Option<Type> {
+    if budget == 0 {
+        return None;
+    }
+
     let end = skip_whitespace_backwards(text, expr_end);
     if end == 0 {
         return None;
@@ -11010,13 +11016,24 @@ fn infer_receiver_type_of_expr_ending_at(
             ));
         }
 
-        // Best-effort: avoid recursive semantic resolution to keep completion fast.
+        // Fast path for common call-chain receivers where we can infer a well-known type without
+        // running full overload resolution.
         if let Some(ty) = fallback_receiver_type_for_call(call.name.as_str()) {
             let resolved = match ty.as_str() {
                 "Stream" => parse_source_type_in_context(types, file_ctx, "java.util.stream.Stream"),
                 other => parse_source_type_in_context(types, file_ctx, other),
             };
             return Some(resolved);
+        }
+
+        // Best-effort semantic resolution for chained calls like:
+        // `people.stream().filter(...).map(...).<cursor>`.
+        //
+        // We keep a small recursion budget to avoid pathological/infinite recursion on malformed
+        // input while still providing useful multi-step call-chain inference.
+        if let Some(ty) = infer_call_return_type_in_store(types, analysis, file_ctx, text, call, budget)
+        {
+            return Some(ty);
         }
     }
 
@@ -11036,6 +11053,12 @@ fn infer_receiver_type_of_expr_ending_at(
             };
             return Some(resolved);
         }
+
+        if let Some(ty) =
+            infer_call_return_type_in_store(types, analysis, file_ctx, text, &call, budget)
+        {
+            return Some(ty);
+        }
     }
 
     // Parenthesized expression like `(foo)`.
@@ -11046,6 +11069,64 @@ fn infer_receiver_type_of_expr_ending_at(
     match ty {
         Type::Unknown | Type::Error => None,
         other => Some(other),
+    }
+}
+
+fn infer_call_return_type_in_store(
+    types: &mut TypeStore,
+    analysis: &Analysis,
+    file_ctx: &CompletionResolveCtx,
+    text: &str,
+    call: &CallExpr,
+    budget: u8,
+) -> Option<Type> {
+    if budget == 0 {
+        return None;
+    }
+
+    // `new Foo()` is tokenized as an `Ident` call (`Foo(` ... `)`), but for completion purposes
+    // we want the constructed type, not overload resolution.
+    if is_constructor_call(analysis, call) {
+        return Some(parse_source_type_in_context(
+            types,
+            file_ctx,
+            call.name.as_str(),
+        ));
+    }
+
+    let (receiver_ty, call_kind) = infer_call_receiver_lexical(
+        types,
+        analysis,
+        file_ctx,
+        text,
+        call,
+        budget.saturating_sub(1),
+    );
+    if matches!(receiver_ty, Type::Unknown | Type::Error) {
+        return None;
+    }
+
+    ensure_type_methods_loaded(types, &receiver_ty);
+    let args = call
+        .arg_starts
+        .iter()
+        .map(|start| infer_expr_type_at(types, analysis, file_ctx, *start))
+        .collect::<Vec<_>>();
+
+    let method_call = MethodCall {
+        receiver: receiver_ty,
+        call_kind,
+        name: call.name.as_str(),
+        args,
+        expected_return: None,
+        explicit_type_args: Vec::new(),
+    };
+
+    let mut ctx = TyContext::new(&*types);
+    match nova_types::resolve_method_call(&mut ctx, &method_call) {
+        MethodResolution::Found(method) => Some(method.return_type),
+        MethodResolution::Ambiguous(methods) => methods.candidates.into_iter().next().map(|m| m.return_type),
+        MethodResolution::NotFound(_) => None,
     }
 }
 
@@ -17970,11 +18051,12 @@ fn expected_argument_type_for_completion(
     text: &str,
     offset: usize,
 ) -> Option<Type> {
+    ensure_minimal_completion_jdk(types);
     let (call, active_parameter) = call_expr_for_argument_list(analysis, offset)?;
 
     let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
     let (receiver_ty, call_kind) =
-        infer_call_receiver_lexical(types, analysis, &file_ctx, text, call);
+        infer_call_receiver_lexical(types, analysis, &file_ctx, text, call, 4);
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
         return None;
     }
@@ -20650,6 +20732,41 @@ class A {
             .find("filter(null).")
             .expect("expected `filter(null).` in fixture")
             + "filter(null)".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        let base = ty
+            .as_deref()
+            .unwrap_or_default()
+            .split('<')
+            .next()
+            .unwrap_or_default();
+        assert!(
+            base.ends_with("Stream"),
+            "expected receiver type to end with `Stream`, got {ty:?}"
+        );
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_stream_for_chained_map_call() {
+        let java = r#"
+import java.util.List;
+
+class A {
+  void m() {
+    List<String> people = List.of();
+    people.stream().filter(null).map(null).
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("map(null).")
+            .expect("expected `map(null).` in fixture")
+            + "map(null)".len();
 
         let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
         let base = ty
