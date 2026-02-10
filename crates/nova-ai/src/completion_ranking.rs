@@ -108,6 +108,7 @@ pub struct LlmCompletionRanker {
     max_candidates: usize,
     max_prompt_chars: usize,
     max_label_chars: usize,
+    max_detail_chars: usize,
     max_prefix_chars: usize,
     max_line_chars: usize,
     max_output_tokens: u32,
@@ -120,6 +121,7 @@ impl std::fmt::Debug for LlmCompletionRanker {
             .field("max_candidates", &self.max_candidates)
             .field("max_prompt_chars", &self.max_prompt_chars)
             .field("max_label_chars", &self.max_label_chars)
+            .field("max_detail_chars", &self.max_detail_chars)
             .field("max_prefix_chars", &self.max_prefix_chars)
             .field("max_line_chars", &self.max_line_chars)
             .field("max_output_tokens", &self.max_output_tokens)
@@ -135,6 +137,7 @@ impl LlmCompletionRanker {
             max_candidates: 20,
             max_prompt_chars: 8_192,
             max_label_chars: 120,
+            max_detail_chars: 200,
             max_prefix_chars: 80,
             max_line_chars: 400,
             max_output_tokens: 96,
@@ -187,12 +190,18 @@ impl LlmCompletionRanker {
         out.push_str("Candidates:\n```java\n");
         for (id, item) in candidates.iter().enumerate() {
             let label = sanitize_label(&item.label, self.max_label_chars);
+            let detail = item
+                .detail
+                .as_deref()
+                .and_then(|detail| sanitize_detail(detail, self.max_detail_chars));
             // Kind is not sensitive but keep the whole candidate payload within the code fence so
             // identifier anonymization/redaction can safely apply to labels.
-            out.push_str(&format!(
-                "{id}: {} {label}\n",
-                completion_kind_label(item.kind)
-            ));
+            out.push_str(&format!("{id}: {} {label}", completion_kind_label(item.kind)));
+            if let Some(detail) = detail {
+                out.push_str(" — ");
+                out.push_str(&detail);
+            }
+            out.push('\n');
         }
         out.push_str("```\n\n");
 
@@ -321,6 +330,24 @@ fn sanitize_label(label: &str, max_chars: usize) -> String {
     let out = label.replace(['\n', '\r'], " ");
     let escaped = escape_markdown_fence_payload(&out);
     truncate_chars(escaped.as_ref(), max_chars)
+}
+
+fn sanitize_detail(detail: &str, max_chars: usize) -> Option<String> {
+    let detail = detail.trim();
+    if detail.is_empty() {
+        return None;
+    }
+
+    // File paths are considered sensitive. Drop detail strings that look like filesystem paths
+    // (LSP servers sometimes include file locations in `.detail`).
+    if detail.contains('/') || detail.contains('\\') {
+        return None;
+    }
+
+    // Details are usually single-line but be defensive.
+    let out = detail.replace(['\n', '\r'], " ");
+    let escaped = escape_markdown_fence_payload(&out);
+    Some(truncate_chars(escaped.as_ref(), max_chars))
 }
 
 fn sanitize_code_block(text: &str, max_chars: usize) -> String {
@@ -816,6 +843,41 @@ mod tests {
         assert!(prompt.contains("[PATH]"), "{prompt}");
         assert!(!prompt.contains("/home/alice/project/secret.txt"), "{prompt}");
         assert!(!prompt.contains(r"C:\\Users\\alice\\secret.txt"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn llm_ranker_includes_candidate_detail_in_prompt() {
+        let _guard = crate::test_support::metrics_lock()
+            .lock()
+            .expect("metrics lock poisoned");
+        let mock = MockLlm::new("[0,1]");
+        let llm = Arc::new(mock.clone());
+        let ranker = LlmCompletionRanker::new(llm);
+
+        let ctx = CompletionContext::new("pri", "System.out.");
+        let items = vec![
+            CompletionItem::new("print", CompletionItemKind::Method)
+                .with_detail("print(String value)"),
+            CompletionItem::new("print", CompletionItemKind::Method).with_detail("print(int v)"),
+        ];
+
+        let _ = ranker.rank_completions(&ctx, items).await;
+        let req = mock.take_request().expect("request captured");
+        let prompt = req
+            .messages
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            prompt.contains("print(String value)"),
+            "expected first detail signature to appear in prompt: {prompt}"
+        );
+        assert!(
+            prompt.contains("print(int v)"),
+            "expected second detail signature to appear in prompt: {prompt}"
+        );
     }
 
     #[derive(Clone, Default)]

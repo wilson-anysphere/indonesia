@@ -42,6 +42,9 @@ impl CompletionRankingPromptBuilder {
     /// All user-derived data is embedded in a fenced block so it can be anonymized/redacted by
     /// `PrivacyFilter` in cloud mode.
     pub fn build_prompt(&self, ctx: &CompletionContext, candidates: &[CompletionItem]) -> String {
+        const MAX_CANDIDATE_LABEL_BYTES: usize = 160;
+        const MAX_CANDIDATE_DETAIL_BYTES: usize = 200;
+
         // Keep formatting stable for caching/tests; keep user-derived content inside the fence.
         const HEADER: &str = "You are Nova, a Java code completion ranking engine.\n\
 Given the context and the completion candidates below, rank the candidates by relevance.\n\
@@ -65,7 +68,23 @@ Return JSON only in the form: {\"ranking\":[0,1,2]}.\n\n\
         for (id, item) in candidates.iter().enumerate() {
             body.push_str(&id.to_string());
             body.push_str(": ");
-            body.push_str(escape_markdown_fence_payload(&item.label).as_ref());
+            let mut label = escape_markdown_fence_payload(&item.label).into_owned();
+            truncate_utf8_boundary(&mut label, MAX_CANDIDATE_LABEL_BYTES);
+            body.push_str(&label);
+
+            if let Some(detail) = item
+                .detail
+                .as_deref()
+                .map(str::trim)
+                .filter(|detail| !detail.is_empty())
+                // Avoid sending file paths in `.detail` (some LSP servers include locations).
+                .filter(|detail| !(detail.contains('/') || detail.contains('\\')))
+            {
+                body.push_str(" — ");
+                let mut detail = escape_markdown_fence_payload(detail).into_owned();
+                truncate_utf8_boundary(&mut detail, MAX_CANDIDATE_DETAIL_BYTES);
+                body.push_str(&detail);
+            }
             body.push('\n');
         }
 

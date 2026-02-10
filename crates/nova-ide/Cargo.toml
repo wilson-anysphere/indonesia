@@ -56,6 +56,7 @@ path = "src/lib.rs"
 ra_salsa = { package = "ra_ap_salsa", version = "0.0.269" }
 criterion = "0.5"
 tempfile = "3"
+nova-ai = { path = "../nova-ai" }
 
 [[test]]
 name = "tests"

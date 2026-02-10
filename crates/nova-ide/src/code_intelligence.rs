@@ -8774,13 +8774,19 @@ async fn rerank_lsp_completions_with_ai(
     // LSP representation (e.g., due to duplicate labels/kinds).
     let fallback = baseline.clone();
 
-    let mut buckets: HashMap<(String, AiCompletionItemKind), Vec<CompletionItem>> = HashMap::new();
+    let mut buckets: HashMap<(String, AiCompletionItemKind, Option<String>), Vec<CompletionItem>> =
+        HashMap::new();
     let mut core_items = Vec::with_capacity(baseline.len());
     for item in baseline {
         let kind = ai_kind_from_lsp(item.kind);
-        core_items.push(AiCompletionItem::new(item.label.clone(), kind));
+        let detail = item.detail.as_deref().and_then(sanitize_ai_completion_detail);
+        core_items.push(AiCompletionItem {
+            label: item.label.clone(),
+            kind,
+            detail: detail.clone(),
+        });
         buckets
-            .entry((item.label.clone(), kind))
+            .entry((item.label.clone(), kind, detail))
             .or_default()
             .push(item);
     }
@@ -8800,8 +8806,9 @@ async fn rerank_lsp_completions_with_ai(
     };
 
     let mut out = Vec::with_capacity(ranked.len());
-    for AiCompletionItem { label, kind } in ranked {
-        let Some(bucket) = buckets.get_mut(&(label, kind)) else {
+    for AiCompletionItem { label, kind, detail } in ranked {
+        let key = (label, kind, detail);
+        let Some(bucket) = buckets.get_mut(&key) else {
             return fallback;
         };
         let Some(item) = bucket.pop() else {
@@ -8841,6 +8848,22 @@ fn ai_kind_from_lsp(kind: Option<CompletionItemKind>) -> AiCompletionItemKind {
         Some(CompletionItemKind::SNIPPET) => AiCompletionItemKind::Snippet,
         _ => AiCompletionItemKind::Other,
     }
+}
+
+#[cfg(feature = "ai")]
+fn sanitize_ai_completion_detail(detail: &str) -> Option<String> {
+    let detail = detail.trim();
+    if detail.is_empty() {
+        return None;
+    }
+
+    // LSP servers occasionally include file system paths in `.detail` (e.g. for import candidates).
+    // Never forward those to the ranking prompt.
+    if detail.contains('/') || detail.contains('\\') {
+        return None;
+    }
+
+    Some(detail.to_string())
 }
 
 #[cfg(feature = "ai")]
@@ -20021,6 +20044,49 @@ pub(crate) fn receiver_before_double_colon(text: &str, double_colon_offset: usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completion_ranking_prompt_includes_lsp_detail_signatures() {
+        let ctx = nova_core::CompletionContext::new("pri", "System.out.");
+        let lsp_items = vec![
+            CompletionItem {
+                label: "print".to_string(),
+                kind: Some(CompletionItemKind::METHOD),
+                detail: Some("print(String value)".to_string()),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "print".to_string(),
+                kind: Some(CompletionItemKind::METHOD),
+                detail: Some("print(int v)".to_string()),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "Foo".to_string(),
+                kind: Some(CompletionItemKind::CLASS),
+                // Should never appear in the prompt.
+                detail: Some("/home/alice/project/Foo.java".to_string()),
+                ..Default::default()
+            },
+        ];
+
+        let candidates = lsp_items
+            .into_iter()
+            .map(|item| nova_core::CompletionItem {
+                label: item.label,
+                kind: nova_core::CompletionItemKind::Other,
+                detail: item.detail,
+            })
+            .collect::<Vec<_>>();
+
+        let prompt = nova_ai::CompletionRankingPromptBuilder::new(0).build_prompt(&ctx, &candidates);
+        assert!(prompt.contains("print(String value)"), "{prompt}");
+        assert!(prompt.contains("print(int v)"), "{prompt}");
+        assert!(
+            !prompt.contains("/home/alice/project/Foo.java"),
+            "expected prompt to omit file paths from candidate detail: {prompt}"
+        );
+    }
 
     #[test]
     fn import_path_package_segment_completions_insert_trailing_dot() {

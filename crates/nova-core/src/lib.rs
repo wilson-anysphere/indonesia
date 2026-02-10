@@ -439,6 +439,11 @@ pub trait WasmHostDb {
 pub struct CompletionItem {
     pub label: String,
     pub kind: CompletionItemKind,
+    /// Optional extra metadata for the completion item.
+    ///
+    /// This is typically a type or symbol signature (e.g. method overload params/return type) and
+    /// is primarily used by AI-backed completion ranking to disambiguate otherwise similar items.
+    pub detail: Option<String>,
 }
 
 impl CompletionItem {
@@ -446,7 +451,14 @@ impl CompletionItem {
         Self {
             label: label.into(),
             kind,
+            detail: None,
         }
+    }
+
+    #[inline]
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
     }
 }
 
