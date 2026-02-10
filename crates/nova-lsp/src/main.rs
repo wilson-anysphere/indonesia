@@ -451,8 +451,9 @@ impl ServerState {
                 }
                 Err(_) => None,
             };
-            let multi_token_enabled =
-                ai_config.enabled && ai_config.features.multi_token_completion;
+            let multi_token_enabled = runtime.is_some()
+                && ai_config.enabled
+                && ai_config.features.multi_token_completion;
             // `nova.aiCompletions.maxItems` is surfaced to the server via `NOVA_AI_COMPLETIONS_MAX_ITEMS`.
             // Treat `0` as a hard disable so the server doesn't spawn background AI completion tasks
             // or mark results as `is_incomplete`.
