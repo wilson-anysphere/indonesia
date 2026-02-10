@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 async-stream = "0.3"
 async-trait = "0.1"
-bytes = "1"
 futures = "0.3"
 futures-timer = "3"
 hnsw_rs = { version = "0.3", optional = true }
