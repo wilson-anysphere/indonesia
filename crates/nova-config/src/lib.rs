@@ -1508,7 +1508,22 @@ pub enum ConfigError {
         source: std::io::Error,
     },
     #[error("failed to parse toml config: {0}")]
-    Toml(#[from] toml::de::Error),
+    Toml(String),
+}
+
+impl From<toml::de::Error> for ConfigError {
+    fn from(err: toml::de::Error) -> Self {
+        // `toml::de::Error`'s default `Display` includes a source snippet, which may contain
+        // secrets (for example `ai.api_key = "..."`) or credentials embedded into URLs.
+        //
+        // Avoid including any raw input text in the error string. Keep just the message and
+        // location (when available) to remain actionable without leaking configuration contents
+        // into logs.
+        //
+        // Note: `toml::de::Error` does not expose stable line/column APIs on all supported `toml`
+        // versions; keep this simple and snippet-free.
+        ConfigError::Toml(err.message().to_string())
+    }
 }
 
 impl NovaConfig {

@@ -26,6 +26,31 @@ kindd = "ollama"
 }
 
 #[test]
+fn toml_parse_errors_do_not_leak_api_key_values() {
+    use std::error::Error as _;
+
+    let secret = "super-secret-api-key";
+    let text = format!(
+        r#"
+[ai]
+enabled = true
+api_key = "{secret}
+"#,
+    );
+
+    let err = NovaConfig::load_from_str_with_diagnostics(&text).expect_err("expected parse error");
+    let message = err.to_string();
+    assert!(
+        !message.contains(secret),
+        "ConfigError display leaked api_key value: {message}"
+    );
+    assert!(
+        err.source().is_none(),
+        "ConfigError should not expose toml::de::Error as source (may leak raw config text)"
+    );
+}
+
+#[test]
 fn reports_unknown_keys_in_build_section() {
     let text = r#"
 [build]
