@@ -13,6 +13,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 const OPEN_DOCUMENT_INDEX_METRIC: &str = "semantic_search/open_document_index";
+const OPEN_DOCUMENT_INDEX_METRIC_V2: &str = "lsp/semantic_search/open_document_index";
 const OPEN_DOCUMENT_DEBOUNCE_ENV: &str = "NOVA_SEMANTIC_SEARCH_OPEN_DOCUMENT_DEBOUNCE_MS";
 const OPEN_DOCUMENT_DEBOUNCE_DEFAULT_MS: u64 = 400;
 const OPEN_DOCUMENT_DEBOUNCE_MAX_MS: u64 = 10_000;
@@ -262,8 +263,10 @@ impl ServerState {
                         if let Some(text) = text {
                             let started = Instant::now();
                             search.index_file(path, text.as_str().to_owned());
-                            MetricsRegistry::global()
-                                .record_request(OPEN_DOCUMENT_INDEX_METRIC, started.elapsed());
+                            let elapsed = started.elapsed();
+                            let metrics = MetricsRegistry::global();
+                            metrics.record_request(OPEN_DOCUMENT_INDEX_METRIC, elapsed);
+                            metrics.record_request(OPEN_DOCUMENT_INDEX_METRIC_V2, elapsed);
                         }
                     } else {
                         search.remove_file(&path);
@@ -304,7 +307,10 @@ impl ServerState {
             .unwrap_or_else(|err| err.into_inner());
         let started = Instant::now();
         search.index_file(path, text.as_str().to_owned());
-        MetricsRegistry::global().record_request(OPEN_DOCUMENT_INDEX_METRIC, started.elapsed());
+        let elapsed = started.elapsed();
+        let metrics = MetricsRegistry::global();
+        metrics.record_request(OPEN_DOCUMENT_INDEX_METRIC, elapsed);
+        metrics.record_request(OPEN_DOCUMENT_INDEX_METRIC_V2, elapsed);
     }
 
     pub(super) fn semantic_search_sync_file_id(&mut self, file_id: DbFileId) {

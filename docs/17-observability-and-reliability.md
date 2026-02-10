@@ -602,6 +602,7 @@ workspace indexing (see `nova/semanticSearch/indexStatus`):
 - `lsp/semantic_search/workspace_index/skipped_safe_mode` — indexing was gated by safe-mode
 - `lsp/semantic_search/workspace_index/skipped_missing_workspace_root` — indexing was gated by missing/invalid root
 - `lsp/semantic_search/workspace_index/skipped_runtime_unavailable` — indexing was gated by missing AI runtime
+- `lsp/semantic_search/open_document_index` — open-document semantic-search indexing work (triggered by LSP document events; may be debounced when embeddings are expensive)
 
 Error kind breakdown (counts are recorded under `errorCount` unless otherwise noted):
 

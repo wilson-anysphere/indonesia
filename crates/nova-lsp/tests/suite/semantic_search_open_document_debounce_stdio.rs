@@ -11,11 +11,22 @@ use crate::support::{
 };
 
 fn open_doc_index_count(snapshot: &MetricsSnapshot) -> u64 {
-    snapshot
+    let legacy = snapshot
         .methods
         .get("semantic_search/open_document_index")
         .map(|m| m.request_count)
-        .unwrap_or(0)
+        .unwrap_or(0);
+    let v2 = snapshot
+        .methods
+        .get("lsp/semantic_search/open_document_index")
+        .map(|m| m.request_count)
+        .unwrap_or(0);
+
+    if v2 != 0 {
+        v2
+    } else {
+        legacy
+    }
 }
 
 #[test]
@@ -121,6 +132,24 @@ backend = "hash"
     )
     .expect("decode metrics snapshot");
     let baseline = open_doc_index_count(&snapshot);
+    let legacy = snapshot
+        .methods
+        .get("semantic_search/open_document_index")
+        .map(|m| m.request_count)
+        .unwrap_or(0);
+    let v2 = snapshot
+        .methods
+        .get("lsp/semantic_search/open_document_index")
+        .map(|m| m.request_count)
+        .unwrap_or(0);
+    assert!(
+        v2 > 0,
+        "expected lsp/semantic_search/open_document_index to be recorded"
+    );
+    assert_eq!(
+        legacy, v2,
+        "expected legacy and v2 open-document indexing metrics to match"
+    );
 
     // Send multiple rapid edits; the server should coalesce these and only index once.
     let mut version = 2;
@@ -227,4 +256,3 @@ backend = "hash"
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
-
