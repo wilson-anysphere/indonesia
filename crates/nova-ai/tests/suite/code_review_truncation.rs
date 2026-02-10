@@ -97,7 +97,7 @@ async fn code_review_truncates_large_diffs_before_sending() {
 
     let header = "diff --git a/src/Main.java b/src/Main.java\n";
     let tail = "TAIL_MARKER_9876543210\n";
-    let diff = format!("{header}{}{tail}", "A".repeat(1_000));
+    let diff = format!("{header}{}\n{tail}", "A".repeat(1_000));
 
     let handler = move |req: Request<Body>| async move {
         assert_eq!(req.uri().path(), "/v1/chat/completions");
@@ -123,6 +123,90 @@ async fn code_review_truncates_large_diffs_before_sending() {
             diff_part.ends_with(tail),
             "expected diff to keep end; got: {diff_part}"
         );
+        assert!(
+            diff_part.chars().count() <= limit,
+            "expected diff part <= {limit} chars; got {} chars",
+            diff_part.chars().count()
+        );
+
+        Response::new(Body::from(r#"{"choices":[{"message":{"content":"ok"}}]}"#))
+    };
+
+    let (addr, handle) = spawn_server(handler);
+
+    let mut cfg = base_config(Url::parse(&format!("http://{addr}")).unwrap());
+    cfg.features.code_review_max_diff_chars = limit;
+
+    let ai = NovaAi::new(&cfg).expect("NovaAi builds");
+    let out = ai
+        .code_review(&diff, CancellationToken::new())
+        .await
+        .expect("code_review succeeds");
+    assert_eq!(out, "ok");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn code_review_truncates_multi_file_diffs_at_file_boundaries() {
+    let limit = 450usize;
+
+    let file_a = "\
+diff --git a/src/A.java b/src/A.java\n\
+--- a/src/A.java\n\
++++ b/src/A.java\n\
+@@ -1 +1 @@\n\
+-class A {}\n\
++class A { int x; }\n";
+
+    let file_b_header = "diff --git a/src/B.java b/src/B.java\n";
+    let file_b = format!(
+        "{file_b_header}--- a/src/B.java\n+++ b/src/B.java\n@@ -1 +1 @@\n-{}\n+{}\n",
+        "B".repeat(2_000),
+        "C".repeat(2_000)
+    );
+
+    let file_c = "\
+diff --git a/src/C.java b/src/C.java\n\
+--- a/src/C.java\n\
++++ b/src/C.java\n\
+@@ -1 +1 @@\n\
+-class C {}\n\
++class C { int y; }\n";
+
+    let diff = format!("{file_a}{file_b}{file_c}");
+
+    let handler = move |req: Request<Body>| async move {
+        assert_eq!(req.uri().path(), "/v1/chat/completions");
+        let bytes = hyper::body::to_bytes(req.into_body())
+            .await
+            .expect("body bytes");
+        let json: Value = serde_json::from_slice(&bytes).expect("json body");
+
+        let user = json["messages"][1]["content"]
+            .as_str()
+            .expect("messages[1].content string");
+        let diff_part = extract_diff_block(user).expect("diff fenced block present");
+
+        assert!(
+            diff_part.contains("diff --git a/src/A.java b/src/A.java\n"),
+            "expected diff to preserve complete header for file A; got: {diff_part}"
+        );
+        assert!(
+            diff_part.contains("diff --git a/src/C.java b/src/C.java\n"),
+            "expected diff to preserve complete header for file C; got: {diff_part}"
+        );
+        assert!(
+            !diff_part.contains(file_b_header),
+            "expected middle file section to be omitted entirely; got: {diff_part}"
+        );
+
+        let marker_count = diff_part.matches("[diff truncated: omitted ").count();
+        assert_eq!(
+            marker_count, 1,
+            "expected exactly one truncation marker; got {marker_count} in: {diff_part}"
+        );
+
         assert!(
             diff_part.chars().count() <= limit,
             "expected diff part <= {limit} chars; got {} chars",

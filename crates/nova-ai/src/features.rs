@@ -287,15 +287,285 @@ fn truncate_middle_with_marker(text: String, max_chars: usize) -> String {
         return text;
     }
 
+    if text.contains("diff --git ") {
+        if let Some(out) = truncate_git_diff_by_file_sections(&text, total_chars, max_chars) {
+            return out;
+        }
+    }
+
+    truncate_by_lines_with_marker(&text, total_chars, max_chars)
+}
+
+const TRUNCATION_MARKER_PREFIX: &str = "\n\"[diff truncated: omitted ";
+const TRUNCATION_MARKER_SUFFIX: &str = " chars]\"\n";
+
+fn truncation_marker(omitted: usize) -> String {
+    // Keep the marker as a benign string literal so identifier anonymization (cloud mode)
+    // won't rewrite it when sanitizing the full prompt.
+    format!("{TRUNCATION_MARKER_PREFIX}{omitted}{TRUNCATION_MARKER_SUFFIX}")
+}
+
+fn truncation_marker_len(omitted: usize) -> usize {
+    TRUNCATION_MARKER_PREFIX.chars().count()
+        + digit_count(omitted)
+        + TRUNCATION_MARKER_SUFFIX.chars().count()
+}
+
+fn digit_count(mut n: usize) -> usize {
+    let mut digits = 1usize;
+    while n >= 10 {
+        n /= 10;
+        digits += 1;
+    }
+    digits
+}
+
+#[derive(Debug, Clone)]
+struct DiffFileSection {
+    start_line: usize,
+    end_line: usize,
+    chars: usize,
+}
+
+fn truncate_git_diff_by_file_sections(
+    text: &str,
+    total_chars: usize,
+    max_chars: usize,
+) -> Option<String> {
+    // Preserve exact newlines by splitting inclusively.
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let mut line_chars: Vec<usize> = Vec::with_capacity(lines.len());
+    for line in &lines {
+        line_chars.push(line.chars().count());
+    }
+
+    let mut starts = Vec::<usize>::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if line.starts_with("diff --git ") {
+            starts.push(idx);
+        }
+    }
+
+    // Need at least 3 file sections for a "keep head + keep tail + omit middle" strategy.
+    if starts.len() < 3 {
+        return None;
+    }
+
+    let preamble_end = starts[0];
+    let preamble_chars: usize = line_chars[..preamble_end].iter().sum();
+
+    let mut sections = Vec::<DiffFileSection>::with_capacity(starts.len());
+    for (idx, &start_line) in starts.iter().enumerate() {
+        let end_line = starts.get(idx + 1).copied().unwrap_or(lines.len());
+        let chars: usize = line_chars[start_line..end_line].iter().sum();
+        sections.push(DiffFileSection {
+            start_line,
+            end_line,
+            chars,
+        });
+    }
+
+    let section_count = sections.len();
+    let mut prefix_chars = vec![0usize; section_count + 1];
+    for i in 0..section_count {
+        prefix_chars[i + 1] = prefix_chars[i] + sections[i].chars;
+    }
+    let mut suffix_chars = vec![0usize; section_count + 1];
+    for i in 0..section_count {
+        suffix_chars[i + 1] = suffix_chars[i] + sections[section_count - 1 - i].chars;
+    }
+
+    // Select the best (K, M) (keep first K sections and last M sections) that:
+    // - omits at least one middle section (K + M < N)
+    // - fits within max_chars once the marker is inserted
+    // Prefer preserving more complete file sections, then more total characters.
+    let mut best: Option<(usize, usize, usize, usize)> = None; // (K, M, kept_chars, marker_len)
+    for k in 1..=section_count {
+        // Need at least one omitted section, and at least one tail section.
+        if k >= section_count {
+            continue;
+        }
+        for m in 1..=section_count - k - 1 {
+            let kept = preamble_chars + prefix_chars[k] + suffix_chars[m];
+            if kept >= total_chars {
+                continue;
+            }
+            let omitted = total_chars - kept;
+            let marker_len = truncation_marker_len(omitted);
+            let out_len = kept + marker_len;
+            if out_len > max_chars {
+                continue;
+            }
+
+            let kept_sections = k + m;
+            match best {
+                None => best = Some((k, m, kept, marker_len)),
+                Some((best_k, best_m, best_kept, best_marker_len)) => {
+                    let best_sections = best_k + best_m;
+                    if kept_sections > best_sections
+                        || (kept_sections == best_sections && kept > best_kept)
+                        || (kept_sections == best_sections
+                            && kept == best_kept
+                            && marker_len < best_marker_len)
+                    {
+                        best = Some((k, m, kept, marker_len));
+                    }
+                }
+            }
+        }
+    }
+
+    let (k, m, kept_chars, _marker_len) = best?;
+    let head_end_line = sections[k - 1].end_line;
+    let tail_start_line = sections[section_count - m].start_line;
+
+    let omitted = total_chars - kept_chars;
+    let marker = truncation_marker(omitted);
+    if max_chars <= marker.chars().count() {
+        return Some(truncate_prefix_chars(&marker, max_chars).to_string());
+    }
+
+    let mut out = String::with_capacity(text.len().min(max_chars) + marker.len());
+    for line in &lines[..head_end_line] {
+        out.push_str(line);
+    }
+    out.push_str(&marker);
+    for line in &lines[tail_start_line..] {
+        out.push_str(line);
+    }
+    Some(out)
+}
+
+fn truncate_by_lines_with_marker(text: &str, total_chars: usize, max_chars: usize) -> String {
+    // Preserve exact newlines by splitting inclusively.
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    // For single-line input, splitting "by lines" gives us no better truncation boundary; fall
+    // back to character-based truncation to ensure we still return some head/tail context.
+    if lines.len() <= 1 {
+        return truncate_chars_with_marker(text, total_chars, max_chars);
+    }
+
+    let mut line_chars: Vec<usize> = Vec::with_capacity(lines.len());
+    for line in &lines {
+        line_chars.push(line.chars().count());
+    }
+
+    // Iterate until the marker length stabilizes (it depends on the omitted count's digit count).
+    let mut marker_len = 0usize;
+    let mut marker = String::new();
+    for _ in 0..8 {
+        let available = max_chars.saturating_sub(marker_len);
+        let (_prefix_lines, _suffix_lines, kept_chars) =
+            select_prefix_suffix_lines(&line_chars, available);
+        let omitted = total_chars.saturating_sub(kept_chars);
+        let next_marker = truncation_marker(omitted);
+        let next_len = next_marker.chars().count();
+        marker = next_marker;
+        if next_len == marker_len {
+            break;
+        }
+        marker_len = next_len;
+    }
+
+    let marker_len = marker.chars().count();
+    if max_chars <= marker_len {
+        return truncate_prefix_chars(&marker, max_chars).to_string();
+    }
+
+    // Recompute selection with the stabilized marker length to ensure we stay within max_chars.
+    let available = max_chars - marker_len;
+    let (prefix_lines, suffix_lines, _kept_chars) =
+        select_prefix_suffix_lines(&line_chars, available);
+
+    let suffix_start = lines.len().saturating_sub(suffix_lines);
+    let mut out = String::with_capacity(text.len().min(max_chars) + marker.len());
+    for line in &lines[..prefix_lines] {
+        out.push_str(line);
+    }
+    out.push_str(&marker);
+    for line in &lines[suffix_start..] {
+        out.push_str(line);
+    }
+    out
+}
+
+fn select_prefix_suffix_lines(
+    line_chars: &[usize],
+    available_chars: usize,
+) -> (usize, usize, usize) {
+    // Choose a prefix of N lines and a suffix of M lines (non-overlapping) such that:
+    // - sum(prefix) + sum(suffix) <= available_chars
+    // - keeps at least one line from both ends when possible
+    // - maximizes kept character count
+    let n = line_chars.len();
+    if n == 0 || available_chars == 0 {
+        return (0, 0, 0);
+    }
+
+    let mut prefix_sum = vec![0usize; n + 1];
+    for i in 0..n {
+        prefix_sum[i + 1] = prefix_sum[i] + line_chars[i];
+    }
+    let mut suffix_sum = vec![0usize; n + 1];
+    for i in 0..n {
+        suffix_sum[i + 1] = suffix_sum[i] + line_chars[n - 1 - i];
+    }
+
+    let mut best_prefix = 0usize;
+    let mut best_suffix = 0usize;
+    let mut best_kept = 0usize;
+    let mut best_has_both = false;
+
+    for prefix_lines in 0..=n {
+        let prefix_chars = prefix_sum[prefix_lines];
+        if prefix_chars > available_chars {
+            break;
+        }
+        let remaining = available_chars - prefix_chars;
+
+        let max_suffix_allowed = n - prefix_lines;
+        let mut suffix_lines = upper_bound_usize(&suffix_sum, remaining);
+        if suffix_lines > max_suffix_allowed {
+            suffix_lines = max_suffix_allowed;
+        }
+
+        let kept = prefix_chars + suffix_sum[suffix_lines];
+        let has_both = prefix_lines > 0 && suffix_lines > 0;
+        if (has_both && !best_has_both) || (has_both == best_has_both && kept > best_kept) {
+            best_prefix = prefix_lines;
+            best_suffix = suffix_lines;
+            best_kept = kept;
+            best_has_both = has_both;
+        }
+    }
+
+    (best_prefix, best_suffix, best_kept)
+}
+
+fn upper_bound_usize(values: &[usize], max_value: usize) -> usize {
+    // Return the largest `idx` such that `values[idx] <= max_value` (values must be sorted
+    // ascending). Equivalent to `upper_bound - 1`, but returns 0 when no values fit.
+    let mut lo = 0usize;
+    let mut hi = values.len();
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if values[mid] <= max_value {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo.saturating_sub(1)
+}
+
+fn truncate_chars_with_marker(text: &str, total_chars: usize, max_chars: usize) -> String {
     // Iterate until the marker length stabilizes (it depends on the omitted count's digit count).
     let mut marker_len = 0usize;
     let mut marker = String::new();
     for _ in 0..8 {
         let available = max_chars.saturating_sub(marker_len);
         let omitted = total_chars.saturating_sub(available);
-        // Keep the marker as a benign string literal so identifier anonymization (cloud mode)
-        // won't rewrite it when sanitizing the full prompt.
-        let next_marker = format!("\n\"[diff truncated: omitted {omitted} chars]\"\n");
+        let next_marker = truncation_marker(omitted);
         let next_len = next_marker.chars().count();
         marker = next_marker;
         if next_len == marker_len {
@@ -313,8 +583,8 @@ fn truncate_middle_with_marker(text: String, max_chars: usize) -> String {
     let head_len = available / 2;
     let tail_len = available - head_len;
 
-    let head = truncate_prefix_chars(&text, head_len);
-    let tail = truncate_suffix_chars(&text, tail_len);
+    let head = truncate_prefix_chars(text, head_len);
+    let tail = truncate_suffix_chars(text, tail_len);
 
     let mut out = String::with_capacity(max_chars.min(total_chars) + marker.len());
     out.push_str(head);
