@@ -763,7 +763,7 @@ pub(super) fn run_ai_explain_error(
     // leak excluded file paths into prompts.
     build_context_request(
       state,
-      "[code context omitted due to excluded_paths]".to_string(),
+      r#""[code context omitted due to excluded_paths]""#.to_string(),
       None,
     )
   } else {
@@ -2581,6 +2581,97 @@ mod tests {
     .expect("explainError should be allowed for excluded paths (without file-backed context)");
 
     mock.assert_hits(1);
+  }
+
+  #[test]
+  fn excluded_paths_explain_error_placeholder_survives_anonymization() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path();
+    let secrets_dir = root.join("src").join("secrets");
+    std::fs::create_dir_all(&secrets_dir).expect("create src/secrets dir");
+
+    let secret_marker = "DO_NOT_LEAK_THIS_SECRET";
+    let secret_path = secrets_dir.join("Secret.java");
+    let secret_text = format!(r#"class Secret {{ String v = "{secret_marker}"; }}"#);
+    std::fs::write(&secret_path, &secret_text).expect("write Secret.java");
+    let secret_uri: Uri = url::Url::from_file_path(&secret_path)
+      .expect("file url")
+      .to_string()
+      .parse()
+      .expect("uri");
+
+    let server = MockServer::start();
+    let captured_prompt = Arc::new(RwLock::new(None::<String>));
+    let mock = server.mock(|when, then| {
+      let captured_prompt = captured_prompt.clone();
+      when.method(POST).path("/complete").matches(move |req| {
+        if let Some(body) = req.body.as_deref() {
+          if let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) {
+            if let Some(prompt) = value.get("prompt").and_then(|p| p.as_str()) {
+              *captured_prompt.write().unwrap() = Some(prompt.to_string());
+            }
+          }
+        }
+        true
+      });
+      then
+        .status(200)
+        .json_body(json!({ "completion": "mock explanation" }));
+    });
+
+    let mut cfg = nova_config::NovaConfig::default();
+    cfg.ai.enabled = true;
+    cfg.ai.provider.kind = nova_config::AiProviderKind::Http;
+    cfg.ai.provider.url = url::Url::parse(&format!("{}/complete", server.base_url())).unwrap();
+    cfg.ai.provider.model = "default".to_string();
+    cfg.ai.provider.timeout_ms = Duration::from_secs(2).as_millis() as u64;
+    cfg.ai.provider.concurrency = Some(1);
+    cfg.ai.privacy.local_only = false;
+    cfg.ai.privacy.anonymize_identifiers = Some(true);
+    cfg.ai.privacy.excluded_paths = vec!["src/secrets/**".to_string()];
+    cfg.ai.cache_enabled = false;
+
+    let mut state = ServerState::new(cfg, None, MemoryBudgetOverrides::default());
+    state.project_root = Some(root.to_path_buf());
+    state
+      .analysis
+      .open_document(secret_uri.clone(), secret_text.clone(), 1);
+
+    let out = crate::rpc_out::WriteRpcOut::new(Vec::<u8>::new());
+    run_ai_explain_error(
+      ExplainErrorArgs {
+        diagnostic_message: "boom".to_string(),
+        // Even if a client supplies code, excluded_paths is enforced server-side.
+        code: Some(secret_text.clone()),
+        uri: Some(secret_uri.to_string()),
+        range: Some(nova_ide::LspRange {
+          start: nova_ide::LspPosition {
+            line: 0,
+            character: 0,
+          },
+          end: nova_ide::LspPosition {
+            line: 0,
+            character: 10,
+          },
+        }),
+      },
+      None,
+      &mut state,
+      &out,
+      CancellationToken::new(),
+    )
+    .expect("explainError should be allowed for excluded paths (without file-backed context)");
+
+    mock.assert_hits(1);
+    let prompt = captured_prompt
+      .read()
+      .unwrap()
+      .clone()
+      .expect("expected to capture prompt sent to HTTP AI provider");
+    assert!(
+      prompt.contains(r#""[code context omitted due to excluded_paths]""#),
+      "expected excluded_paths omission marker to remain readable under anonymization; prompt:\n{prompt}"
+    );
   }
 
   #[test]
