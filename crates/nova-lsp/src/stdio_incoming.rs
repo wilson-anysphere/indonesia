@@ -114,7 +114,7 @@ pub(super) fn handle_notification(
                 return Ok(());
             }
             if let Ok(ChangeEvent::DocumentChanged { file_id, .. }) = &evt {
-                state.semantic_search_index_open_document(*file_id);
+                state.semantic_search_index_open_document_debounced(*file_id);
                 if let (Some(dist), Some(path)) = (
                     state.distributed.as_ref(),
                     path_from_uri(params.text_document.uri.as_str()),
@@ -213,6 +213,7 @@ pub(super) fn handle_notification(
                 return Ok(());
             };
             let (file_id, _) = state.analysis.file_id_for_uri(&params.text_document.uri);
+            state.semantic_search_cancel_open_document_indexing(file_id);
             state.semantic_search_mark_uri_closed(&params.text_document.uri);
             let canonical_uri = VfsPath::from(&params.text_document.uri)
                 .to_uri()
@@ -493,6 +494,7 @@ pub(super) fn handle_notification(
                     state.semantic_search_sync_file_id(file_id);
                 } else {
                     // Rename of an open document: update the semantic search path key.
+                    state.semantic_search_cancel_open_document_indexing(file_id);
                     state.semantic_search_mark_file_open(file_id);
                     state.semantic_search_index_open_document(file_id);
                 }
@@ -520,6 +522,7 @@ pub(super) fn handle_notification(
                 state.analysis.refresh_from_disk(&params.to);
                 state.semantic_search_sync_file_id(file_id);
             } else {
+                state.semantic_search_cancel_open_document_indexing(file_id);
                 state.semantic_search_mark_file_open(file_id);
                 state.semantic_search_index_open_document(file_id);
             }
@@ -610,6 +613,7 @@ fn apply_ai_config_update(
 ) {
     // Cancel any in-flight workspace indexing before we potentially drop the Tokio runtime.
     state.semantic_search_workspace_index_cancel.cancel();
+    state.semantic_search_cancel_all_open_document_indexing();
 
     let prev_ai_config = state.ai_config.clone();
     let enabled_toggled = prev_ai_config.enabled != new_ai_config.enabled;

@@ -155,6 +155,8 @@ mod suite {
     mod semantic_search_search_stdio;
     #[path = "semantic_search_config_reload_no_runtime_stdio.rs"]
     mod semantic_search_config_reload_no_runtime_stdio;
+    #[path = "semantic_search_open_document_debounce_stdio.rs"]
+    mod semantic_search_open_document_debounce_stdio;
     #[cfg(feature = "ai")]
     #[path = "semantic_search_config_reload_stdio.rs"]
     mod semantic_search_config_reload_stdio;

@@ -4,11 +4,23 @@ use lsp_types::Uri as LspUri;
 use nova_db::FileId as DbFileId;
 use nova_metrics::MetricsRegistry;
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+
+const OPEN_DOCUMENT_INDEX_METRIC: &str = "semantic_search/open_document_index";
+const OPEN_DOCUMENT_DEBOUNCE_ENV: &str = "NOVA_SEMANTIC_SEARCH_OPEN_DOCUMENT_DEBOUNCE_MS";
+const OPEN_DOCUMENT_DEBOUNCE_DEFAULT_MS: u64 = 400;
+const OPEN_DOCUMENT_DEBOUNCE_MAX_MS: u64 = 10_000;
+const OPEN_DOCUMENT_PENDING_TASKS_CAP: usize = 256;
+
+#[cfg(debug_assertions)]
+const OPEN_DOCUMENT_FORCE_DEBOUNCE_ENV: &str =
+    "NOVA_LSP_FORCE_SEMANTIC_SEARCH_OPEN_DOCUMENT_DEBOUNCE";
 
 const SEMANTIC_SEARCH_WORKSPACE_INDEX_METRIC: &str = "lsp/semantic_search/workspace_index";
 const SEMANTIC_SEARCH_WORKSPACE_INDEX_FILE_METRIC: &str =
@@ -19,6 +31,33 @@ const SEMANTIC_SEARCH_WORKSPACE_INDEX_SKIPPED_MISSING_ROOT_METRIC: &str =
     "lsp/semantic_search/workspace_index/skipped_missing_workspace_root";
 const SEMANTIC_SEARCH_WORKSPACE_INDEX_SKIPPED_RUNTIME_UNAVAILABLE_METRIC: &str =
     "lsp/semantic_search/workspace_index/skipped_runtime_unavailable";
+
+#[derive(Debug, Default)]
+pub(super) struct SemanticSearchOpenDocumentIndexDebouncer {
+    pending: HashMap<DbFileId, OpenDocumentIndexPending>,
+}
+
+#[derive(Debug)]
+struct OpenDocumentIndexPending {
+    cancel: CancellationToken,
+    handle: JoinHandle<()>,
+}
+
+impl SemanticSearchOpenDocumentIndexDebouncer {
+    fn cancel(&mut self, file_id: DbFileId) {
+        if let Some(pending) = self.pending.remove(&file_id) {
+            pending.cancel.cancel();
+            pending.handle.abort();
+        }
+    }
+
+    fn cancel_all(&mut self) {
+        for (_, pending) in self.pending.drain() {
+            pending.cancel.cancel();
+            pending.handle.abort();
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub(super) struct SemanticSearchWorkspaceIndexStatus {
@@ -49,6 +88,37 @@ impl SemanticSearchWorkspaceIndexStatus {
 impl ServerState {
     pub(super) fn semantic_search_enabled(&self) -> bool {
         self.ai_config.enabled && self.ai_config.features.semantic_search
+    }
+
+    fn semantic_search_should_debounce_open_document_indexing(&self) -> bool {
+        if !self.semantic_search_enabled() {
+            return false;
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            if std::env::var_os(OPEN_DOCUMENT_FORCE_DEBOUNCE_ENV).is_some() {
+                return true;
+            }
+        }
+
+        // If the binary was built without embedding support, semantic search falls back to trigram
+        // indexing, which is cheap and should remain synchronous.
+        if !nova_ai::embeddings_available() {
+            return false;
+        }
+
+        self.ai_config.embeddings.enabled
+            && self.ai_config.embeddings.backend != nova_config::AiEmbeddingsBackend::Hash
+    }
+
+    fn semantic_search_open_document_debounce_delay(&self) -> Duration {
+        let configured = std::env::var(OPEN_DOCUMENT_DEBOUNCE_ENV)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok());
+
+        let ms = configured.unwrap_or(OPEN_DOCUMENT_DEBOUNCE_DEFAULT_MS);
+        Duration::from_millis(ms.clamp(1, OPEN_DOCUMENT_DEBOUNCE_MAX_MS))
     }
 
     pub(super) fn semantic_search_extension_allowed(path: &Path) -> bool {
@@ -104,6 +174,110 @@ impl ServerState {
             .remove(local);
     }
 
+    pub(super) fn semantic_search_cancel_open_document_indexing(&mut self, file_id: DbFileId) {
+        self.semantic_search_open_document_index_debouncer
+            .cancel(file_id);
+    }
+
+    pub(super) fn semantic_search_cancel_all_open_document_indexing(&mut self) {
+        self.semantic_search_open_document_index_debouncer.cancel_all();
+    }
+
+    pub(super) fn semantic_search_index_open_document_debounced(&mut self, file_id: DbFileId) {
+        if !self.semantic_search_enabled() {
+            return;
+        }
+
+        // For trigram/hash indexing, keep existing synchronous behavior (fast).
+        if !self.semantic_search_should_debounce_open_document_indexing() {
+            self.semantic_search_index_open_document(file_id);
+            return;
+        }
+
+        let Some(runtime) = self.runtime.as_ref() else {
+            // Best-effort fallback: if we cannot schedule on the AI runtime, keep the existing
+            // behavior so semantic search still functions.
+            self.semantic_search_index_open_document(file_id);
+            return;
+        };
+
+        let Some(path) = self.analysis.file_paths.get(&file_id).cloned() else {
+            return;
+        };
+
+        let should_index = self.semantic_search_should_index_path(&path);
+        let text = if should_index {
+            self.analysis.file_contents.get(&file_id).cloned()
+        } else {
+            None
+        };
+
+        // If we don't have text, we can still remove the file from the index.
+        if should_index && text.is_none() {
+            return;
+        }
+
+        // Ensure we don't leak tasks if file ids are somehow churned (shouldn't happen for open
+        // documents).
+        if self.semantic_search_open_document_index_debouncer.pending.len()
+            >= OPEN_DOCUMENT_PENDING_TASKS_CAP
+        {
+            self.semantic_search_open_document_index_debouncer.cancel_all();
+        }
+
+        self.semantic_search_open_document_index_debouncer.cancel(file_id);
+
+        let cancel = CancellationToken::new();
+        let delay = self.semantic_search_open_document_debounce_delay();
+        let semantic_search = Arc::clone(&self.semantic_search);
+
+        let handle = runtime.spawn({
+            let cancel = cancel.clone();
+            let path = path.clone();
+            let text = text.clone();
+            async move {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(delay) => {}
+                }
+
+                if cancel.is_cancelled() {
+                    return;
+                }
+
+                let _ = tokio::task::spawn_blocking(move || {
+                    if cancel.is_cancelled() {
+                        return;
+                    }
+
+                    let mut search = semantic_search
+                        .write()
+                        .unwrap_or_else(|err| err.into_inner());
+
+                    if cancel.is_cancelled() {
+                        return;
+                    }
+
+                    if should_index {
+                        if let Some(text) = text {
+                            let started = Instant::now();
+                            search.index_file(path, text.as_str().to_owned());
+                            MetricsRegistry::global()
+                                .record_request(OPEN_DOCUMENT_INDEX_METRIC, started.elapsed());
+                        }
+                    } else {
+                        search.remove_file(&path);
+                    }
+                })
+                .await;
+            }
+        });
+
+        self.semantic_search_open_document_index_debouncer
+            .pending
+            .insert(file_id, OpenDocumentIndexPending { cancel, handle });
+    }
+
     pub(super) fn semantic_search_index_open_document(&mut self, file_id: DbFileId) {
         if !self.semantic_search_enabled() {
             return;
@@ -128,7 +302,9 @@ impl ServerState {
             .semantic_search
             .write()
             .unwrap_or_else(|err| err.into_inner());
+        let started = Instant::now();
         search.index_file(path, text.as_str().to_owned());
+        MetricsRegistry::global().record_request(OPEN_DOCUMENT_INDEX_METRIC, started.elapsed());
     }
 
     pub(super) fn semantic_search_sync_file_id(&mut self, file_id: DbFileId) {

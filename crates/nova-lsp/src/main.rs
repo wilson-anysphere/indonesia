@@ -350,6 +350,8 @@ struct ServerState {
     ai_privacy_excluded_matcher: Arc<Result<ExcludedPathMatcher, nova_ai::AiError>>,
     semantic_search: Arc<RwLock<Box<dyn nova_ai::SemanticSearch>>>,
     semantic_search_open_files: Arc<Mutex<HashSet<PathBuf>>>,
+    semantic_search_open_document_index_debouncer:
+        stdio_semantic_search::SemanticSearchOpenDocumentIndexDebouncer,
     semantic_search_workspace_index_status: Arc<stdio_semantic_search::SemanticSearchWorkspaceIndexStatus>,
     semantic_search_workspace_index_cancel: CancellationToken,
     semantic_search_workspace_index_run_id: u64,
@@ -510,6 +512,8 @@ impl ServerState {
             }),
         ));
         let semantic_search_open_files = Arc::new(Mutex::new(HashSet::<PathBuf>::new()));
+        let semantic_search_open_document_index_debouncer =
+            stdio_semantic_search::SemanticSearchOpenDocumentIndexDebouncer::default();
         let semantic_search_workspace_index_status =
             Arc::new(stdio_semantic_search::SemanticSearchWorkspaceIndexStatus::default());
         let semantic_search_workspace_index_cancel = CancellationToken::new();
@@ -531,6 +535,7 @@ impl ServerState {
             ai_privacy_excluded_matcher,
             semantic_search,
             semantic_search_open_files,
+            semantic_search_open_document_index_debouncer,
             semantic_search_workspace_index_status,
             semantic_search_workspace_index_cancel,
             semantic_search_workspace_index_run_id: 0,

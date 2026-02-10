@@ -94,6 +94,14 @@ pub use provider::{AiProvider, AiProviderError};
 pub use safety::{PatchSafetyConfig, SafetyError};
 pub use workspace::{AppliedPatch, PatchApplyError, VirtualWorkspace};
 
+/// Returns `true` when `nova-ai` was built with embedding-backed semantic search support.
+///
+/// This is a compile-time capability check that downstream crates (like `nova-lsp`) can use to
+/// decide whether expensive embedding generation is possible in the current binary.
+pub fn embeddings_available() -> bool {
+    cfg!(feature = "embeddings")
+}
+
 /// Exposes diff filtering for integration tests.
 ///
 /// This is `doc(hidden)` to avoid encouraging external callers to rely on the exact parsing
