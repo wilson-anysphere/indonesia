@@ -192,6 +192,9 @@ impl LlmProvider for OpenAiCompatibleProvider {
                         continue;
                     };
                     let data = trim_ascii_whitespace(data);
+                    if data.is_empty() {
+                        continue;
+                    }
                     if data == b"[DONE]" {
                         return;
                     }
