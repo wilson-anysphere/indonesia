@@ -1253,6 +1253,146 @@ async fn openai_compatible_stream_parses_multiline_json_across_data_fields() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn openai_compatible_stream_times_out_when_server_stalls() {
+    let handler = move |req: Request<Body>| async move {
+        if req.uri().path() != "/v1/chat/completions" {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::empty())
+                .unwrap();
+        }
+
+        let _ = hyper::body::to_bytes(req.into_body())
+            .await
+            .expect("read request body");
+
+        let chunks = stream! {
+            yield Ok::<_, std::io::Error>(hyper::body::Bytes::from(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+            ));
+
+            // Stall long enough to exceed the client's idle timeout between chunks.
+            tokio::time::sleep(Duration::from_millis(250)).await;
+
+            yield Ok::<_, std::io::Error>(hyper::body::Bytes::from(
+                "data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n",
+            ));
+            yield Ok::<_, std::io::Error>(hyper::body::Bytes::from("data: [DONE]\n\n"));
+        };
+
+        Response::builder()
+            .header("content-type", "text/event-stream")
+            .body(Body::wrap_stream(chunks))
+            .unwrap()
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}")).unwrap();
+
+    let mut config = openai_config(url);
+    config.provider.timeout_ms = 100;
+    let client = AiClient::from_config(&config).unwrap();
+
+    let mut stream = client
+        .chat_stream(
+            ChatRequest {
+                messages: vec![ChatMessage::user("hi")],
+                max_tokens: Some(5),
+                temperature: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let first = stream
+        .next()
+        .await
+        .expect("first chunk")
+        .expect("first chunk ok");
+    assert_eq!(first, "Hello");
+
+    let second = stream
+        .next()
+        .await
+        .expect("timeout error")
+        .expect_err("expected timeout error");
+    assert!(matches!(second, AiError::Timeout));
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn openai_compatible_stream_cancellation_interrupts_waiting_for_next_chunk() {
+    let handler = move |req: Request<Body>| async move {
+        if req.uri().path() != "/v1/chat/completions" {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::empty())
+                .unwrap();
+        }
+
+        let _ = hyper::body::to_bytes(req.into_body())
+            .await
+            .expect("read request body");
+
+        let chunks = stream! {
+            yield Ok::<_, std::io::Error>(hyper::body::Bytes::from(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+            ));
+
+            // Hold the connection open; the client should cancel rather than waiting.
+            tokio::time::sleep(Duration::from_secs(5)).await;
+
+            yield Ok::<_, std::io::Error>(hyper::body::Bytes::from("data: [DONE]\n\n"));
+        };
+
+        Response::builder()
+            .header("content-type", "text/event-stream")
+            .body(Body::wrap_stream(chunks))
+            .unwrap()
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}")).unwrap();
+
+    let mut config = openai_config(url);
+    config.provider.timeout_ms = 10_000;
+    let client = AiClient::from_config(&config).unwrap();
+
+    let cancel = CancellationToken::new();
+    let mut stream = client
+        .chat_stream(
+            ChatRequest {
+                messages: vec![ChatMessage::user("hi")],
+                max_tokens: Some(5),
+                temperature: None,
+            },
+            cancel.clone(),
+        )
+        .await
+        .unwrap();
+
+    let first = stream
+        .next()
+        .await
+        .expect("first chunk")
+        .expect("first chunk ok");
+    assert_eq!(first, "Hello");
+
+    cancel.cancel();
+
+    let second = tokio::time::timeout(Duration::from_secs(1), stream.next())
+        .await
+        .expect("cancelled stream should return quickly")
+        .expect("cancelled item")
+        .expect_err("expected cancellation error");
+    assert!(matches!(second, AiError::Cancelled));
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn cancellation_stops_in_flight_request() {
     let (started_tx, mut started_rx) = mpsc::channel::<()>(1);
 
