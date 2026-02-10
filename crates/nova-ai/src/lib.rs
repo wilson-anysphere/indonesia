@@ -43,7 +43,10 @@ pub mod provider;
 pub mod safety;
 pub mod workspace;
 
-pub use anonymizer::{CodeAnonymizer, CodeAnonymizerOptions};
+pub use anonymizer::{
+    deanonymize_additional_edit, deanonymize_java_like_code, deanonymize_multi_token_completion,
+    CodeAnonymizer, CodeAnonymizerOptions,
+};
 pub use client::{AiClient, LlmClient};
 pub use code_edit_policy::{enforce_code_edit_policy, CodeEditPolicyError};
 pub use completion::{AdditionalEdit, MultiTokenCompletion, MultiTokenInsertTextFormat};

@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use crate::{AdditionalEdit, MultiTokenCompletion};
+
 /// Options controlling how code is anonymized.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct CodeAnonymizerOptions {
@@ -305,6 +307,150 @@ impl CodeAnonymizer {
     }
 }
 
+/// De-anonymize Java-like code emitted by an LLM by rewriting placeholder identifiers back to the
+/// original names.
+///
+/// This is the inverse of identifier anonymization used by [`CodeAnonymizer`]. The function
+/// performs a lightweight lexical scan (similar to the anonymizer) so it can safely replace
+/// identifier *tokens* without corrupting:
+/// - string literals (`"..."`)
+/// - char literals (`'a'`)
+/// - line comments (`// ...`)
+/// - block comments (`/* ... */`)
+///
+/// The `reverse_identifiers` map must map from the anonymous identifier (e.g. `"id_0"`) to the
+/// original identifier (e.g. `"UserService"`).
+pub fn deanonymize_java_like_code(code: &str, reverse_identifiers: &HashMap<String, String>) -> String {
+    if reverse_identifiers.is_empty() {
+        return code.to_string();
+    }
+
+    let mut out = String::with_capacity(code.len());
+    let mut chars = code.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            // Line comment
+            '/' if chars.peek() == Some(&'/') => {
+                out.push('/');
+                out.push('/');
+                chars.next();
+                while let Some(c) = chars.next() {
+                    out.push(c);
+                    if c == '\n' {
+                        break;
+                    }
+                }
+            }
+            // Block comment
+            '/' if chars.peek() == Some(&'*') => {
+                out.push('/');
+                out.push('*');
+                chars.next();
+                while let Some(c) = chars.next() {
+                    out.push(c);
+                    if c == '*' && chars.peek() == Some(&'/') {
+                        out.push('/');
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            // String literal
+            '"' => {
+                out.push('"');
+                let mut escaped = false;
+                while let Some(c) = chars.next() {
+                    out.push(c);
+                    if escaped {
+                        escaped = false;
+                        continue;
+                    }
+
+                    match c {
+                        '\\' => escaped = true,
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+            }
+            // Char literal
+            '\'' => {
+                out.push('\'');
+                let mut escaped = false;
+                while let Some(c) = chars.next() {
+                    out.push(c);
+                    if escaped {
+                        escaped = false;
+                        continue;
+                    }
+
+                    match c {
+                        '\\' => escaped = true,
+                        '\'' => break,
+                        _ => {}
+                    }
+                }
+            }
+            // Identifier token
+            c if is_ident_start(c) => {
+                let mut ident = String::new();
+                ident.push(c);
+                while let Some(&next) = chars.peek() {
+                    if is_ident_continue(next) {
+                        ident.push(next);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+
+                if let Some(original) = reverse_identifiers.get(&ident) {
+                    out.push_str(original);
+                } else {
+                    out.push_str(&ident);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+
+    out
+}
+
+/// Apply de-anonymization to all user-visible fields of a multi-token completion.
+pub fn deanonymize_multi_token_completion(
+    completion: &mut MultiTokenCompletion,
+    reverse_identifiers: &HashMap<String, String>,
+) {
+    if reverse_identifiers.is_empty() {
+        return;
+    }
+
+    completion.label = deanonymize_java_like_code(&completion.label, reverse_identifiers);
+    completion.insert_text =
+        deanonymize_java_like_code(&completion.insert_text, reverse_identifiers);
+    for edit in &mut completion.additional_edits {
+        deanonymize_additional_edit(edit, reverse_identifiers);
+    }
+}
+
+/// Apply de-anonymization to a single [`AdditionalEdit`].
+pub fn deanonymize_additional_edit(
+    edit: &mut AdditionalEdit,
+    reverse_identifiers: &HashMap<String, String>,
+) {
+    if reverse_identifiers.is_empty() {
+        return;
+    }
+
+    match edit {
+        AdditionalEdit::AddImport { path } => {
+            *path = deanonymize_java_like_code(path, reverse_identifiers);
+        }
+    }
+}
+
 fn is_ident_start(c: char) -> bool {
     c == '_' || c == '$' || c.is_ascii_alphabetic()
 }
@@ -533,6 +679,8 @@ fn is_mostly_alnum_or_symbols(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MultiTokenInsertTextFormat;
+    use std::collections::HashMap;
 
     #[test]
     fn strips_comment_bodies_when_enabled() {
@@ -638,5 +786,103 @@ class Example {
         assert!(out.contains(".trim("), "{out}");
         assert!(out.contains(".toLowerCase("), "{out}");
         assert!(out.contains(".toUpperCase("), "{out}");
+    }
+
+    #[test]
+    fn deanonymizes_identifier_tokens_in_code() {
+        let mut reverse = HashMap::new();
+        reverse.insert("id_0".to_string(), "Foo".to_string());
+        reverse.insert("id_1".to_string(), "bar".to_string());
+
+        let code = "class id_0 { void id_1() { id_1(); } }";
+        let out = deanonymize_java_like_code(code, &reverse);
+
+        assert_eq!(out, "class Foo { void bar() { bar(); } }");
+    }
+
+    #[test]
+    fn does_not_replace_inside_string_or_char_literals() {
+        let mut reverse = HashMap::new();
+        reverse.insert("id_0".to_string(), "Foo".to_string());
+
+        let code = "String s = \"id_0\"; char c = 'id_0'; id_0();";
+        let out = deanonymize_java_like_code(code, &reverse);
+
+        assert_eq!(out, "String s = \"id_0\"; char c = 'id_0'; Foo();");
+    }
+
+    #[test]
+    fn does_not_replace_inside_comments() {
+        let mut reverse = HashMap::new();
+        reverse.insert("id_0".to_string(), "Foo".to_string());
+
+        let code = "id_0(); // id_0\n/* id_0 */ id_0();";
+        let out = deanonymize_java_like_code(code, &reverse);
+
+        assert_eq!(out, "Foo(); // id_0\n/* id_0 */ Foo();");
+    }
+
+    #[test]
+    fn replaces_dotted_import_paths() {
+        let mut reverse = HashMap::new();
+        reverse.insert("id_0".to_string(), "com".to_string());
+        reverse.insert("id_1".to_string(), "example".to_string());
+        reverse.insert("id_2".to_string(), "Foo".to_string());
+
+        let code = "import id_0.id_1.id_2;";
+        let out = deanonymize_java_like_code(code, &reverse);
+
+        assert_eq!(out, "import com.example.Foo;");
+    }
+
+    #[test]
+    fn avoids_substring_collisions() {
+        let mut reverse = HashMap::new();
+        reverse.insert("id_1".to_string(), "Foo".to_string());
+
+        let code = "id_10 id_1";
+        let out = deanonymize_java_like_code(code, &reverse);
+
+        assert_eq!(out, "id_10 Foo");
+    }
+
+    #[test]
+    fn preserves_vscode_snippet_placeholder_syntax() {
+        let mut reverse = HashMap::new();
+        reverse.insert("id_0".to_string(), "value".to_string());
+
+        let code = "${1:id_0}";
+        let out = deanonymize_java_like_code(code, &reverse);
+
+        assert_eq!(out, "${1:value}");
+    }
+
+    #[test]
+    fn deanonymize_helpers_apply_to_completion_fields() {
+        let mut reverse = HashMap::new();
+        reverse.insert("id_0".to_string(), "com".to_string());
+        reverse.insert("id_1".to_string(), "example".to_string());
+        reverse.insert("id_2".to_string(), "Foo".to_string());
+
+        let mut completion = MultiTokenCompletion {
+            label: "new id_2".to_string(),
+            insert_text: "new ${1:id_2}()".to_string(),
+            format: MultiTokenInsertTextFormat::Snippet,
+            additional_edits: vec![AdditionalEdit::AddImport {
+                path: "id_0.id_1.id_2".to_string(),
+            }],
+            confidence: 0.5,
+        };
+
+        deanonymize_multi_token_completion(&mut completion, &reverse);
+
+        assert_eq!(completion.label, "new Foo");
+        assert_eq!(completion.insert_text, "new ${1:Foo}()");
+        assert_eq!(
+            completion.additional_edits,
+            vec![AdditionalEdit::AddImport {
+                path: "com.example.Foo".to_string()
+            }]
+        );
     }
 }
