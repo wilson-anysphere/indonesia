@@ -632,9 +632,12 @@ fn parse_git_file_block(
     }
 
     if let (Some(from), Some(to)) = (rename_from, rename_to) {
-        if !from.is_empty() && !to.is_empty() {
+        if !from.is_empty() && !to.is_empty() && (old_path.is_empty() || new_path.is_empty()) {
+            // `rename from/to` paths are already real repo paths (git does not prefix them with
+            // `a/`/`b/`). Only use them as a fallback when the `diff --git` header was ambiguous.
             old_path = from;
             new_path = to;
+            paths_already_normalized = true;
         }
     }
 
@@ -1221,6 +1224,26 @@ rename to "new name.txt""#;
                 files: vec![UnifiedDiffFile {
                     old_path: "old name.txt".to_string(),
                     new_path: "new name.txt".to_string(),
+                    hunks: Vec::new(),
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn parses_rename_metadata_for_paths_starting_with_b_directory() {
+        let raw = r#"diff --git a/b/foo.txt b/b/bar.txt
+similarity index 100%
+rename from b/foo.txt
+rename to b/bar.txt"#;
+
+        let patch = parse_structured_patch(raw).expect("parse patch");
+        assert_eq!(
+            patch,
+            Patch::UnifiedDiff(UnifiedDiffPatch {
+                files: vec![UnifiedDiffFile {
+                    old_path: "b/foo.txt".to_string(),
+                    new_path: "b/bar.txt".to_string(),
                     hunks: Vec::new(),
                 }],
             })
