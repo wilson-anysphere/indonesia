@@ -4,9 +4,15 @@ use crate::privacy::PrivacyMode;
 use crate::types::CodeSnippet;
 use nova_core::ProjectDatabase;
 use nova_core::{LineIndex, TextSize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+
+/// Hard cap on the semantic-search query derived from a context request's focal code.
+///
+/// This keeps semantic-search enrichment deterministic and prevents large prompt selections from
+/// sending multi-kilobyte queries to embedding providers.
+pub const RELATED_CODE_QUERY_MAX_BYTES: usize = 512;
 
 #[derive(Debug, Clone)]
 pub struct ContextBuilder;
@@ -507,14 +513,356 @@ impl ContextRequest {
 
     /// Convenience wrapper around [`ContextRequest::with_related_code_from_search`] that uses the
     /// current `focal_code` contents as the query text.
+    ///
+    /// The query construction is intentionally lossy and deterministic: it extracts a compact set
+    /// of high-signal identifier-like tokens and caps the query length to avoid noisy or overly
+    /// large semantic-search requests.
     pub fn with_related_code_from_focal(
         self,
         search: &dyn crate::SemanticSearch,
         max_results: usize,
     ) -> Self {
-        let query = self.focal_code.clone();
+        let query = related_code_query_from_focal_code(&self.focal_code);
         self.with_related_code_from_search(search, &query, max_results)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocalScanState {
+    Normal,
+    LineComment,
+    BlockComment,
+    String,
+    Char,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IdentCandidate<'a> {
+    token: &'a str,
+    first_pos: usize,
+}
+
+fn related_code_query_from_focal_code(focal_code: &str) -> String {
+    // 1) Prefer identifier-like tokens outside comments/strings.
+    let mut unique: BTreeMap<&str, usize> = BTreeMap::new();
+    for cand in extract_identifier_candidates(focal_code) {
+        let tok = cand.token;
+        if is_semantic_query_stop_word(tok) {
+            continue;
+        }
+
+        let keep_short = tok
+            .bytes()
+            .any(|b| (b as char).is_ascii_uppercase());
+        if tok.len() < 3 && !keep_short {
+            continue;
+        }
+
+        unique
+            .entry(tok)
+            .and_modify(|pos| *pos = (*pos).min(cand.first_pos))
+            .or_insert(cand.first_pos);
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct Scored<'a> {
+        tok: &'a str,
+        first_pos: usize,
+        score: i32,
+    }
+
+    let mut scored: Vec<Scored<'_>> = unique
+        .into_iter()
+        .map(|(tok, first_pos)| Scored {
+            tok,
+            first_pos,
+            score: semantic_query_token_score(tok),
+        })
+        .collect();
+
+    scored.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then_with(|| b.tok.len().cmp(&a.tok.len()))
+            .then_with(|| a.first_pos.cmp(&b.first_pos))
+            .then_with(|| a.tok.cmp(b.tok))
+    });
+
+    const MAX_TOKENS: usize = 16;
+    let mut out = String::new();
+    for cand in scored.into_iter().take(MAX_TOKENS) {
+        if !push_query_token(&mut out, cand.tok, RELATED_CODE_QUERY_MAX_BYTES) {
+            break;
+        }
+    }
+
+    let out = out.trim().to_string();
+    if !out.is_empty() {
+        return out;
+    }
+
+    // 2) Fallback: take a small redacted snippet. This is useful when the focal code contains
+    // only literals (e.g., a selected string) and no identifiers.
+    related_code_query_fallback(focal_code)
+}
+
+fn related_code_query_fallback(focal_code: &str) -> String {
+    let redacted = crate::privacy::redact_file_paths(focal_code);
+    let mut out = String::new();
+
+    for tok in redacted.split_whitespace() {
+        // Avoid leaking file paths (absolute or relative) via the query text.
+        if tok.contains('/') || tok.contains('\\') {
+            continue;
+        }
+
+        if !push_query_token(&mut out, tok, RELATED_CODE_QUERY_MAX_BYTES) {
+            break;
+        }
+    }
+
+    let out = out.trim();
+    if out.is_empty() {
+        truncate_utf8_to_bytes(redacted.trim(), RELATED_CODE_QUERY_MAX_BYTES).to_string()
+    } else {
+        out.to_string()
+    }
+}
+
+fn push_query_token(out: &mut String, tok: &str, max_bytes: usize) -> bool {
+    if out.len() >= max_bytes {
+        return false;
+    }
+
+    if out.is_empty() {
+        let tok = truncate_utf8_to_bytes(tok, max_bytes);
+        out.push_str(tok);
+        return !tok.is_empty();
+    }
+
+    let space = 1usize;
+    if out.len().saturating_add(space) >= max_bytes {
+        return false;
+    }
+    let remaining = max_bytes - out.len() - space;
+    if remaining == 0 {
+        return false;
+    }
+
+    // Only add a token if it fits without truncation; truncating mid-token tends to produce very
+    // low-signal fragments.
+    if tok.len() > remaining {
+        return false;
+    }
+
+    out.push(' ');
+    out.push_str(tok);
+    true
+}
+
+fn truncate_utf8_to_bytes(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+fn is_semantic_query_stop_word(ident: &str) -> bool {
+    // Java keywords + common literals.
+    matches!(
+        ident,
+        // Keywords
+        "abstract"
+            | "assert"
+            | "boolean"
+            | "break"
+            | "byte"
+            | "case"
+            | "catch"
+            | "char"
+            | "class"
+            | "const"
+            | "continue"
+            | "default"
+            | "do"
+            | "double"
+            | "else"
+            | "enum"
+            | "extends"
+            | "final"
+            | "finally"
+            | "float"
+            | "for"
+            | "goto"
+            | "if"
+            | "implements"
+            | "import"
+            | "instanceof"
+            | "int"
+            | "interface"
+            | "long"
+            | "native"
+            | "new"
+            | "package"
+            | "private"
+            | "protected"
+            | "public"
+            | "return"
+            | "short"
+            | "static"
+            | "strictfp"
+            | "super"
+            | "switch"
+            | "synchronized"
+            | "this"
+            | "throw"
+            | "throws"
+            | "transient"
+            | "try"
+            | "void"
+            | "volatile"
+            | "while"
+            // Newer Java keywords/types (kept as stop words to avoid noise)
+            | "var"
+            | "record"
+            | "yield"
+            | "sealed"
+            | "permits"
+            // Literals
+            | "true"
+            | "false"
+            | "null"
+    )
+}
+
+fn semantic_query_token_score(tok: &str) -> i32 {
+    let len = tok.len() as i32;
+    let mut score = len;
+
+    let mut bytes = tok.bytes();
+    let starts_upper = bytes
+        .next()
+        .map(|b| (b as char).is_ascii_uppercase())
+        .unwrap_or(false);
+    let has_upper = tok
+        .bytes()
+        .any(|b| (b as char).is_ascii_uppercase());
+
+    if has_upper {
+        score += 20;
+    }
+    if starts_upper {
+        score += 10;
+    }
+    if tok.contains('_') {
+        score += 3;
+    }
+
+    score
+}
+
+fn extract_identifier_candidates(text: &str) -> Vec<IdentCandidate<'_>> {
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    let mut state = FocalScanState::Normal;
+    let mut out: Vec<IdentCandidate<'_>> = Vec::new();
+
+    while i < bytes.len() {
+        match state {
+            FocalScanState::Normal => {
+                // Comments.
+                if bytes[i] == b'/' && i + 1 < bytes.len() {
+                    if bytes[i + 1] == b'/' {
+                        state = FocalScanState::LineComment;
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i + 1] == b'*' {
+                        state = FocalScanState::BlockComment;
+                        i += 2;
+                        continue;
+                    }
+                }
+
+                // Strings/chars.
+                if bytes[i] == b'"' {
+                    state = FocalScanState::String;
+                    i += 1;
+                    continue;
+                }
+                if bytes[i] == b'\'' {
+                    state = FocalScanState::Char;
+                    i += 1;
+                    continue;
+                }
+
+                if is_ident_start(bytes[i]) {
+                    let start = i;
+                    i += 1;
+                    while i < bytes.len() && is_ident_continue(bytes[i]) {
+                        i += 1;
+                    }
+                    // Safe: we only slice on ASCII boundaries.
+                    let token = &text[start..i];
+                    out.push(IdentCandidate {
+                        token,
+                        first_pos: start,
+                    });
+                    continue;
+                }
+
+                i += 1;
+            }
+            FocalScanState::LineComment => {
+                if bytes[i] == b'\n' {
+                    state = FocalScanState::Normal;
+                }
+                i += 1;
+            }
+            FocalScanState::BlockComment => {
+                if bytes[i] == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                    state = FocalScanState::Normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            }
+            FocalScanState::String => {
+                if bytes[i] == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                if bytes[i] == b'"' {
+                    state = FocalScanState::Normal;
+                }
+                i += 1;
+            }
+            FocalScanState::Char => {
+                if bytes[i] == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                if bytes[i] == b'\'' {
+                    state = FocalScanState::Normal;
+                }
+                i += 1;
+            }
+        }
+    }
+
+    out
+}
+
+fn is_ident_start(b: u8) -> bool {
+    b.is_ascii_alphabetic() || b == b'_' || b == b'$'
+}
+
+fn is_ident_continue(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
 }
 
 #[derive(Debug, Clone)]
