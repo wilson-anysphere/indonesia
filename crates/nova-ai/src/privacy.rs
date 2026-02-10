@@ -87,8 +87,21 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
     //
     // We stop at common delimiters so surrounding punctuation is preserved (e.g. `(... )`).
     static FILE_URI_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?mi)(?P<path>\bfile:(?:(?:/{2,})|\\\\+)[^\s"'<>)\]}]+)"#)
-            .expect("valid file uri regex")
+        // Note: Java commonly emits `file:/...` for absolute file URIs (single slash), while other
+        // tooling emits `file:///...`. We treat any `file:` token with an immediate, non-delimited
+        // payload as a potential path leak.
+        Regex::new(r#"(?mi)(?P<path>\bfile:[^\s"'<>)\]}]+)"#).expect("valid file uri regex")
+    });
+
+    // UNC paths / network shares (e.g. `\\server\share\path\file.txt`), including the escaped form
+    // that appears in serialized strings (`\\\\server\\\\share\\\\path`).
+    static WINDOWS_UNC_PATH_RE: Lazy<Regex> = Lazy::new(|| {
+        // Require 2+ characters for the server/share segments to avoid accidentally matching common
+        // escape sequences in code (e.g. `\\n\\t`).
+        Regex::new(
+            r"(?m)(?P<path>\\{2,}[A-Za-z0-9._$-]{2,}\\+[A-Za-z0-9._$-]{2,}(?:\\+[A-Za-z0-9._$-]+)*)",
+        )
+            .expect("valid windows UNC path regex")
     });
     // Absolute *nix paths.
     static UNIX_PATH_RE: Lazy<Regex> = Lazy::new(|| {
@@ -101,11 +114,14 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
     // backslashes) and the escaped form that often appears in serialized/quoted strings (double
     // backslashes).
     static WINDOWS_PATH_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?m)(?P<path>[A-Za-z]:\\+[A-Za-z0-9._\\-\\\\]+)")
+        // Also match the forward-slash form (`C:/Users/alice/file.txt`) which is common in some
+        // toolchains and cross-platform logs.
+        Regex::new(r"(?m)(?P<path>[A-Za-z]:[\\/]+[A-Za-z0-9._\\-\\\\/]+)")
             .expect("valid windows path regex")
     });
 
     let out = FILE_URI_RE.replace_all(text, "[PATH]").into_owned();
+    let out = WINDOWS_UNC_PATH_RE.replace_all(&out, "[PATH]").into_owned();
     let out = UNIX_PATH_RE.replace_all(&out, "[PATH]").into_owned();
     WINDOWS_PATH_RE.replace_all(&out, "[PATH]").into_owned()
 }
@@ -211,6 +227,7 @@ mod tests {
         let prompt = r#"opening file:///home/alice/project/Secret.java"#;
         let out = redact_file_paths(prompt);
         assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.to_lowercase().contains("file:"), "{out}");
         assert!(!out.contains("file:///home/alice/project/Secret.java"), "{out}");
         assert!(!out.contains("/home/alice/project/Secret.java"), "{out}");
     }
@@ -220,10 +237,29 @@ mod tests {
         let prompt = r#"opening file:///C:/Users/Alice/Secret.java"#;
         let out = redact_file_paths(prompt);
         assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.to_lowercase().contains("file:"), "{out}");
         assert!(
             !out.contains("file:///C:/Users/Alice/Secret.java"),
             "{out}"
         );
         assert!(!out.contains("C:/Users/Alice/Secret.java"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_java_style_file_uris() {
+        let prompt = r#"opening file:/home/alice/project/Secret.java and file:/C:/Users/Alice/Secret.java"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.to_lowercase().contains("file:"), "{out}");
+        assert!(!out.contains("/home/alice/project/Secret.java"), "{out}");
+        assert!(!out.contains("C:/Users/Alice/Secret.java"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_unc_paths() {
+        let prompt = r#"opening \\server\share\Users\alice\secret.txt"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.contains(r"\\server\share\Users\alice\secret.txt"), "{out}");
     }
 }
