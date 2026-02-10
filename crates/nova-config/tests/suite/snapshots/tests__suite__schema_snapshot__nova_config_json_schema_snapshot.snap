@@ -1036,7 +1036,7 @@ expression: schema
           "minimum": 1.0
         },
         "model": {
-          "description": "Optional embedding model override when using provider-backed embeddings.\n\nWhen unset, Nova reuses `ai.provider.model`.",
+          "description": "Optional embedding model override when using provider-backed embeddings.\n\nWhen unset, Nova reuses `ai.provider.model`.\n\nNote: for Azure OpenAI (`ai.provider.kind = \"azure_open_ai\"`), Azure uses **deployments** instead of raw model names. In that case, `ai.embeddings.model` is treated as an embeddings deployment override (falling back to `ai.provider.azure_deployment` when unset).",
           "default": null,
           "type": [
             "string",

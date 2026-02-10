@@ -922,6 +922,10 @@ pub struct AiEmbeddingsConfig {
     /// Optional embedding model override when using provider-backed embeddings.
     ///
     /// When unset, Nova reuses `ai.provider.model`.
+    ///
+    /// Note: for Azure OpenAI (`ai.provider.kind = "azure_open_ai"`), Azure uses **deployments**
+    /// instead of raw model names. In that case, `ai.embeddings.model` is treated as an embeddings
+    /// deployment override (falling back to `ai.provider.azure_deployment` when unset).
     #[serde(default)]
     pub model: Option<String>,
 

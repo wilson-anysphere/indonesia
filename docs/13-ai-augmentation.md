@@ -702,6 +702,23 @@ enabled = true
 backend = "provider"
 ```
 
+If you want to use **different deployments** for chat/completions vs embeddings, keep
+`ai.provider.azure_deployment` pointing at your chat deployment and set `ai.embeddings.model` to the
+embeddings deployment:
+
+```toml
+[ai.provider]
+kind = "azure_open_ai"
+url = "https://{resource}.openai.azure.com"
+azure_deployment = "my-chat-deployment"
+azure_api_version = "2024-02-01"
+
+[ai.embeddings]
+enabled = true
+backend = "provider"
+model = "my-embeddings-deployment"
+```
+
 Note: Azure OpenAI embeddings support may depend on your Nova build/version. If provider embeddings
 are not supported for the selected `ai.provider.kind`, Nova will log a warning and fall back to
 `backend="hash"`.
