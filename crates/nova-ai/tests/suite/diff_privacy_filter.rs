@@ -492,3 +492,39 @@ fn parsing_failure_fails_closed_with_single_sentinel_line_and_preserves_newline_
     assert_eq!(filtered, sentinel_line("\r\n"));
     assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
 }
+
+#[test]
+fn crlf_newlines_are_preserved_on_successful_filtering() {
+    let excluded_path = "src/secrets/Secret.java";
+
+    let excluded_section = r#"diff --git a/src/secrets/Secret.java b/src/secrets/Secret.java
+index 0000000..1111111 100644
+--- a/src/secrets/Secret.java
++++ b/src/secrets/Secret.java
+@@ -1 +1 @@
+-old
++CRLF_SECRET
+"#;
+
+    let allowed_section = r#"diff --git a/src/Ok.java b/src/Ok.java
+index 2222222..3333333 100644
+--- a/src/Ok.java
++++ b/src/Ok.java
+@@ -1 +1 @@
+-class Ok {}
++class Ok { int x = 10; }
+"#;
+
+    let diff_lf = format!("{excluded_section}{allowed_section}");
+    let diff_crlf = diff_lf.replace('\n', "\r\n");
+    let allowed_crlf = allowed_section.replace('\n', "\r\n");
+
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff_crlf, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_crlf}", sentinel_line("\r\n"));
+    assert_eq!(filtered, expected);
+    assert!(!filtered.contains("CRLF_SECRET"));
+    assert!(filtered.contains(&allowed_crlf));
+}
