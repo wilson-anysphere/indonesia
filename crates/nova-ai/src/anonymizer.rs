@@ -401,97 +401,120 @@ pub fn deanonymize_java_like_code(
         return code.to_string();
     }
 
-    let mut out = String::with_capacity(code.len());
-    let mut chars = code.chars().peekable();
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum State {
+        Normal,
+        LineComment,
+        BlockComment,
+        String,
+        Char,
+    }
 
-    while let Some(ch) = chars.next() {
-        match ch {
-            // Line comment
-            '/' if chars.peek() == Some(&'/') => {
-                out.push('/');
-                out.push('/');
-                chars.next();
-                while let Some(c) = chars.next() {
-                    out.push(c);
-                    if c == '\n' {
-                        break;
-                    }
-                }
-            }
-            // Block comment
-            '/' if chars.peek() == Some(&'*') => {
-                out.push('/');
-                out.push('*');
-                chars.next();
-                while let Some(c) = chars.next() {
-                    out.push(c);
-                    if c == '*' && chars.peek() == Some(&'/') {
-                        out.push('/');
-                        chars.next();
-                        break;
-                    }
-                }
-            }
-            // String literal
-            '"' => {
-                out.push('"');
-                let mut escaped = false;
-                while let Some(c) = chars.next() {
-                    out.push(c);
-                    if escaped {
-                        escaped = false;
-                        continue;
-                    }
+    let bytes = code.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    let mut state = State::Normal;
 
-                    match c {
-                        '\\' => escaped = true,
-                        '"' => break,
-                        _ => {}
-                    }
+    while i < bytes.len() {
+        match state {
+            State::Normal => match bytes[i] {
+                b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                    out.extend_from_slice(b"//");
+                    i += 2;
+                    state = State::LineComment;
                 }
-            }
-            // Char literal
-            '\'' => {
-                out.push('\'');
-                let mut escaped = false;
-                while let Some(c) = chars.next() {
-                    out.push(c);
-                    if escaped {
-                        escaped = false;
-                        continue;
+                b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                    out.extend_from_slice(b"/*");
+                    i += 2;
+                    state = State::BlockComment;
+                }
+                b'"' => {
+                    out.push(b'"');
+                    i += 1;
+                    state = State::String;
+                }
+                b'\'' => {
+                    out.push(b'\'');
+                    i += 1;
+                    state = State::Char;
+                }
+                b if is_ident_start(b as char) => {
+                    let start = i;
+                    i += 1;
+                    while i < bytes.len() && is_ident_continue(bytes[i] as char) {
+                        i += 1;
                     }
 
-                    match c {
-                        '\\' => escaped = true,
-                        '\'' => break,
-                        _ => {}
-                    }
-                }
-            }
-            // Identifier token
-            c if is_ident_start(c) => {
-                let mut ident = String::new();
-                ident.push(c);
-                while let Some(&next) = chars.peek() {
-                    if is_ident_continue(next) {
-                        ident.push(next);
-                        chars.next();
+                    let ident = &code[start..i];
+                    if let Some(original) = reverse_identifiers.get(ident) {
+                        out.extend_from_slice(original.as_bytes());
                     } else {
-                        break;
+                        out.extend_from_slice(ident.as_bytes());
                     }
                 }
-
-                if let Some(original) = reverse_identifiers.get(&ident) {
-                    out.push_str(original);
-                } else {
-                    out.push_str(&ident);
+                other => {
+                    out.push(other);
+                    i += 1;
+                }
+            },
+            State::LineComment => {
+                let b = bytes[i];
+                out.push(b);
+                i += 1;
+                if b == b'\n' || b == b'\r' {
+                    state = State::Normal;
                 }
             }
-            other => out.push(other),
+            State::BlockComment => {
+                if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                    out.extend_from_slice(b"*/");
+                    i += 2;
+                    state = State::Normal;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            State::String => {
+                if bytes[i] == b'\\' {
+                    out.push(b'\\');
+                    i += 1;
+                    if i < bytes.len() {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                } else if bytes[i] == b'"' {
+                    out.push(b'"');
+                    i += 1;
+                    state = State::Normal;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            State::Char => {
+                if bytes[i] == b'\\' {
+                    out.push(b'\\');
+                    i += 1;
+                    if i < bytes.len() {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                } else if bytes[i] == b'\'' {
+                    out.push(b'\'');
+                    i += 1;
+                    state = State::Normal;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
         }
     }
 
-    out
+    // The output is a byte-for-byte copy of the input except where we splice in `reverse_identifiers`
+    // values. Both are valid UTF-8, so this conversion should never fail.
+    String::from_utf8(out).unwrap_or_else(|_| code.to_string())
 }
 
 /// Apply de-anonymization to all user-visible fields of a multi-token completion.
