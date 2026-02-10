@@ -333,6 +333,9 @@ fn parse_git_binary_files_line(line: &str) -> Result<Option<(String, String)>, D
         } else {
             // Best-effort: handle modified files where `<old> == <new>` even if the path contains
             // ` and ` as a literal substring (git does not quote spaces for this line format).
+            //
+            // Git's default prefixes (`a/` and `b/`) also show up here, so accept pairs where the
+            // paths match after stripping those prefixes.
             let mut candidates = Vec::<(String, String)>::new();
             for (pos, _) in rest.match_indices(" and ") {
                 let old_raw = rest[..pos].trim_end();
@@ -342,7 +345,21 @@ fn parse_git_binary_files_line(line: &str) -> Result<Option<(String, String)>, D
                 }
                 let old = parse_git_binary_path_token(old_raw)?;
                 let new = parse_git_binary_path_token(new_raw)?;
-                if old == new {
+
+                let same_no_prefix = old == new;
+                let same_git_prefix = {
+                    let old_stripped = old.strip_prefix("a/").or_else(|| old.strip_prefix("b/"));
+                    let new_stripped = new.strip_prefix("a/").or_else(|| new.strip_prefix("b/"));
+
+                    let prefixes_look_like_git = (old.starts_with("a/") && new.starts_with("b/"))
+                        || (old.starts_with("b/") && new.starts_with("a/"));
+
+                    prefixes_look_like_git
+                        && old_stripped.is_some()
+                        && old_stripped == new_stripped
+                };
+
+                if same_no_prefix || same_git_prefix {
                     candidates.push((old, new));
                 }
             }
