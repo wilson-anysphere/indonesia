@@ -96,3 +96,12 @@ test('SAFE_MODE_EXEMPT_REQUESTS includes nova/java/organizeImports', () => {
 test('SAFE_MODE_EXEMPT_REQUESTS includes nova/completion/more (AI polling)', () => {
   assert.equal(SAFE_MODE_EXEMPT_REQUESTS.has('nova/completion/more'), true);
 });
+
+test('SAFE_MODE_EXEMPT_REQUESTS includes nova/ai/* endpoints (AI custom requests)', () => {
+  assert.equal(SAFE_MODE_EXEMPT_REQUESTS.has('nova/ai/explainError'), true);
+  assert.equal(SAFE_MODE_EXEMPT_REQUESTS.has('nova/ai/codeReview'), true);
+  assert.equal(SAFE_MODE_EXEMPT_REQUESTS.has('nova/ai/models'), true);
+  assert.equal(SAFE_MODE_EXEMPT_REQUESTS.has('nova/ai/status'), true);
+  assert.equal(SAFE_MODE_EXEMPT_REQUESTS.has('nova/ai/generateMethodBody'), true);
+  assert.equal(SAFE_MODE_EXEMPT_REQUESTS.has('nova/ai/generateTests'), true);
+});

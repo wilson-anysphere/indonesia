@@ -16,6 +16,9 @@ export const SAFE_MODE_EXEMPT_REQUESTS: ReadonlySet<string> = new Set<string>([
   // builds, so they should not clear the safe-mode indicator.
   'nova/completion/more',
   'nova/ai/explainError',
+  'nova/ai/codeReview',
+  'nova/ai/models',
+  'nova/ai/status',
   'nova/ai/generateMethodBody',
   'nova/ai/generateTests',
   // Internal/experimental endpoints that may bypass safe-mode guard in some builds.
