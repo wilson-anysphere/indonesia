@@ -159,11 +159,18 @@ where
         // `b/` pseudo prefixes to arbitrary strings. These prefixes are not typically part of the
         // repository-relative path patterns used by `excluded_paths`.
         //
+        let has_rename_or_copy_metadata = section_lines.iter().any(|line| {
+            line.starts_with("rename from ")
+                || line.starts_with("rename to ")
+                || line.starts_with("copy from ")
+                || line.starts_with("copy to ")
+        });
+
         // Best-effort: if we have both an old and new path *and* we did not see rename/copy
         // metadata, also consider their common suffix (split on `/`) as an exclusion match
         // candidate. (For rename/copy, the metadata already provides reliable repo-relative
         // paths, and a suffix-only candidate like `foo.txt` could lead to over-exclusion.)
-        if metadata_paths.is_empty() {
+        if !has_rename_or_copy_metadata {
             if let Some((old, new)) = header_pair {
                 if let Some(suffix) = common_path_suffix(&old, &new) {
                     candidates.push(suffix);
