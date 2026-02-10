@@ -122,11 +122,9 @@ impl CompletionContextBuilder {
         // Cap size defensively to avoid accidentally sending huge prompts.
         if self.max_prompt_chars > 0 {
             let fixed_len = header.len() + FOOTER.len();
-            if self.max_prompt_chars > fixed_len {
-                let avail = self.max_prompt_chars - fixed_len;
-                if body.len() > avail {
-                    Self::truncate_utf8_boundary(&mut body, avail);
-                }
+            let avail = self.max_prompt_chars.saturating_sub(fixed_len);
+            if body.len() > avail {
+                Self::truncate_utf8_boundary(&mut body, avail);
             }
         }
 
@@ -284,10 +282,11 @@ mod tests {
             importable_paths: vec![],
         };
 
-        // Force truncation.
+        // Force truncation with no remaining budget for the fenced body. This ensures truncation is
+        // applied only to the fenced body portion and that the closing fence is never dropped.
         let full_prompt = CompletionContextBuilder::new(0).build_completion_prompt(&ctx, 1);
         let fixed_len = full_prompt.len() - ctx.surrounding_code.len();
-        let max_prompt_chars = fixed_len + 64;
+        let max_prompt_chars = fixed_len;
         let prompt =
             CompletionContextBuilder::new(max_prompt_chars).build_completion_prompt(&ctx, 1);
 
