@@ -241,6 +241,59 @@ async fn cloud_multi_token_clamps_after_deanonymization() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn deanonymization_does_not_rewrite_inside_strings_or_comments() {
+    let llm = Arc::new(StringsAndCommentsRoundTripLlm::default());
+
+    let provider =
+        CloudMultiTokenCompletionProvider::new(llm.clone()).with_privacy_mode(PrivacyMode {
+            anonymize_identifiers: true,
+            include_file_paths: false,
+            ..PrivacyMode::default()
+        });
+
+    let ctx = MultiTokenCompletionContext {
+        receiver_type: Some("java.util.Optional<String>".into()),
+        expected_type: Some("java.lang.String".into()),
+        surrounding_code: "System.out.".into(),
+        available_methods: vec!["getSecretToken".into()],
+        importable_paths: vec!["com.example.SecretTokenProvider".into()],
+    };
+    let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx, 1);
+
+    let out = provider
+        .complete_multi_token(MultiTokenCompletionRequest {
+            prompt,
+            max_items: 1,
+            timeout: Duration::from_secs(1),
+            cancel: CancellationToken::new(),
+        })
+        .await
+        .expect("provider call succeeds");
+
+    let captured = llm
+        .prompt
+        .lock()
+        .expect("prompt mutex")
+        .clone()
+        .expect("captured prompt");
+    let method_token = extract_first_section_bullet(&captured, "Available methods:");
+
+    assert_eq!(out.len(), 1);
+    assert_eq!(
+        out[0].insert_text,
+        format!(
+            "String s = \"{method_token}\"; // {method_token}\ngetSecretToken(); /* {method_token} */"
+        )
+    );
+    assert_eq!(
+        out[0].additional_edits,
+        vec![AdditionalEdit::AddImport {
+            path: "com.example.SecretTokenProvider".to_string()
+        }]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn parses_json_wrapped_in_fenced_block() {
     let server = MockServer::start();
     let completion_payload = r#"{"completions":[{"label":"fenced","insert_text":"map(x -> x)","format":"plain","additional_edits":[],"confidence":0.7}]}"#;
@@ -314,6 +367,59 @@ impl LlmClient for CapturingLlm {
         *self.prompt.lock().expect("prompt mutex") = Some(content);
 
         Ok(r#"{"completions":[{"label":"x","insert_text":"y","format":"plain","additional_edits":[],"confidence":0.5}]}"#.to_string())
+    }
+
+    async fn chat_stream(
+        &self,
+        _request: ChatRequest,
+        _cancel: CancellationToken,
+    ) -> Result<AiStream, AiError> {
+        Err(AiError::UnexpectedResponse(
+            "streaming not supported in test".into(),
+        ))
+    }
+
+    async fn list_models(&self, _cancel: CancellationToken) -> Result<Vec<String>, AiError> {
+        Ok(Vec::new())
+    }
+}
+
+#[derive(Default)]
+struct StringsAndCommentsRoundTripLlm {
+    prompt: std::sync::Mutex<Option<String>>,
+}
+
+#[async_trait::async_trait]
+impl LlmClient for StringsAndCommentsRoundTripLlm {
+    async fn chat(
+        &self,
+        request: ChatRequest,
+        _cancel: CancellationToken,
+    ) -> Result<String, AiError> {
+        let prompt = request
+            .messages
+            .first()
+            .map(|msg| msg.content.clone())
+            .unwrap_or_default();
+
+        let method_token = extract_first_section_bullet(&prompt, "Available methods:");
+        let import_token = extract_first_section_bullet(&prompt, "Importable symbols:");
+        let insert_text = format!(
+            "String s = \"{method_token}\"; // {method_token}\n{method_token}(); /* {method_token} */"
+        );
+
+        *self.prompt.lock().expect("prompt mutex") = Some(prompt);
+
+        Ok(json!({
+            "completions": [{
+                "label": method_token,
+                "insert_text": insert_text,
+                "format": "plain",
+                "additional_edits": [{"add_import": import_token}],
+                "confidence": 1.0,
+            }]
+        })
+        .to_string())
     }
 
     async fn chat_stream(
