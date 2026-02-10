@@ -36,6 +36,7 @@ mod provider_embedder_batch_cache;
 mod provider_embedder_privacy;
 mod provider_embeddings_privacy;
 mod retry_config;
+mod retry_warning_sanitization;
 mod rayon_global_pool_regression;
 mod related_code_query;
 mod semantic_context_builder;
