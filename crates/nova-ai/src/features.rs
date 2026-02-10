@@ -352,8 +352,9 @@ fn truncate_git_diff_by_file_sections(
         }
     }
 
-    // Need at least 3 file sections for a "keep head + keep tail + omit middle" strategy.
-    if starts.len() < 3 {
+    // Need at least 2 file sections to omit at least one whole section while still keeping at
+    // least one complete file boundary.
+    if starts.len() < 2 {
         return None;
     }
 
@@ -382,16 +383,20 @@ fn truncate_git_diff_by_file_sections(
     }
 
     // Select the best (K, M) (keep first K sections and last M sections) that:
-    // - omits at least one middle section (K + M < N)
+    // - omits at least one section (K + M < N)
+    // - keeps at least one complete file section (K + M > 0)
     // - fits within max_chars once the marker is inserted
-    // Prefer preserving more complete file sections, then more total characters.
-    let mut best: Option<(usize, usize, usize, usize)> = None; // (K, M, kept_chars, marker_len)
-    for k in 1..=section_count {
-        // Need at least one omitted section, and at least one tail section.
-        if k >= section_count {
-            continue;
-        }
-        for m in 1..=section_count - k - 1 {
+    //
+    // Prefer keeping both a head and tail section when possible; otherwise, keep as many complete
+    // file sections as we can (from either end).
+    let mut best: Option<(usize, usize, usize, usize, bool)> = None; // (K, M, kept_chars, marker_len, has_both)
+    for k in 0..=section_count {
+        for m in 0..=section_count.saturating_sub(k) {
+            let kept_sections = k + m;
+            if kept_sections == 0 || kept_sections >= section_count {
+                continue;
+            }
+
             let kept = preamble_chars + prefix_chars[k] + suffix_chars[m];
             if kept >= total_chars {
                 continue;
@@ -403,27 +408,39 @@ fn truncate_git_diff_by_file_sections(
                 continue;
             }
 
-            let kept_sections = k + m;
+            let has_both = k > 0 && m > 0;
             match best {
-                None => best = Some((k, m, kept, marker_len)),
-                Some((best_k, best_m, best_kept, best_marker_len)) => {
+                None => best = Some((k, m, kept, marker_len, has_both)),
+                Some((best_k, best_m, best_kept, best_marker_len, best_has_both)) => {
                     let best_sections = best_k + best_m;
-                    if kept_sections > best_sections
-                        || (kept_sections == best_sections && kept > best_kept)
-                        || (kept_sections == best_sections
+                    if (has_both && !best_has_both)
+                        || (has_both == best_has_both && kept_sections > best_sections)
+                        || (has_both == best_has_both
+                            && kept_sections == best_sections
+                            && kept > best_kept)
+                        || (has_both == best_has_both
+                            && kept_sections == best_sections
                             && kept == best_kept
                             && marker_len < best_marker_len)
                     {
-                        best = Some((k, m, kept, marker_len));
+                        best = Some((k, m, kept, marker_len, has_both));
                     }
                 }
             }
         }
     }
 
-    let (k, m, kept_chars, _marker_len) = best?;
-    let head_end_line = sections[k - 1].end_line;
-    let tail_start_line = sections[section_count - m].start_line;
+    let (k, m, kept_chars, _marker_len, _has_both) = best?;
+    let head_end_line = if k == 0 {
+        preamble_end
+    } else {
+        sections[k - 1].end_line
+    };
+    let tail_start_line = if m == 0 {
+        lines.len()
+    } else {
+        sections[section_count - m].start_line
+    };
 
     let omitted = total_chars - kept_chars;
     let marker = truncation_marker(omitted);

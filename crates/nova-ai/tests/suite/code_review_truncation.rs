@@ -232,6 +232,78 @@ diff --git a/src/C.java b/src/C.java\n\
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn code_review_truncates_two_file_diffs_by_keeping_complete_file_sections() {
+    // Intentionally set a limit that can't keep both file sections, but can keep at least one
+    // complete file section plus the truncation marker.
+    let limit = 260usize;
+
+    let file_a = "\
+diff --git a/src/A.java b/src/A.java\n\
+--- a/src/A.java\n\
++++ b/src/A.java\n\
+@@ -1 +1 @@\n\
+-class A {}\n\
++class A { int x; }\n";
+
+    let file_b_header = "diff --git a/src/B.java b/src/B.java\n";
+    let file_b = format!(
+        "{file_b_header}--- a/src/B.java\n+++ b/src/B.java\n@@ -1 +1 @@\n-{}\n+{}\n",
+        "B".repeat(2_000),
+        "C".repeat(2_000)
+    );
+
+    let diff = format!("{file_a}{file_b}");
+
+    let handler = move |req: Request<Body>| async move {
+        assert_eq!(req.uri().path(), "/v1/chat/completions");
+        let bytes = hyper::body::to_bytes(req.into_body())
+            .await
+            .expect("body bytes");
+        let json: Value = serde_json::from_slice(&bytes).expect("json body");
+
+        let user = json["messages"][1]["content"]
+            .as_str()
+            .expect("messages[1].content string");
+        let diff_part = extract_diff_block(user).expect("diff fenced block present");
+
+        let marker_count = diff_part.matches("[diff truncated: omitted ").count();
+        assert_eq!(
+            marker_count, 1,
+            "expected exactly one truncation marker; got {marker_count} in: {diff_part}"
+        );
+
+        // Ensure at least one complete file header is preserved (file-section-aware truncation).
+        assert!(
+            diff_part.contains("diff --git a/src/A.java b/src/A.java\n")
+                || diff_part.contains(file_b_header),
+            "expected at least one complete file section header to be preserved; got: {diff_part}"
+        );
+
+        assert!(
+            diff_part.chars().count() <= limit,
+            "expected diff part <= {limit} chars; got {} chars",
+            diff_part.chars().count()
+        );
+
+        Response::new(Body::from(r#"{"choices":[{"message":{"content":"ok"}}]}"#))
+    };
+
+    let (addr, handle) = spawn_server(handler);
+
+    let mut cfg = base_config(Url::parse(&format!("http://{addr}")).unwrap());
+    cfg.features.code_review_max_diff_chars = limit;
+
+    let ai = NovaAi::new(&cfg).expect("NovaAi builds");
+    let out = ai
+        .code_review(&diff, CancellationToken::new())
+        .await
+        .expect("code_review succeeds");
+    assert_eq!(out, "ok");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn code_review_truncates_single_file_diffs_at_hunk_boundaries() {
     let limit = 600usize;
 
