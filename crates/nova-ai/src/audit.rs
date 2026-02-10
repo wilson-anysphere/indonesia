@@ -143,7 +143,36 @@ fn sanitize_urls_for_tracing(text: &str) -> String {
                     let _ = url.set_password(None);
                     format!("{}{}", url.as_str(), suffix)
                 }
-                Err(_) => matched.to_string(),
+                Err(_) => {
+                    // Best-effort fallback for non-parseable URLs: strip userinfo and drop
+                    // query/fragment so secrets can't be leaked.
+                    //
+                    // This intentionally trades fidelity for safety. We still run
+                    // `sanitize_text` afterwards, but stripping the query here ensures we don't
+                    // retain unknown query params in the output.
+                    let mut sanitized = url_part.to_string();
+
+                    if let Some(scheme_idx) = sanitized.find("://") {
+                        let after_scheme = scheme_idx.saturating_add(3);
+                        let rest = &sanitized[after_scheme..];
+                        let authority_end_rel = rest
+                            .find(|c| matches!(c, '/' | '?' | '#'))
+                            .unwrap_or(rest.len());
+                        if let Some(at_rel) = rest[..authority_end_rel].rfind('@') {
+                            let at_abs = after_scheme.saturating_add(at_rel);
+                            if at_abs < sanitized.len() {
+                                sanitized.replace_range(after_scheme..=at_abs, "");
+                            }
+                        }
+                    }
+
+                    let cut = sanitized
+                        .find(|c| matches!(c, '?' | '#'))
+                        .unwrap_or(sanitized.len());
+                    sanitized.truncate(cut);
+
+                    format!("{}{}", sanitized, suffix)
+                }
             }
         })
         .into_owned()
@@ -285,5 +314,18 @@ sk-proj-012345678901234567890123456789"#;
         assert!(!out.contains("sh0rt3"));
         assert!(!out.contains("abcdefghijklmnop"));
         assert!(!out.contains("sk-proj-012345678901234567890123456789"));
+    }
+
+    #[test]
+    fn sanitize_error_for_tracing_strips_query_even_when_url_parse_fails() {
+        let secret = "sk-verysecret-012345678901234567890123456789";
+        let input =
+            format!("http error for url (https://user:pass@example.com/pa%ZZth?key={secret})");
+
+        let out = sanitize_error_for_tracing(&input);
+        assert!(!out.contains(secret));
+        assert!(!out.contains("user:pass@"));
+        assert!(!out.contains("?key="));
+        assert!(out.contains("https://example.com/pa%ZZth"));
     }
 }
