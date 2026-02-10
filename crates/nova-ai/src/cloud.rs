@@ -1615,6 +1615,135 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn anthropic_provider_streaming_avoids_double_v1_when_base_url_includes_v1() {
+        let (url, shutdown) = spawn_server(|req| {
+            assert_eq!(req.uri().path(), "/v1/messages");
+            assert_eq!(
+                req.headers()
+                    .get(hyper::header::ACCEPT)
+                    .and_then(|v| v.to_str().ok()),
+                Some("text/event-stream")
+            );
+            assert_eq!(
+                req.headers()
+                    .get("x-api-key")
+                    .and_then(|v| v.to_str().ok()),
+                Some("dummy-key")
+            );
+            assert_eq!(
+                req.headers()
+                    .get("anthropic-version")
+                    .and_then(|v| v.to_str().ok()),
+                Some("2023-06-01")
+            );
+
+            let stream = async_stream::stream! {
+                yield Ok::<Bytes, Infallible>(Bytes::from_static(b"data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"Hel\"}}\n\n"));
+                yield Ok::<Bytes, Infallible>(Bytes::from_static(b"data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"lo\"}}\n\n"));
+                yield Ok::<Bytes, Infallible>(Bytes::from_static(b"event: message_stop\n\n"));
+            };
+
+            let mut resp = Response::new(Body::wrap_stream(stream));
+            *resp.status_mut() = StatusCode::OK;
+            resp.headers_mut().insert(
+                hyper::header::CONTENT_TYPE,
+                hyper::header::HeaderValue::from_static("text/event-stream"),
+            );
+            resp
+        });
+
+        let provider = AnthropicProvider::new(
+            url.join("v1/").expect("join v1"),
+            "dummy-key".to_string(),
+            "claude-test",
+            Duration::from_secs(5),
+        )
+        .expect("provider");
+
+        let stream = provider
+            .chat_stream(
+                ChatRequest {
+                    messages: vec![ChatMessage::user("hello")],
+                    max_tokens: None,
+                    temperature: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("stream starts");
+        let parts: Vec<String> = stream.try_collect().await.expect("stream ok");
+        assert_eq!(parts.concat(), "Hello");
+
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn gemini_provider_streaming_avoids_double_v1beta_when_base_url_includes_v1beta() {
+        let (url, shutdown) = spawn_server(|req| {
+            assert_eq!(
+                req.uri().path(),
+                "/v1beta/models/test-model:streamGenerateContent"
+            );
+            let query = req.uri().query().expect("query");
+            let mut pairs: Vec<_> = url::form_urlencoded::parse(query.as_bytes())
+                .into_owned()
+                .collect();
+            pairs.sort();
+            assert_eq!(
+                pairs,
+                vec![
+                    ("alt".to_string(), "sse".to_string()),
+                    ("key".to_string(), "dummy-key".to_string())
+                ]
+            );
+            assert_eq!(
+                req.headers()
+                    .get(hyper::header::ACCEPT)
+                    .and_then(|v| v.to_str().ok()),
+                Some("text/event-stream")
+            );
+
+            let stream = async_stream::stream! {
+                yield Ok::<Bytes, Infallible>(Bytes::from_static(b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hel\"}]}}]}\n\n"));
+                yield Ok::<Bytes, Infallible>(Bytes::from_static(b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}]}}]}\n\n"));
+                yield Ok::<Bytes, Infallible>(Bytes::from_static(b"data: [DONE]\n\n"));
+            };
+
+            let mut resp = Response::new(Body::wrap_stream(stream));
+            *resp.status_mut() = StatusCode::OK;
+            resp.headers_mut().insert(
+                hyper::header::CONTENT_TYPE,
+                hyper::header::HeaderValue::from_static("text/event-stream"),
+            );
+            resp
+        });
+
+        let provider = GeminiProvider::new(
+            url.join("v1beta/").expect("join v1beta"),
+            "dummy-key".to_string(),
+            "test-model",
+            Duration::from_secs(5),
+        )
+        .expect("provider");
+
+        let stream = provider
+            .chat_stream(
+                ChatRequest {
+                    messages: vec![ChatMessage::user("hello")],
+                    max_tokens: None,
+                    temperature: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("stream starts");
+        let parts: Vec<String> = stream.try_collect().await.expect("stream ok");
+        assert_eq!(parts.concat(), "Hello");
+
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn azure_openai_provider_streaming_parses_openai_sse() {
         let (url, shutdown) = spawn_server(|req| {
             assert_eq!(
