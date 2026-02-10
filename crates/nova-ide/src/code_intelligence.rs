@@ -10362,6 +10362,7 @@ fn member_completions_for_receiver_type(
     items
 }
 
+#[cfg(any(feature = "ai", test))]
 pub(crate) fn member_method_names_for_receiver_type(
     db: &dyn Database,
     file: FileId,
