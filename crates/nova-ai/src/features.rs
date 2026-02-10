@@ -297,6 +297,13 @@ fn truncate_middle_with_marker(text: String, max_chars: usize) -> String {
         if let Some(out) = truncate_git_diff_by_hunk_boundaries(&text, total_chars, max_chars) {
             return out;
         }
+    } else {
+        if let Some(out) = truncate_unified_diff_by_file_sections(&text, total_chars, max_chars) {
+            return out;
+        }
+        if let Some(out) = truncate_unified_diff_by_hunk_boundaries(&text, total_chars, max_chars) {
+            return out;
+        }
     }
 
     truncate_by_lines_with_marker(&text, total_chars, max_chars)
@@ -355,25 +362,14 @@ struct DiffFileSection {
     chars: usize,
 }
 
-fn truncate_git_diff_by_file_sections(
+fn truncate_diff_by_file_sections_with_starts(
     text: &str,
+    lines: &[&str],
+    line_chars: &[usize],
+    starts: &[usize],
     total_chars: usize,
     max_chars: usize,
 ) -> Option<String> {
-    // Preserve exact newlines by splitting inclusively.
-    let lines: Vec<&str> = text.split_inclusive('\n').collect();
-    let mut line_chars: Vec<usize> = Vec::with_capacity(lines.len());
-    for line in &lines {
-        line_chars.push(line.chars().count());
-    }
-
-    let mut starts = Vec::<usize>::new();
-    for (idx, line) in lines.iter().enumerate() {
-        if line.starts_with("diff --git ") {
-            starts.push(idx);
-        }
-    }
-
     // Need at least 2 file sections to omit at least one whole section while still keeping at
     // least one complete file boundary.
     if starts.len() < 2 {
@@ -481,6 +477,115 @@ fn truncate_git_diff_by_file_sections(
     Some(out)
 }
 
+fn truncate_git_diff_by_file_sections(
+    text: &str,
+    total_chars: usize,
+    max_chars: usize,
+) -> Option<String> {
+    // Preserve exact newlines by splitting inclusively.
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let mut line_chars: Vec<usize> = Vec::with_capacity(lines.len());
+    for line in &lines {
+        line_chars.push(line.chars().count());
+    }
+
+    let mut starts = Vec::<usize>::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if line.starts_with("diff --git ") {
+            starts.push(idx);
+        }
+    }
+
+    starts.sort_unstable();
+    starts.dedup();
+
+    truncate_diff_by_file_sections_with_starts(
+        text,
+        &lines,
+        &line_chars,
+        &starts,
+        total_chars,
+        max_chars,
+    )
+}
+
+fn truncate_unified_diff_by_file_sections(
+    text: &str,
+    total_chars: usize,
+    max_chars: usize,
+) -> Option<String> {
+    // Preserve exact newlines by splitting inclusively.
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    if lines.len() < 2 {
+        return None;
+    }
+
+    let mut line_chars: Vec<usize> = Vec::with_capacity(lines.len());
+    for line in &lines {
+        line_chars.push(line.chars().count());
+    }
+
+    let mut starts = Vec::<usize>::new();
+    for idx in 0..lines.len().saturating_sub(1) {
+        if is_unified_file_header_at(&lines, idx) {
+            starts.push(unified_diff_section_start(&lines, idx));
+        }
+    }
+    starts.sort_unstable();
+    starts.dedup();
+
+    truncate_diff_by_file_sections_with_starts(
+        text,
+        &lines,
+        &line_chars,
+        &starts,
+        total_chars,
+        max_chars,
+    )
+}
+
+fn is_unified_file_header_at(lines: &[&str], idx: usize) -> bool {
+    let Some(line) = lines.get(idx) else {
+        return false;
+    };
+    if !line.starts_with("--- ") {
+        return false;
+    }
+    let Some(next) = lines.get(idx + 1) else {
+        return false;
+    };
+    next.starts_with("+++ ")
+}
+
+fn unified_diff_section_start(lines: &[&str], header_idx: usize) -> usize {
+    // Common unified diff formats include extra section delimiters before the `---/+++` header
+    // lines, for example:
+    //
+    // - GNU diff: `diff -u old new`
+    // - SVN diff: `Index: path` + `====...`
+    //
+    // Capture these as part of the file section so truncation can preserve whole file blocks.
+    if header_idx >= 2 {
+        let prev2 = lines[header_idx - 2];
+        let prev1 = lines[header_idx - 1];
+        if prev2.starts_with("Index: ") && is_unified_section_delimiter(prev1) {
+            return header_idx - 2;
+        }
+    }
+    if header_idx >= 1 {
+        let prev = lines[header_idx - 1];
+        if prev.starts_with("Index: ") || prev.starts_with("diff ") {
+            return header_idx - 1;
+        }
+    }
+    header_idx
+}
+
+fn is_unified_section_delimiter(line: &str) -> bool {
+    let trimmed = line.trim_end_matches(['\r', '\n']);
+    trimmed.len() >= 3 && trimmed.chars().all(|ch| ch == '=')
+}
+
 #[derive(Debug, Clone)]
 struct DiffHunkChunk {
     start_line: usize,
@@ -528,6 +633,134 @@ fn truncate_git_diff_by_hunk_boundaries(
         return None;
     }
     let file_start = diff_starts[0];
+
+    // Need enough hunks to omit something while keeping both ends.
+    if hunk_starts.len() < 2 {
+        return None;
+    }
+
+    let preamble_chars = line_prefix_sum[file_start];
+    if preamble_chars >= max_chars {
+        return None;
+    }
+
+    // Chunk boundaries: file start, each hunk start, and end of diff.
+    let mut boundaries = Vec::<usize>::with_capacity(hunk_starts.len() + 2);
+    boundaries.push(file_start);
+    for idx in hunk_starts {
+        if idx > file_start {
+            boundaries.push(idx);
+        }
+    }
+    boundaries.push(lines.len());
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    let mut chunks = Vec::<DiffHunkChunk>::new();
+    for window in boundaries.windows(2) {
+        let start = window[0];
+        let end = window[1];
+        if start >= end {
+            continue;
+        }
+        let chars = line_prefix_sum[end] - line_prefix_sum[start];
+        chunks.push(DiffHunkChunk {
+            start_line: start,
+            end_line: end,
+            chars,
+        });
+    }
+
+    if chunks.len() < 3 {
+        return None;
+    }
+
+    let chunk_chars = chunks.iter().map(|chunk| chunk.chars).collect::<Vec<_>>();
+
+    // Iterate until the marker length stabilizes (it depends on the omitted count's digit count).
+    let mut marker_len = 0usize;
+    let mut marker = String::new();
+    for _ in 0..8 {
+        let available_total = max_chars.saturating_sub(marker_len);
+        if available_total <= preamble_chars {
+            return None;
+        }
+        let available_chunks = available_total - preamble_chars;
+        let (_prefix_chunks, _suffix_chunks, kept_chunk_chars) =
+            select_prefix_suffix_lines(&chunk_chars, available_chunks);
+        let kept_total_chars = preamble_chars + kept_chunk_chars;
+        let omitted = total_chars.saturating_sub(kept_total_chars);
+        let next_marker = truncation_marker(omitted);
+        let next_len = next_marker.chars().count();
+        marker = next_marker;
+        if next_len == marker_len {
+            break;
+        }
+        marker_len = next_len;
+    }
+
+    let marker_len = marker.chars().count();
+    if max_chars <= marker_len {
+        return Some(marker_only_within_limit(&marker, max_chars));
+    }
+
+    let available_total = max_chars - marker_len;
+    if available_total <= preamble_chars {
+        return None;
+    }
+    let available_chunks = available_total - preamble_chars;
+    let (prefix_chunks, suffix_chunks, _kept_chunk_chars) =
+        select_prefix_suffix_lines(&chunk_chars, available_chunks);
+    if prefix_chunks == 0 || suffix_chunks == 0 || prefix_chunks + suffix_chunks >= chunks.len() {
+        return None;
+    }
+
+    let head_end_line = chunks[prefix_chunks - 1].end_line;
+    let tail_start_line = chunks[chunks.len().saturating_sub(suffix_chunks)].start_line;
+
+    let mut out = String::with_capacity(text.len().min(max_chars) + marker.len());
+    for line in &lines[..head_end_line] {
+        out.push_str(line);
+    }
+    out.push_str(&marker);
+    for line in &lines[tail_start_line..] {
+        out.push_str(line);
+    }
+    Some(out)
+}
+
+fn truncate_unified_diff_by_hunk_boundaries(
+    text: &str,
+    total_chars: usize,
+    max_chars: usize,
+) -> Option<String> {
+    // Preserve exact newlines by splitting inclusively.
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let mut line_chars: Vec<usize> = Vec::with_capacity(lines.len());
+    for line in &lines {
+        line_chars.push(line.chars().count());
+    }
+
+    let mut line_prefix_sum = vec![0usize; lines.len() + 1];
+    for (idx, len) in line_chars.iter().enumerate() {
+        line_prefix_sum[idx + 1] = line_prefix_sum[idx] + len;
+    }
+
+    let mut file_headers = Vec::<usize>::new();
+    let mut hunk_starts = Vec::<usize>::new();
+    for idx in 0..lines.len() {
+        if is_unified_file_header_at(&lines, idx) {
+            file_headers.push(idx);
+        }
+        if lines[idx].starts_with("@@") {
+            hunk_starts.push(idx);
+        }
+    }
+
+    if file_headers.len() != 1 {
+        return None;
+    }
+    let file_start = unified_diff_section_start(&lines, file_headers[0]);
 
     // Need enough hunks to omit something while keeping both ends.
     if hunk_starts.len() < 2 {
