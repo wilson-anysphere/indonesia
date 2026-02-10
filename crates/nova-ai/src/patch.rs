@@ -738,19 +738,37 @@ fn parse_unified_file_block(
 }
 
 fn parse_diff_git_paths(line: &str) -> Result<Option<(String, String)>, PatchParseError> {
-    let parsed = crate::diff::parse_diff_git_paths(line);
-    if parsed.is_some() {
-        return Ok(parsed);
+    if let Some(paths) = crate::diff::parse_diff_git_paths(line) {
+        return Ok(Some(paths));
     }
 
-    // Fail-closed for malformed quoted headers (unterminated quotes / invalid escapes).
-    // For unquoted headers, treat parsing failure as ambiguous and allow `rename from/to` or
-    // unified headers to provide the paths instead.
+    // `diff::parse_diff_git_paths` is intentionally conservative and may return `None` for both
+    // ambiguous unquoted whitespace *and* malformed quoted tokens. Re-parse the first two tokens
+    // to detect quoting/escaping errors and missing paths so we fail closed per patch rules.
     let rest = line
         .strip_prefix("diff --git ")
-        .unwrap_or_default()
-        .trim_start();
-    if rest.starts_with('"') {
+        .ok_or_else(|| PatchParseError::InvalidDiff("invalid diff --git header".into()))?;
+    let rest = rest.trim_start();
+
+    let old_is_quoted = rest.starts_with('"');
+    let (old, rest) = crate::diff::parse_diff_token(rest).ok_or_else(|| {
+        PatchParseError::InvalidDiff("missing old path in diff --git header".into())
+    })?;
+
+    let rest = rest.trim_start();
+    let new_is_quoted = rest.starts_with('"');
+    let (new, remaining) = crate::diff::parse_diff_token(rest).ok_or_else(|| {
+        PatchParseError::InvalidDiff("missing new path in diff --git header".into())
+    })?;
+
+    if remaining.trim().is_empty() {
+        return Ok(Some((old, new)));
+    }
+
+    // If either token was quoted, any remaining data is invalid (git headers have exactly two
+    // path tokens). For unquoted headers, treat the remainder as ambiguous whitespace and allow
+    // `rename from/to` or unified headers to provide the file paths.
+    if old_is_quoted || new_is_quoted {
         return Err(PatchParseError::InvalidDiff(
             "invalid diff --git header".into(),
         ));
@@ -1111,6 +1129,19 @@ diff --git a/foo.txt b/foo.txt
 BROKEN
 ```"#;
 
+        eprintln!(
+            "diff::parse_diff_git_paths(header)={:?}",
+            crate::diff::parse_diff_git_paths("diff --git a/foo.txt \"b/foo.txt")
+        );
+        eprintln!(
+            "patch::parse_diff_git_paths(header)={:?}",
+            super::parse_diff_git_paths("diff --git a/foo.txt \"b/foo.txt")
+        );
+        eprintln!(
+            "diff::parse_diff_token(new)={:?}",
+            crate::diff::parse_diff_token("\"b/foo.txt")
+        );
+
         let err = parse_structured_patch(raw).expect_err("expected failure");
         assert!(matches!(err, PatchParseError::InvalidDiff(_)));
     }
@@ -1245,5 +1276,21 @@ index e69de29..4b825dc 100644\n\
                 }],
             })
         );
+    }
+
+    #[test]
+    fn unterminated_quote_in_diff_git_header_fails_closed() {
+        let raw = r#"diff --git a/foo.txt "b/foo.txt"#;
+
+        let err = parse_structured_patch(raw).expect_err("expected failure");
+        assert!(matches!(err, PatchParseError::InvalidDiff(_)));
+    }
+
+    #[test]
+    fn missing_new_path_in_diff_git_header_fails_closed() {
+        let raw = "diff --git a/foo.txt";
+
+        let err = parse_structured_patch(raw).expect_err("expected failure");
+        assert!(matches!(err, PatchParseError::InvalidDiff(_)));
     }
 }
