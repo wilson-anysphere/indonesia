@@ -583,6 +583,68 @@ local_only = true
 }
 
 #[test]
+fn stdio_ai_models_custom_request_returns_empty_list_when_listing_is_unsupported() {
+    let _lock = support::stdio_server_lock();
+
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(GET).path("/v1/models");
+        then.status(404).json_body(json!({ "error": "not supported" }));
+    });
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.provider]
+kind = "open_ai_compatible"
+url = "{endpoint}"
+model = "alpha"
+
+[ai.privacy]
+local_only = true
+"#,
+            endpoint = server.base_url()
+        ),
+    )
+    .expect("write config");
+
+    let mut child = spawn_stdio_server(&config_path);
+    let (mut stdin, mut stdout) = initialize(&mut child);
+
+    // Allow `params` to be `null` for this endpoint.
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/ai/models",
+            "params": null
+        }),
+    );
+
+    let resp = support::read_response_with_id(&mut stdout, 2);
+    assert!(
+        resp.get("error").is_none(),
+        "expected success response, got: {resp:?}"
+    );
+    let models = resp
+        .pointer("/result/models")
+        .and_then(|v| v.as_array())
+        .expect("models array");
+    assert!(models.is_empty(), "expected empty models list, got: {models:?}");
+
+    mock.assert_hits(1);
+
+    shutdown(child, stdin, stdout);
+}
+
+#[test]
 fn stdio_ai_retry_max_retries_zero_disables_retries() {
     let _lock = support::stdio_server_lock();
 
