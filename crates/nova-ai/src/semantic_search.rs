@@ -196,9 +196,10 @@ pub fn semantic_search_from_config(
                                 ));
                             }
                             Err(err) => {
+                                let sanitized_error = crate::audit::sanitize_error_for_tracing(&err.to_string());
                                 tracing::warn!(
                                     target = "nova.ai",
-                                    ?err,
+                                    err = %sanitized_error,
                                     "failed to initialize local embeddings; falling back to hash embeddings"
                                 );
                             }
@@ -617,9 +618,10 @@ mod embeddings {
             {
                 Ok(pool) => Self::Rayon(pool),
                 Err(err) => {
+                    let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                     warn!(
                         target = "nova.ai",
-                        ?err,
+                        err = %sanitized_error,
                         "failed to create dedicated Rayon pool for embedding semantic search; falling back to Rayon's global pool"
                     );
                     Self::Inline
@@ -1048,9 +1050,11 @@ mod embeddings {
                             );
                         }
                         Err(err) => {
+                            let sanitized_error =
+                                audit::sanitize_error_for_tracing(&err.to_string());
                             warn!(
                                 target = "nova.ai",
-                                ?err,
+                                err = %sanitized_error,
                                 "Ollama /api/embed failed; falling back to /api/embeddings"
                             );
                         }
@@ -1278,10 +1282,11 @@ mod embeddings {
         let privacy = match PrivacyFilter::new(&config.privacy) {
             Ok(filter) => Arc::new(filter),
             Err(err) => {
+                let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                 warn!(
                     target = "nova.ai",
                     provider = ?config.provider.kind,
-                    ?err,
+                    err = %sanitized_error,
                     "failed to build embeddings privacy filter; falling back to hash embeddings"
                 );
                 return None;
@@ -1304,10 +1309,11 @@ mod embeddings {
                 ) {
                     Ok(embedder) => Some(embedder),
                     Err(err) => {
+                        let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                         warn!(
                             target = "nova.ai",
                             provider = ?config.provider.kind,
-                            ?err,
+                            err = %sanitized_error,
                             "failed to build provider embedder; falling back to hash embeddings"
                         );
                         None
@@ -1377,10 +1383,11 @@ mod embeddings {
                         Some(embedder)
                     }
                     Err(err) => {
+                        let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                         warn!(
                             target = "nova.ai",
                             provider = ?config.provider.kind,
-                            ?err,
+                            err = %sanitized_error,
                             "failed to build provider embedder; falling back to hash embeddings"
                         );
                         None
@@ -1410,10 +1417,11 @@ mod embeddings {
                 ) {
                     Ok(embedder) => Some(embedder),
                     Err(err) => {
+                        let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                         warn!(
                             target = "nova.ai",
                             provider = ?config.provider.kind,
-                            ?err,
+                            err = %sanitized_error,
                             "failed to build provider embedder; falling back to hash embeddings"
                         );
                         None
@@ -2144,10 +2152,11 @@ mod embeddings {
                     }
                 }
                 Err(err) => {
+                    let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                     tracing::warn!(
                         target = "nova.ai",
                         path = %path.to_string_lossy(),
-                        ?err,
+                        err = %sanitized_error,
                         "failed to embed extracted docs; skipping failing docs"
                     );
                     super::record_semantic_search_failure(
@@ -2163,10 +2172,12 @@ mod embeddings {
                             Ok(mut batch) if batch.len() == 1 => out.push(batch.pop()),
                             Ok(_) => out.push(None),
                             Err(err) => {
+                                let sanitized_error =
+                                    audit::sanitize_error_for_tracing(&err.to_string());
                                 tracing::warn!(
                                     target = "nova.ai",
                                     path = %path.to_string_lossy(),
-                                    ?err,
+                                    err = %sanitized_error,
                                     "failed to embed doc"
                                 );
                                 out.push(None);
@@ -2280,9 +2291,10 @@ mod embeddings {
             let mut query_embedding = match self.embedder.embed(query) {
                 Ok(embedding) => embedding,
                 Err(err) => {
+                    let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                     tracing::warn!(
                         target = "nova.ai",
-                        ?err,
+                        err = %sanitized_error,
                         "failed to embed query; returning empty results"
                     );
                     super::record_semantic_search_failure(

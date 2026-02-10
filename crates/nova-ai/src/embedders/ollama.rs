@@ -1,3 +1,4 @@
+use crate::audit;
 use crate::semantic_search::Embedder;
 use crate::http::map_reqwest_error;
 use crate::AiError;
@@ -191,9 +192,10 @@ impl Embedder for OllamaEmbedder {
                             .store(OLLAMA_EMBED_ENDPOINT_UNSUPPORTED, Ordering::Release);
                     }
                     Err(err) => {
+                        let sanitized_error = audit::sanitize_error_for_tracing(&err.to_string());
                         tracing::warn!(
                             target = "nova.ai",
-                            ?err,
+                            err = %sanitized_error,
                             "Ollama /api/embed failed; falling back to /api/embeddings"
                         );
                         use_embed_endpoint = false;

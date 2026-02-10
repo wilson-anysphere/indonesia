@@ -52,9 +52,10 @@ pub fn embeddings_client_from_config(config: &AiConfig) -> Result<Box<dyn Embedd
                         config.embeddings.local_model.trim().to_string(),
                     ))),
                     Err(err) => {
+                        let sanitized_error = crate::audit::sanitize_error_for_tracing(&err.to_string());
                         tracing::warn!(
                             target = "nova.ai",
-                            ?err,
+                            err = %sanitized_error,
                             "failed to initialize local embeddings; falling back to hash embeddings"
                         );
                         Ok(Box::new(LocalEmbeddingsClient::new(max_memory_bytes)))
