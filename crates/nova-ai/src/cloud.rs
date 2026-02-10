@@ -1748,6 +1748,56 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn azure_openai_provider_streaming_avoids_double_openai_when_base_url_includes_openai() {
+        let (url, shutdown) = spawn_server(|req| {
+            assert_eq!(
+                req.uri().path(),
+                "/openai/deployments/test-deploy/chat/completions"
+            );
+            assert_eq!(req.uri().query(), Some("api-version=2024-02-01"));
+
+            let stream = async_stream::stream! {
+                yield Ok::<Bytes, Infallible>(Bytes::from_static(b"data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n"));
+                yield Ok::<Bytes, Infallible>(Bytes::from_static(b"data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\n"));
+                yield Ok::<Bytes, Infallible>(Bytes::from_static(b"data: [DONE]\n\n"));
+            };
+
+            let mut resp = Response::new(Body::wrap_stream(stream));
+            *resp.status_mut() = StatusCode::OK;
+            resp.headers_mut().insert(
+                hyper::header::CONTENT_TYPE,
+                hyper::header::HeaderValue::from_static("text/event-stream"),
+            );
+            resp
+        });
+
+        let provider = AzureOpenAiProvider::new(
+            url.join("openai/").expect("join openai"),
+            "dummy-key".to_string(),
+            "test-deploy".to_string(),
+            "2024-02-01".to_string(),
+            Duration::from_secs(5),
+        )
+        .expect("provider");
+
+        let stream = provider
+            .chat_stream(
+                ChatRequest {
+                    messages: vec![ChatMessage::user("hello")],
+                    max_tokens: None,
+                    temperature: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("stream starts");
+        let parts: Vec<String> = stream.try_collect().await.expect("stream ok");
+        assert_eq!(parts.concat(), "Hello");
+
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn azure_openai_provider_streaming_parses_openai_sse() {
         let (url, shutdown) = spawn_server(|req| {
             assert_eq!(
