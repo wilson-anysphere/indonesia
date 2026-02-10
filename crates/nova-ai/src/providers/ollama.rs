@@ -126,7 +126,11 @@ impl LlmProvider for OllamaProvider {
         let timeout = self.timeout;
 
         let stream = try_stream! {
-            let mut buffer = String::new();
+            // Ollama streams newline-delimited JSON objects. We must buffer raw bytes until a full
+            // `\n`-terminated line is available to avoid corrupting multibyte UTF-8 sequences that
+            // may be split across network chunks.
+            let mut buffer: Vec<u8> = Vec::new();
+            let mut cursor: usize = 0;
 
             loop {
                 let next = tokio::select! {
@@ -141,11 +145,18 @@ impl LlmProvider for OllamaProvider {
 
                 let Some(chunk) = next else { break };
                 let chunk = chunk.map_err(AiError::Http)?;
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                buffer.extend_from_slice(&chunk);
 
-                while let Some(pos) = buffer.find('\n') {
-                    let line = buffer[..pos].to_string();
-                    buffer = buffer[pos + 1..].to_string();
+                while let Some(rel_pos) = buffer[cursor..].iter().position(|&b| b == b'\n') {
+                    let line_end = cursor + rel_pos;
+                    let line_bytes = &buffer[cursor..line_end];
+                    cursor = line_end + 1;
+
+                    let line = std::str::from_utf8(line_bytes).map_err(|err| {
+                        AiError::UnexpectedResponse(format!(
+                            "ollama stream returned invalid utf-8: {err}"
+                        ))
+                    })?;
                     let line = line.trim();
                     if line.is_empty() {
                         continue;
@@ -160,6 +171,16 @@ impl LlmProvider for OllamaProvider {
                     if parsed.done {
                         return;
                     }
+                }
+
+                // If we've consumed a significant prefix of the buffer, compact it in-place to
+                // avoid unbounded growth while still preventing quadratic copying.
+                if cursor == buffer.len() {
+                    buffer.clear();
+                    cursor = 0;
+                } else if cursor >= 8 * 1024 && cursor >= buffer.len() / 2 {
+                    buffer.drain(..cursor);
+                    cursor = 0;
                 }
             }
         };

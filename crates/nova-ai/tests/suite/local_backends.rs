@@ -403,6 +403,162 @@ async fn ollama_request_formatting_supports_base_url_with_api_suffix() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn ollama_streaming_parsing_splits_single_json_line_across_chunks() {
+    let (body_tx, mut body_rx) = mpsc::channel::<Value>(1);
+
+    let handler = move |req: Request<Body>| {
+        let body_tx = body_tx.clone();
+        async move {
+            if req.uri().path() != "/api/chat" {
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Body::empty())
+                    .unwrap();
+            }
+
+            let bytes = hyper::body::to_bytes(req.into_body())
+                .await
+                .expect("read body");
+            let json: Value = serde_json::from_slice(&bytes).expect("parse json");
+            let _ = body_tx.send(json).await;
+
+            let line = br#"{"message":{"content":"Hello world"},"done":false}"#;
+            let mut line_bytes = Vec::from(&line[..]);
+            line_bytes.push(b'\n');
+            let done = br#"{"done":true}"#;
+            let mut done_bytes = Vec::from(&done[..]);
+            done_bytes.push(b'\n');
+
+            let split1 = 10;
+            let split2 = 25;
+            let chunks = vec![
+                Ok::<_, std::io::Error>(hyper::body::Bytes::copy_from_slice(&line_bytes[..split1])),
+                Ok::<_, std::io::Error>(hyper::body::Bytes::copy_from_slice(&line_bytes[split1..split2])),
+                Ok::<_, std::io::Error>(hyper::body::Bytes::copy_from_slice(&line_bytes[split2..])),
+                Ok::<_, std::io::Error>(hyper::body::Bytes::from(done_bytes)),
+            ];
+
+            Response::builder()
+                .header("content-type", "application/x-ndjson")
+                .body(Body::wrap_stream(iter(chunks)))
+                .unwrap()
+        }
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}")).unwrap();
+    let client = AiClient::from_config(&ollama_config(url)).unwrap();
+
+    let mut stream = client
+        .chat_stream(
+            ChatRequest {
+                messages: vec![ChatMessage::user("hi")],
+                max_tokens: Some(5),
+                temperature: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let mut output = String::new();
+    while let Some(item) = stream.next().await {
+        output.push_str(&item.unwrap());
+    }
+    assert_eq!(output, "Hello world");
+
+    let body = body_rx.recv().await.expect("request body");
+    assert_eq!(body["stream"], true);
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ollama_streaming_parsing_preserves_utf8_split_across_chunks() {
+    let (body_tx, mut body_rx) = mpsc::channel::<Value>(1);
+
+    let handler = move |req: Request<Body>| {
+        let body_tx = body_tx.clone();
+        async move {
+            if req.uri().path() != "/api/chat" {
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Body::empty())
+                    .unwrap();
+            }
+
+            let bytes = hyper::body::to_bytes(req.into_body())
+                .await
+                .expect("read body");
+            let json: Value = serde_json::from_slice(&bytes).expect("parse json");
+            let _ = body_tx.send(json).await;
+
+            let emoji = "🦀";
+            let expected = format!("Hello {emoji}");
+            let line = format!(
+                "{{\"message\":{{\"content\":\"{expected}\"}},\"done\":false}}"
+            );
+            let mut line_bytes = line.into_bytes();
+            line_bytes.push(b'\n');
+
+            let emoji_bytes = emoji.as_bytes();
+            let emoji_pos = line_bytes
+                .windows(emoji_bytes.len())
+                .position(|window| window == emoji_bytes)
+                .expect("emoji should be present in response bytes");
+            let split = emoji_pos + 2; // split inside the 4-byte UTF-8 sequence.
+
+            let done = br#"{"done":true}"#;
+            let mut done_bytes = Vec::from(&done[..]);
+            done_bytes.push(b'\n');
+
+            let chunks = vec![
+                Ok::<_, std::io::Error>(hyper::body::Bytes::copy_from_slice(&line_bytes[..split])),
+                Ok::<_, std::io::Error>(hyper::body::Bytes::copy_from_slice(&line_bytes[split..])),
+                Ok::<_, std::io::Error>(hyper::body::Bytes::from(done_bytes)),
+            ];
+
+            Response::builder()
+                .header("content-type", "application/x-ndjson")
+                .body(Body::wrap_stream(iter(chunks)))
+                .unwrap()
+        }
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}")).unwrap();
+    let client = AiClient::from_config(&ollama_config(url)).unwrap();
+
+    let mut stream = client
+        .chat_stream(
+            ChatRequest {
+                messages: vec![ChatMessage::user("hi")],
+                max_tokens: Some(5),
+                temperature: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let mut output = String::new();
+    while let Some(item) = stream.next().await {
+        output.push_str(&item.unwrap());
+    }
+
+    assert_eq!(output, "Hello 🦀");
+    assert!(
+        !output.contains('\u{FFFD}'),
+        "output should not contain replacement characters: {output:?}"
+    );
+
+    let body = body_rx.recv().await.expect("request body");
+    assert_eq!(body["stream"], true);
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn openai_compatible_streaming_parsing() {
     let (body_tx, mut body_rx) = mpsc::channel::<Value>(1);
 
