@@ -114,6 +114,13 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
         Regex::new(r#"(?m)(?P<path>\\{2,}[?.]\\+[^\r\n"'<>)\]}]+)"#)
             .expect("valid windows device path regex")
     });
+
+    // Shell-style home directory paths (e.g. `~/.ssh/id_rsa`, `~/project/secret.txt`,
+    // `~alice/project/file.txt`).
+    static TILDE_PATH_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?m)(?P<path>~[A-Za-z0-9._-]*/[^\r\n"'<>)\]}]+)"#)
+            .expect("valid tilde path regex")
+    });
     // Absolute *nix paths.
     static UNIX_PATH_RE: Lazy<Regex> = Lazy::new(|| {
         // Allow spaces inside directory segments (common in macOS/Windows-y projects), but keep the
@@ -198,6 +205,11 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
     }
 
     let replaced = WINDOWS_UNC_PATH_RE.replace_all(out.as_ref(), "[PATH]");
+    if let Cow::Owned(s) = replaced {
+        out = Cow::Owned(s);
+    }
+
+    let replaced = TILDE_PATH_RE.replace_all(out.as_ref(), "[PATH]");
     if let Cow::Owned(s) = replaced {
         out = Cow::Owned(s);
     }
@@ -319,6 +331,18 @@ mod tests {
         assert!(out.contains("[PATH]"), "{out}");
         assert!(!out.contains("/home/alice/project/secret/"), "{out}");
         assert!(!out.contains("/home/alice/project/secret"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_tilde_paths() {
+        let prompt = r#"opening ~/.ssh/id_rsa and ~alice/project/secret.txt"#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.contains("~/.ssh/id_rsa"), "{out}");
+        assert!(!out.contains(".ssh"), "{out}");
+        assert!(!out.contains("id_rsa"), "{out}");
+        assert!(!out.contains("~alice/project/secret.txt"), "{out}");
+        assert!(!out.contains("secret.txt"), "{out}");
     }
 
     #[test]
