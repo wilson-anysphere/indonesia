@@ -103,7 +103,9 @@ pub(crate) fn redact_file_paths(text: &str) -> String {
     // These are not `file:` URIs, but they often leak both hostnames and absolute paths (e.g.
     // VS Code remote workspaces).
     static EMBEDDED_PATH_URI_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?mi)(?P<path>\b(?:vscode-remote|vscode)://[^\r\n"'<>)\]}]+)"#)
+        Regex::new(
+            r#"(?mi)(?P<path>\bvscode(?:-[a-z0-9]+)*:(?://|/)[^\r\n"'<>)\]}]+)"#,
+        )
             .expect("valid embedded path uri regex")
     });
 
@@ -435,6 +437,17 @@ mod tests {
         assert!(!out.contains("vscode-remote://"), "{out}");
         assert!(!out.contains("/home/alice/project/Secret.java"), "{out}");
         assert!(!out.contains("ssh-remote+host"), "{out}");
+    }
+
+    #[test]
+    fn redact_file_paths_rewrites_vscode_notebook_cell_uris() {
+        let prompt = r#"opening vscode-notebook-cell:/Users/alice/My Project/Notebook.ipynb#W0s="#;
+        let out = redact_file_paths(prompt);
+        assert!(out.contains("[PATH]"), "{out}");
+        assert!(!out.contains("vscode-notebook-cell:"), "{out}");
+        assert!(!out.contains("/Users/alice"), "{out}");
+        assert!(!out.contains("My Project"), "{out}");
+        assert!(!out.contains("Notebook.ipynb"), "{out}");
     }
 
     #[test]
