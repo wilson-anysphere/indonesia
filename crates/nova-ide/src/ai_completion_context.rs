@@ -99,21 +99,21 @@ fn receiver_at_offset(
                     .next()
                     .is_some_and(|ch| ch.is_ascii_lowercase());
 
-            if !trimmed.starts_with("this.")
-                && !trimmed.starts_with("super.")
-                && !is_suspicious_lowercase_type_ref
-            {
-                return (Some(receiver), Some(ty), Some(kind));
-            }
-
-            // Best-effort recovery for `foo().bar.<cursor>`: `receiver_before_dot` only captures
-            // `bar`, and semantic inference may interpret that as a (lowercase) type reference.
-            // If the segment directly before `bar` ends with a call (`)`), try to interpret this
-            // as a field access on the call's return type.
-            if is_suspicious_lowercase_type_ref {
-                if let Some(field_ty) = call_chain_field_access_type(db, file, text, dot_offset) {
-                    return (Some(receiver), Some(field_ty), Some(CallKind::Instance));
+            if !trimmed.starts_with("this.") && !trimmed.starts_with("super.") {
+                if is_suspicious_lowercase_type_ref {
+                    // Best-effort recovery for `foo().bar.<cursor>`: `receiver_before_dot` only
+                    // captures `bar`, and semantic inference may interpret that as a (lowercase)
+                    // type reference. If the segment directly before `bar` ends with a call (`)`),
+                    // try to interpret this as a field access on the call's return type.
+                    if let Some(field_ty) = call_chain_field_access_type(db, file, text, dot_offset)
+                    {
+                        return (Some(receiver), Some(field_ty), Some(CallKind::Instance));
+                    }
                 }
+
+                // If we didn't hit a recovery case, prefer the semantic inference result (even for
+                // unconventional lowercase type names).
+                return (Some(receiver), Some(ty), Some(kind));
             }
 
             if receiver.chars().any(|ch| ch.is_ascii_whitespace()) {
@@ -663,6 +663,36 @@ class Test {
         assert!(ctx.available_methods.iter().any(|m| m == "baz"));
         assert!(
             !ctx.available_methods.iter().any(|m| m == "bar"),
+            "expected static receiver to exclude instance methods, got {:?}",
+            ctx.available_methods
+        );
+    }
+
+    #[test]
+    fn lowercase_type_receiver_preserves_static_member_list() {
+        let ctx = ctx_for(
+            r#"
+class foo {
+  static int bar() { return 0; }
+  int baz() { return 0; }
+}
+
+class Test {
+  void m() {
+    foo.<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("foo"),
+            "expected receiver type to contain `foo`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "bar"));
+        assert!(
+            !ctx.available_methods.iter().any(|m| m == "baz"),
             "expected static receiver to exclude instance methods, got {:?}",
             ctx.available_methods
         );
