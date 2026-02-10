@@ -46,9 +46,9 @@ pub(crate) fn generate_tests_prompt(target: &str, context: &str) -> String {
 pub(crate) fn code_review_prompt(diff: &str) -> String {
     // The code review diff is wrapped in a Markdown fenced code block. If the diff itself contains
     // triple-backtick sequences (common in Markdown files), it can prematurely terminate the fence
-    // and confuse both the model and Nova's prompt sanitizer. Break the sequence with zero-width
-    // spaces to keep it readable while preventing accidental fence termination.
-    let diff = diff.replace("```", "`\u{200B}`\u{200B}`");
+    // and confuse both the model and Nova's prompt sanitizer. Escape backticks so the diff payload
+    // contains no literal "```" substring.
+    let diff = escape_triple_backticks(diff);
     format!(
         r#"Review the following code change.
 
@@ -107,4 +107,56 @@ truncation), explicitly state that you cannot give complete file-specific feedba
 which kinds of issues you may have missed due to the missing context.
 "#
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escape_triple_backticks_removes_triple_sequences_even_for_long_runs() {
+        for input in ["```", "````", "`````", "a```b", "a````b", "a`````b"] {
+            let escaped = escape_triple_backticks(input);
+            assert!(
+                !escaped.contains("```"),
+                "escaped payload should not contain triple backticks: input={input:?} escaped={escaped:?}"
+            );
+        }
+    }
+
+    fn count_fences(prompt: &str) -> usize {
+        prompt.match_indices("```").count()
+    }
+
+    #[test]
+    fn explain_error_prompt_outer_fence_remains_single_and_payload_cannot_inject() {
+        let diagnostic_message = "boom\n`````\nmore";
+        let prompt = explain_error_prompt(diagnostic_message, "");
+        assert!(prompt.contains("Error:\n```text\n"), "{prompt}");
+        assert_eq!(count_fences(&prompt), 2, "{prompt}");
+    }
+
+    #[test]
+    fn generate_method_body_prompt_outer_fence_remains_single_and_payload_cannot_inject() {
+        let method_signature = "public void f() { /* ````` */ }";
+        let prompt = generate_method_body_prompt(method_signature, "");
+        assert!(prompt.contains("Method signature:\n```java\n"), "{prompt}");
+        assert_eq!(count_fences(&prompt), 2, "{prompt}");
+    }
+
+    #[test]
+    fn generate_tests_prompt_outer_fence_remains_single_and_payload_cannot_inject() {
+        let target = "Target: `````";
+        let prompt = generate_tests_prompt(target, "");
+        assert!(prompt.contains("Target:\n```text\n"), "{prompt}");
+        assert_eq!(count_fences(&prompt), 2, "{prompt}");
+    }
+
+    #[test]
+    fn code_review_prompt_outer_fence_remains_single_and_payload_cannot_inject() {
+        let diff = "diff --git a/README.md b/README.md\n+`````\n";
+        let prompt = code_review_prompt(diff);
+        assert!(prompt.contains("```diff\n"), "{prompt}");
+        assert_eq!(count_fences(&prompt), 2, "{prompt}");
+    }
 }

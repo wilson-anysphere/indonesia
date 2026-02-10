@@ -233,7 +233,7 @@ async fn code_review_prompt_escapes_triple_backticks_inside_diff() {
             "expected diff block to contain no raw triple-backtick sequences; got:\n{diff_part}"
         );
 
-        let escaped_fence = "`\u{200B}`\u{200B}`java";
+        let escaped_fence = "``\\`java";
         assert!(
             diff_part.contains(escaped_fence),
             "expected escaped fence marker {escaped_fence:?} in diff block; got:\n{diff_part}"
