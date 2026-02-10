@@ -732,10 +732,11 @@ model_dir = ".nova/models/embeddings"
   allows provider-backed embeddings to connect to loopback/localhost URLs (and forbids cloud
   providers). Misconfigured endpoints are rejected by config validation and/or will fall back to
   deterministic `backend="hash"` embeddings at runtime.
-- **By default (`ai.privacy.include_file_paths = false`), file paths are not sent to provider
-  embedding APIs.** This includes provider-backed semantic-search indexing: embeddings payloads
-  contain only the extracted code/text, not filesystem metadata. Set
-  `ai.privacy.include_file_paths = true` to explicitly opt in.
+- **By default (`ai.privacy.include_file_paths = false`), provider embeddings do not send raw file
+  paths to cloud providers.** In cloud mode (`ai.privacy.local_only = false`), Nova redacts absolute
+  paths (e.g. `/home/alice/...`, `C:\\Users\\...`) in embedding inputs before sending them to the
+  provider (they are rewritten as `[PATH]`). This happens even if semantic-search embedding inputs
+  include path metadata.
 - **`ai.privacy.excluded_paths` applies to semantic search.** Excluded files are not embedded/indexed
   and therefore cannot appear in semantic-search results or be surfaced as related-code context.
 
@@ -842,11 +843,12 @@ Local-only mode (`ai.privacy.local_only=true`) is unaffected because code never 
 
 ### Including file paths in prompts (`ai.privacy.include_file_paths`)
 
-By default, Nova does **not** include filesystem paths in:
+By default (`ai.privacy.include_file_paths = false`), Nova does **not** include filesystem paths in
+prompts/context sent to an LLM.
 
-- prompts/context sent to an LLM, and
-- provider-backed embeddings payloads (when `ai.embeddings.backend = "provider"` is used for
-  semantic-search indexing).
+Separately, when using **provider-backed embeddings** in cloud mode (`ai.privacy.local_only = false`),
+Nova also redacts absolute filesystem paths from embedding inputs before sending them to the provider
+(rewriting them as `[PATH]`).
 
 Paths can leak sensitive metadata such as user names, organization names, and internal directory
 structure.
@@ -863,8 +865,6 @@ When enabled, Nova may include:
 - a `## File` section in built context bundles (focal file path)
 - path labels in `Related code:` / `Extra file:` section titles
 - full classpath entries under `Project context` (instead of only basenames)
-- path metadata in semantic-search embedding inputs sent to provider embedding APIs (which may
-  slightly improve retrieval/disambiguation, but is higher-sensitivity)
 
 `ai.privacy.excluded_paths` is still enforced regardless of this flag: excluded files are omitted
 from prompts, and Nova avoids attaching file path metadata for excluded files.
