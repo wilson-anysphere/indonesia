@@ -550,10 +550,10 @@ struct IdentCandidate<'a> {
 
 fn related_code_query_from_focal_code(focal_code: &str) -> String {
     // 1) Prefer identifier-like tokens outside comments/strings.
-    let path_spans = find_path_like_spans(focal_code);
     let mut unique: BTreeMap<&str, usize> = BTreeMap::new();
     for cand in extract_identifier_candidates(focal_code) {
-        if pos_in_spans(&path_spans, cand.first_pos) {
+        let end_pos = cand.first_pos + cand.token.len();
+        if identifier_looks_like_path_component(focal_code, cand.first_pos, end_pos, cand.token) {
             continue;
         }
 
@@ -625,66 +625,89 @@ fn related_code_query_from_focal_code(focal_code: &str) -> String {
     related_code_query_fallback(focal_code)
 }
 
-fn pos_in_spans(spans: &[Range<usize>], pos: usize) -> bool {
-    if spans.is_empty() {
-        return false;
-    }
-
-    // Find the first span whose end is after `pos`.
-    let idx = spans.partition_point(|span| span.end <= pos);
-    idx < spans.len() && spans[idx].start <= pos && pos < spans[idx].end
-}
-
-fn find_path_like_spans(text: &str) -> Vec<Range<usize>> {
-    let mut spans = Vec::new();
-    let mut in_token = false;
-    let mut token_start = 0usize;
-
-    for (idx, ch) in text.char_indices() {
-        if ch.is_whitespace() {
-            if in_token {
-                let token = &text[token_start..idx];
-                if looks_like_path_token(token) {
-                    spans.push(token_start..idx);
-                }
-                in_token = false;
-            }
-            continue;
+fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, tok: &str) -> bool {
+    let bytes = text.as_bytes();
+    if start > 0 {
+        let prev = bytes[start - 1];
+        if prev == b'/' || prev == b'\\' {
+            return true;
         }
-
-        if !in_token {
-            token_start = idx;
-            in_token = true;
+    }
+    if end < bytes.len() {
+        let next = bytes[end];
+        if next == b'/' || next == b'\\' {
+            return true;
         }
     }
 
-    if in_token {
-        let token = &text[token_start..text.len()];
-        if looks_like_path_token(token) {
-            spans.push(token_start..text.len());
-        }
-    }
-
-    spans
-}
-
-fn looks_like_path_token(token: &str) -> bool {
-    // If there are any path separators in the whitespace-delimited token, treat it as a path when
-    // it resembles a multi-segment filesystem/URI path (to avoid leaking usernames/dirs).
-    let sep_count = token.bytes().filter(|b| *b == b'/' || *b == b'\\').count();
-
-    if sep_count > 0 {
-        // Keep this conservative: any whitespace token containing a path separator could leak
-        // filesystem information (e.g. `secret/credentials`, `../src/Main.java`, `C:\Users\...`),
-        // and Java identifiers cannot legally contain `/` or `\\` anyway.
+    // Skip file-name-like tokens such as `Secret.java` or the extension `java` itself.
+    if identifier_looks_like_file_name_component(text, start, end, tok) {
         return true;
     }
 
-    looks_like_file_name(token)
+    false
+}
+
+fn identifier_looks_like_file_name_component(
+    text: &str,
+    start: usize,
+    end: usize,
+    tok: &str,
+) -> bool {
+    let bytes = text.as_bytes();
+
+    // `Foo.java` (base component).
+    if end < bytes.len() && bytes[end] == b'.' {
+        if let Some(ext) = file_extension_at(text, end + 1) {
+            if is_known_file_extension(ext) {
+                return true;
+            }
+        }
+    }
+
+    // `Foo.java` (extension component).
+    if start > 0 && bytes[start - 1] == b'.' {
+        if is_known_file_extension(tok) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn file_extension_at<'a>(text: &'a str, start: usize) -> Option<&'a str> {
+    if start >= text.len() {
+        return None;
+    }
+
+    let bytes = text.as_bytes();
+    let mut end = start;
+    while end < bytes.len() && bytes[end].is_ascii_alphanumeric() {
+        end += 1;
+    }
+    if end == start {
+        return None;
+    }
+    Some(&text[start..end])
 }
 
 fn looks_like_file_name(token: &str) -> bool {
     // Keep this conservative: only treat well-known source/doc extensions as file paths.
+    let Some((_base, ext)) = token.rsplit_once('.') else {
+        return false;
+    };
+
+    let ext = ext
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+        .to_ascii_lowercase();
+    if ext.is_empty() {
+        return false;
+    }
+
+    is_known_file_extension(&ext)
+}
+
+fn is_known_file_extension(ext: &str) -> bool {
     const EXTENSIONS: &[&str] = &[
         "java",
         "kt",
@@ -700,18 +723,8 @@ fn looks_like_file_name(token: &str) -> bool {
         "properties",
     ];
 
-    let Some((_base, ext)) = token.rsplit_once('.') else {
-        return false;
-    };
-
-    let ext = ext
-        .trim_matches(|c: char| !c.is_ascii_alphanumeric())
-        .to_ascii_lowercase();
-    if ext.is_empty() {
-        return false;
-    }
-
-    EXTENSIONS.iter().any(|candidate| ext == *candidate)
+    let lower = ext.to_ascii_lowercase();
+    EXTENSIONS.iter().any(|candidate| lower == *candidate)
 }
 
 fn related_code_query_fallback(focal_code: &str) -> String {
@@ -755,7 +768,7 @@ fn related_code_query_fallback(focal_code: &str) -> String {
             continue;
         }
 
-        if looks_like_path_token(tok) || looks_like_file_name(tok) {
+        if looks_like_file_name(tok) {
             continue;
         }
 

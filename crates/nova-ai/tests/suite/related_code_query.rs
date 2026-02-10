@@ -206,6 +206,43 @@ fn related_code_query_avoids_relative_path_segments_without_extensions() {
 }
 
 #[test]
+fn related_code_query_does_not_drop_identifiers_due_to_inline_string_paths() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    // A common code shape: identifiers + a string literal containing `/` (URL/path) in the same
+    // whitespace token. The query heuristic should still extract the surrounding identifiers.
+    let search = CapturingSearch::default();
+    let focal_code = r#"return userRepository.findByPath("/home/private_user_123/project");"#;
+
+    let _ = base_request(focal_code).with_related_code_from_focal(&search, 1);
+    let query = search
+        .last_query
+        .lock()
+        .expect("lock poisoned")
+        .clone()
+        .expect("query captured");
+
+    assert!(
+        query.contains("userRepository") || query.contains("findByPath"),
+        "expected query to retain surrounding identifiers, got: {query}"
+    );
+    assert!(
+        !query.contains("private_user_123"),
+        "expected query to avoid path segments in string literal, got: {query}"
+    );
+}
+
+#[test]
 fn related_code_query_skips_empty_queries() {
     struct PanicSearch;
 
