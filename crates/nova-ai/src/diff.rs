@@ -243,6 +243,11 @@ fn extract_git_section_metadata_paths(section: &[&str]) -> Result<Vec<String>, D
             out.push(path);
             continue;
         }
+        if let Some((old, new)) = parse_git_binary_files_line(line)? {
+            out.push(old);
+            out.push(new);
+            continue;
+        }
     }
 
     Ok(out)
@@ -270,6 +275,72 @@ fn parse_git_trailing_path_or_err(
     }
 
     Ok(Some(rest.to_string()))
+}
+
+fn parse_git_binary_files_line(line: &str) -> Result<Option<(String, String)>, DiffParseError> {
+    let line = line.trim_end_matches(&['\r', '\n'][..]);
+    let rest = line.strip_prefix("Binary files ").unwrap_or_default();
+    if rest.is_empty() {
+        return Ok(None);
+    }
+    let rest = rest
+        .strip_suffix(" differ")
+        .ok_or(DiffParseError::InvalidHeader)?;
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return Err(DiffParseError::InvalidHeader);
+    }
+
+    // If the line starts with a quoted path, use token parsing for both the old/new path.
+    // Otherwise, split by the ` and ` delimiter and allow either side to be quoted.
+    let (old, new) = if rest.trim_start().starts_with('"') {
+        let (old, remaining) = parse_diff_token(rest).ok_or(DiffParseError::InvalidHeader)?;
+        let remaining = remaining.trim_start();
+        let remaining = remaining
+            .strip_prefix("and ")
+            .ok_or(DiffParseError::InvalidHeader)?;
+        let (new, remaining) =
+            parse_diff_token(remaining).ok_or(DiffParseError::InvalidHeader)?;
+        if !remaining.trim().is_empty() {
+            return Err(DiffParseError::InvalidHeader);
+        }
+        (old, new)
+    } else {
+        // Require exactly one delimiter to avoid ambiguous parsing when paths contain " and ".
+        if rest.matches(" and ").count() != 1 {
+            return Err(DiffParseError::InvalidHeader);
+        }
+        let (old_raw, new_raw) = rest
+            .split_once(" and ")
+            .ok_or(DiffParseError::InvalidHeader)?;
+
+        let old = parse_git_binary_path_token(old_raw)?;
+        let new = parse_git_binary_path_token(new_raw)?;
+        (old, new)
+    };
+
+    if old.is_empty() || new.is_empty() {
+        return Err(DiffParseError::InvalidHeader);
+    }
+
+    Ok(Some((old, new)))
+}
+
+fn parse_git_binary_path_token(input: &str) -> Result<String, DiffParseError> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Err(DiffParseError::InvalidHeader);
+    }
+
+    if input.trim_start().starts_with('"') {
+        let (token, remaining) = parse_diff_token(input).ok_or(DiffParseError::InvalidHeader)?;
+        if !remaining.trim().is_empty() {
+            return Err(DiffParseError::InvalidHeader);
+        }
+        return Ok(token);
+    }
+
+    Ok(input.to_string())
 }
 
 fn extract_git_section_file_header_paths(
@@ -382,6 +453,7 @@ fn parse_git_section_paths_fallback(section: &[&str]) -> Option<DiffSectionPaths
     let mut rename_to = None::<String>;
     let mut copy_from = None::<String>;
     let mut copy_to = None::<String>;
+    let mut binary_paths = None::<(String, String)>;
 
     for line in section {
         if rename_from.is_none() {
@@ -396,6 +468,11 @@ fn parse_git_section_paths_fallback(section: &[&str]) -> Option<DiffSectionPaths
         if copy_to.is_none() {
             copy_to = parse_git_trailing_path(line, "copy to ");
         }
+        if binary_paths.is_none() {
+            // Best-effort: parse `Binary files <old> and <new> differ` output for binary diffs
+            // that do not include unified `---` / `+++` headers.
+            binary_paths = parse_git_binary_files_line(line).ok().flatten();
+        }
     }
 
     if let (Some(old), Some(new)) = (rename_from, rename_to) {
@@ -405,6 +482,12 @@ fn parse_git_section_paths_fallback(section: &[&str]) -> Option<DiffSectionPaths
     }
 
     if let (Some(old), Some(new)) = (copy_from, copy_to) {
+        return Some(DiffSectionPaths {
+            paths: vec![old, new],
+        });
+    }
+
+    if let Some((old, new)) = binary_paths {
         return Some(DiffSectionPaths {
             paths: vec![old, new],
         });
