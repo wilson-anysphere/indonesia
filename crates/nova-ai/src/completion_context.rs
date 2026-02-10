@@ -89,6 +89,10 @@ impl CompletionContextBuilder {
         ctx: &MultiTokenCompletionContext,
         max_items: usize,
     ) -> String {
+        // Always put the closing fence on its own line (preceded by a newline) so that a payload
+        // ending in backticks cannot accidentally form a fence boundary by spanning the join.
+        const FOOTER: &str = "\n```\n";
+
         // Keep the formatting stable for tests and provider caching.
         let receiver_type =
             escape_markdown_fence_payload(ctx.receiver_type.as_deref().unwrap_or("<unknown>"));
@@ -96,63 +100,85 @@ impl CompletionContextBuilder {
             escape_markdown_fence_payload(ctx.expected_type.as_deref().unwrap_or("<unknown>"));
         let surrounding_code = escape_markdown_fence_payload(&ctx.surrounding_code);
 
-        let mut prompt = String::new();
-        prompt.push_str("You are Nova, a Java code completion engine.\n");
-        prompt.push_str(
+        // ---------------------------------------------------------------------
+        // Fixed header (instructions, metadata, lists, opening fence)
+        // ---------------------------------------------------------------------
+        let mut header = String::new();
+        header.push_str("You are Nova, a Java code completion engine.\n");
+        header.push_str(
             "Generate multi-token completion suggestions (method chains or small templates).\n",
         );
-        prompt.push_str(&format!("Return up to {max_items} suggestions.\n"));
-        prompt.push_str("Rules:\n");
-        prompt.push_str(
+        header.push_str(&format!("Return up to {max_items} suggestions.\n"));
+        header.push_str("Rules:\n");
+        header.push_str(
             "- Top-level method calls in insert_text must come from the Available methods list.\n",
         );
-        prompt.push_str(
+        header.push_str(
             "- Any additional_edits.add_import must be one of the Importable symbols list.\n",
         );
-        prompt.push_str(
+        header.push_str(
             "- insert_text should be the text to insert after the cursor (do not repeat the receiver expression).\n",
         );
-        prompt.push_str("- Avoid suggesting file paths.\n");
-        prompt.push_str("\n");
-        prompt.push_str(&format!("Receiver type: {}\n", receiver_type.as_ref()));
-        prompt.push_str(&format!("Expected type: {}\n", expected_type.as_ref()));
-        prompt.push_str("\n");
-        prompt.push_str("Available methods:\n");
+        header.push_str("- Avoid suggesting file paths.\n");
+        header.push_str("\n");
+        header.push_str(&format!("Receiver type: {}\n", receiver_type.as_ref()));
+        header.push_str(&format!("Expected type: {}\n", expected_type.as_ref()));
+        header.push_str("\n");
+        header.push_str("Available methods:\n");
         for method in ctx
             .available_methods
             .iter()
             .take(MultiTokenCompletionContext::MAX_AVAILABLE_METHODS)
         {
-            prompt.push_str("- ");
-            prompt.push_str(escape_markdown_fence_payload(method).as_ref());
-            prompt.push('\n');
+            header.push_str("- ");
+            header.push_str(escape_markdown_fence_payload(method).as_ref());
+            header.push('\n');
         }
         if !ctx.importable_paths.is_empty() {
-            prompt.push('\n');
-            prompt.push_str("Importable symbols:\n");
+            header.push('\n');
+            header.push_str("Importable symbols:\n");
             for path in ctx
                 .importable_paths
                 .iter()
                 .take(MultiTokenCompletionContext::MAX_IMPORTABLE_PATHS)
             {
-                prompt.push_str("- ");
-                prompt.push_str(escape_markdown_fence_payload(path).as_ref());
-                prompt.push('\n');
+                header.push_str("- ");
+                header.push_str(escape_markdown_fence_payload(path).as_ref());
+                header.push('\n');
             }
         }
-        prompt.push('\n');
-        prompt.push_str("Surrounding code:\n```java\n");
-        prompt.push_str(surrounding_code.as_ref());
-        if !ctx.surrounding_code.ends_with('\n') {
-            prompt.push('\n');
-        }
-        prompt.push_str("```\n");
+        header.push('\n');
+        header.push_str("Surrounding code:\n```java\n");
+
+        // ---------------------------------------------------------------------
+        // Fenced body (surrounding code)
+        // ---------------------------------------------------------------------
+        let mut body = surrounding_code.into_owned();
 
         // Cap size defensively to avoid accidentally sending huge prompts.
-        if self.max_prompt_chars > 0 && prompt.len() > self.max_prompt_chars {
-            Self::truncate_utf8_boundary(&mut prompt, self.max_prompt_chars);
+        if self.max_prompt_chars > 0 {
+            let fixed_len = header.len() + FOOTER.len();
+            if self.max_prompt_chars > fixed_len {
+                let avail = self.max_prompt_chars - fixed_len;
+                if body.len() > avail {
+                    Self::truncate_utf8_boundary(&mut body, avail);
+                }
+            }
         }
 
+        if body.ends_with('\n') {
+            // The footer always inserts a newline before the closing fence; trim one trailing LF so
+            // we don't end up with an extra blank line between code and fence.
+            body.pop();
+        }
+
+        // ---------------------------------------------------------------------
+        // Assemble prompt (header + body + footer)
+        // ---------------------------------------------------------------------
+        let mut prompt = String::with_capacity(header.len() + body.len() + FOOTER.len());
+        prompt.push_str(&header);
+        prompt.push_str(&body);
+        prompt.push_str(FOOTER);
         prompt
     }
 }
@@ -225,13 +251,24 @@ mod tests {
             importable_paths: vec![],
         };
 
+        let emoji_idx = ctx
+            .surrounding_code
+            .find('😀')
+            .expect("emoji should be present");
+
         let full_prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx, 1);
-        let emoji_idx = full_prompt.find('😀').expect("emoji should be present");
+        let fixed_len = full_prompt.len() - ctx.surrounding_code.len();
 
+        // Force truncation in the middle of the emoji's UTF-8 byte sequence.
+        let max_prompt_chars = fixed_len + emoji_idx + 1;
         let truncated =
-            CompletionContextBuilder::new(emoji_idx + 1).build_completion_prompt(&ctx, 1);
+            CompletionContextBuilder::new(max_prompt_chars).build_completion_prompt(&ctx, 1);
 
-        assert_eq!(truncated.len(), emoji_idx);
+        assert!(
+            truncated.len() <= max_prompt_chars,
+            "prompt should respect max_prompt_chars (got {} > {max_prompt_chars})",
+            truncated.len()
+        );
         assert!(!truncated.contains('😀'));
     }
 
@@ -270,6 +307,44 @@ mod tests {
         assert!(
             !prompt.contains(&format!("- {}\n", methods[max])),
             "expected methods past the cap to be omitted from the prompt"
+        );
+    }
+
+    #[test]
+    fn prompt_truncation_preserves_markdown_fences() {
+        let ctx = MultiTokenCompletionContext {
+            receiver_type: Some("String".into()),
+            expected_type: Some("void".into()),
+            surrounding_code: "x".repeat(10_000),
+            available_methods: vec!["println".into()],
+            importable_paths: vec![],
+        };
+
+        // Force truncation.
+        let full_prompt = CompletionContextBuilder::new(0).build_completion_prompt(&ctx, 1);
+        let fixed_len = full_prompt.len() - ctx.surrounding_code.len();
+        let max_prompt_chars = fixed_len + 64;
+        let prompt =
+            CompletionContextBuilder::new(max_prompt_chars).build_completion_prompt(&ctx, 1);
+
+        assert!(
+            prompt.len() <= max_prompt_chars,
+            "prompt should respect max_prompt_chars (got {} > {max_prompt_chars})",
+            prompt.len()
+        );
+        assert!(
+            prompt.ends_with("```\n"),
+            "prompt should always end with a closing fence: {prompt:?}"
+        );
+        assert_eq!(
+            prompt.match_indices("```").count(),
+            2,
+            "expected exactly one opening and one closing fence: {prompt}"
+        );
+        assert_eq!(
+            prompt.match_indices("```java\n").count(),
+            1,
+            "expected exactly one opening fence: {prompt}"
         );
     }
 }
