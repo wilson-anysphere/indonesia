@@ -36,3 +36,4 @@ mod rayon_global_pool_regression;
 mod semantic_context_builder;
 mod semantic_search_factory;
 mod semantic_search_incremental;
+mod test_guards;
