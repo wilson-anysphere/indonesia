@@ -866,4 +866,60 @@ class Test {
             ctx.available_methods
         );
     }
+
+    #[test]
+    fn static_receiver_excludes_interface_static_methods() {
+        let ctx = ctx_for(
+            r#"
+interface I {
+  static void ifaceMethod() {}
+}
+
+class B implements I {
+  static void classMethod() {}
+}
+
+class Test {
+  void m() {
+    B.<cursor>
+  }
+}
+"#,
+        );
+
+        assert!(ctx.available_methods.iter().any(|m| m == "classMethod"));
+        assert!(
+            !ctx.available_methods.iter().any(|m| m == "ifaceMethod"),
+            "expected static receiver to exclude interface static methods; got {:?}",
+            ctx.available_methods
+        );
+    }
+
+    #[test]
+    fn static_receiver_interface_excludes_super_interface_static_methods() {
+        let ctx = ctx_for(
+            r#"
+interface Base {
+  static void baseMethod() {}
+}
+
+interface Sub extends Base {
+  static void subMethod() {}
+}
+
+class Test {
+  void m() {
+    Sub.<cursor>
+  }
+}
+"#,
+        );
+
+        assert!(ctx.available_methods.iter().any(|m| m == "subMethod"));
+        assert!(
+            !ctx.available_methods.iter().any(|m| m == "baseMethod"),
+            "expected interface static receiver to exclude super-interface static methods; got {:?}",
+            ctx.available_methods
+        );
+    }
 }

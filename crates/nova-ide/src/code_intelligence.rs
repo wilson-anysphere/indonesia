@@ -10779,11 +10779,36 @@ pub(crate) fn member_method_names_for_receiver_type_with_call_kind(
         receiver_ty,
     );
 
-    let items = semantic_member_completions(&mut types, &receiver_ty, call_kind);
     let mut seen = BTreeSet::new();
-    for item in items {
-        if item.kind == Some(CompletionItemKind::METHOD) {
-            seen.insert(item.label);
+    let mut visited = HashSet::<ClassId>::new();
+    let mut current = class_id_of_type(&mut types, &receiver_ty);
+    while let Some(class_id) = current.take() {
+        if !visited.insert(class_id) {
+            break;
+        }
+
+        let class_ty = Type::class(class_id, vec![]);
+        ensure_type_methods_loaded(&mut types, &class_ty);
+        let (super_ty, kind) = match types.class(class_id) {
+            Some(class_def) => {
+                for method in &class_def.methods {
+                    if method.is_static {
+                        seen.insert(method.name.clone());
+                    }
+                }
+                (class_def.super_class.clone(), class_def.kind)
+            }
+            None => break,
+        };
+
+        // Static member access is inherited through the superclass chain, but interface static
+        // methods are not inherited (they must be referenced through the declaring interface name).
+        current = super_ty
+            .as_ref()
+            .and_then(|ty| class_id_of_type(&mut types, ty));
+
+        if kind == ClassKind::Interface {
+            break;
         }
     }
 
