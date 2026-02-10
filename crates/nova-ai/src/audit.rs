@@ -97,7 +97,8 @@ fn sanitize_text(text: &str) -> String {
 
 /// Sanitize an error string for non-audit tracing logs.
 ///
-/// Some providers embed credentials in request URLs (notably Gemini's `?key=` query parameter).
+/// Some providers (or user-configured endpoints) embed credentials in request URLs (for example a
+/// `?key=` query parameter).
 /// `reqwest::Error`'s `Display` output can include the full URL, so emitting `%err` directly can
 /// leak API keys into normal tracing logs.
 ///

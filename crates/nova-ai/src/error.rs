@@ -37,8 +37,8 @@ impl From<url::ParseError> for AiError {
 impl fmt::Display for AiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fn sanitize(text: &str) -> String {
-            // `reqwest::Error` display strings frequently embed request URLs. Some providers encode
-            // credentials as URL query parameters (e.g. Gemini's `?key=`). Use the same
+            // `reqwest::Error` display strings frequently embed request URLs. Some endpoints
+            // encode credentials as URL query parameters (e.g. `?key=`). Use the same
             // best-effort URL stripping + token redaction logic we apply to tracing logs so
             // `AiError::to_string()` is safe to surface to end users.
             crate::audit::sanitize_error_for_tracing(text)
