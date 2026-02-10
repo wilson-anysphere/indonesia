@@ -166,22 +166,31 @@ impl Embedder for OllamaEmbedder {
             return Ok(Vec::new());
         }
 
+        let mut use_embed_endpoint = true;
         let batch_size = self.batch_size.max(1);
         let mut out = Vec::with_capacity(inputs.len());
 
         for chunk in inputs.chunks(batch_size) {
             let mode = self.embed_endpoint.load(Ordering::Acquire);
-            if mode != OLLAMA_EMBED_ENDPOINT_UNSUPPORTED {
-                match self.embed_via_embed_endpoint(chunk)? {
-                    Some(embeddings) => {
+            if use_embed_endpoint && mode != OLLAMA_EMBED_ENDPOINT_UNSUPPORTED {
+                match self.embed_via_embed_endpoint(chunk) {
+                    Ok(Some(embeddings)) => {
                         self.embed_endpoint
                             .store(OLLAMA_EMBED_ENDPOINT_SUPPORTED, Ordering::Release);
                         out.extend(embeddings);
                         continue;
                     }
-                    None => {
+                    Ok(None) => {
                         self.embed_endpoint
                             .store(OLLAMA_EMBED_ENDPOINT_UNSUPPORTED, Ordering::Release);
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            target = "nova.ai",
+                            ?err,
+                            "Ollama /api/embed failed; falling back to /api/embeddings"
+                        );
+                        use_embed_endpoint = false;
                     }
                 }
             }
