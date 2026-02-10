@@ -280,10 +280,9 @@ fn anonymize_prompt_context(
         out.push_str(&anonymizer.anonymize(&java_block));
     }
 
-    // Extract the request-scoped identifier map so callers can de-anonymize model output produced
-    // for this prompt.
-    let identifier_map = anonymizer.into_identifier_map();
-    let reverse_map = crate::anonymizer::build_reverse_identifier_map(&identifier_map);
+    // Extract the request-scoped reverse identifier map so callers can de-anonymize model output
+    // produced for this prompt.
+    let reverse_map = anonymizer.reverse_identifier_map();
     (out, reverse_map)
 }
 
