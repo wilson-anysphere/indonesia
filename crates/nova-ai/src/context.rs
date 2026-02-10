@@ -694,6 +694,14 @@ fn surrounding_token_bounds(text: &str, start: usize, end: usize) -> Range<usize
 
 fn looks_like_file_name(token: &str) -> bool {
     // Keep this conservative: only treat well-known source/doc extensions as file paths.
+    // Trim common leading/trailing punctuation (e.g. `Foo.java.` at end of sentence) before
+    // extension detection, while preserving internal `.` characters for qualified names / file
+    // names.
+    //
+    // Note: `trim_matches` only trims at the edges, so this does not remove the `.` that separates
+    // a base name from its extension.
+    let token = token.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+
     let Some((_base, ext)) = token.rsplit_once('.') else {
         return false;
     };
