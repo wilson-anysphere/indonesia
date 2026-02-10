@@ -3319,19 +3319,24 @@ async fn collect_java_file_paths(root: &Path) -> Result<Vec<String>> {
     let mut stack = vec![root.to_path_buf()];
 
     while let Some(dir) = stack.pop() {
-        let mut read_dir = tokio::fs::read_dir(&dir)
-            .await
-            .with_context(|| format!("read_dir {dir:?}"))?;
+        let mut read_dir = match tokio::fs::read_dir(&dir).await {
+            Ok(read_dir) => read_dir,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                return Err(err).with_context(|| format!("read_dir {dir:?}"));
+            }
+        };
         while let Some(entry) = read_dir
             .next_entry()
             .await
             .with_context(|| format!("next_entry {dir:?}"))?
         {
             let path = entry.path();
-            let meta = entry
-                .metadata()
-                .await
-                .with_context(|| format!("metadata {path:?}"))?;
+            let meta = match entry.metadata().await {
+                Ok(meta) => meta,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(err).with_context(|| format!("metadata {path:?}")),
+            };
             if meta.is_dir() {
                 stack.push(path);
             } else if meta.is_file() && path.extension().and_then(|s| s.to_str()) == Some("java") {
@@ -3348,25 +3353,32 @@ async fn collect_java_files(root: &Path) -> Result<Vec<FileText>> {
     let mut stack = vec![root.to_path_buf()];
 
     while let Some(dir) = stack.pop() {
-        let mut read_dir = tokio::fs::read_dir(&dir)
-            .await
-            .with_context(|| format!("read_dir {dir:?}"))?;
+        let mut read_dir = match tokio::fs::read_dir(&dir).await {
+            Ok(read_dir) => read_dir,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                return Err(err).with_context(|| format!("read_dir {dir:?}"));
+            }
+        };
         while let Some(entry) = read_dir
             .next_entry()
             .await
             .with_context(|| format!("next_entry {dir:?}"))?
         {
             let path = entry.path();
-            let meta = entry
-                .metadata()
-                .await
-                .with_context(|| format!("metadata {path:?}"))?;
+            let meta = match entry.metadata().await {
+                Ok(meta) => meta,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(err).with_context(|| format!("metadata {path:?}")),
+            };
             if meta.is_dir() {
                 stack.push(path);
             } else if meta.is_file() && path.extension().and_then(|s| s.to_str()) == Some("java") {
-                let text = tokio::fs::read_to_string(&path)
-                    .await
-                    .with_context(|| format!("read {path:?}"))?;
+                let text = match tokio::fs::read_to_string(&path).await {
+                    Ok(text) => text,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(err) => return Err(err).with_context(|| format!("read {path:?}")),
+                };
                 out.push(FileText {
                     path: path.to_string_lossy().to_string(),
                     text,

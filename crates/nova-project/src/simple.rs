@@ -33,6 +33,18 @@ pub(crate) fn load_simple_project(
         });
     }
 
+    // If the workspace root does not have a `src/` directory but it does contain Java source
+    // files, treat the workspace root itself as a source root. This supports lightweight
+    // workspaces (common in tests and scratch directories) that place `*.java` files directly
+    // under the opened folder.
+    if source_roots.is_empty() && directory_contains_java_files(root) {
+        source_roots.push(SourceRoot {
+            kind: SourceRootKind::Main,
+            origin: SourceRootOrigin::Source,
+            path: root.to_path_buf(),
+        });
+    }
+
     crate::generated::append_generated_source_roots(
         &mut source_roots,
         root,
@@ -127,6 +139,14 @@ pub(crate) fn load_simple_workspace_model(
         });
     }
 
+    if source_roots.is_empty() && directory_contains_java_files(root) {
+        source_roots.push(SourceRoot {
+            kind: SourceRootKind::Main,
+            origin: SourceRootOrigin::Source,
+            path: root.to_path_buf(),
+        });
+    }
+
     crate::generated::append_generated_source_roots(
         &mut source_roots,
         root,
@@ -203,4 +223,28 @@ pub(crate) fn load_simple_workspace_model(
         vec![module_config],
         jpms_modules,
     ))
+}
+
+fn directory_contains_java_files(dir: &Path) -> bool {
+    let Ok(read_dir) = std::fs::read_dir(dir) else {
+        return false;
+    };
+
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("java"))
+        {
+            if entry.file_type().is_ok_and(|ty| ty.is_file()) {
+                return true;
+            }
+            if path.is_file() {
+                return true;
+            }
+        }
+    }
+
+    false
 }

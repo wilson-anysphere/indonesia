@@ -99,15 +99,19 @@ pub(super) fn handle_completion(
             // Respect excluded_paths: never send even the current line/prefix to the model-backed
             // ranker.
             nova_lsp::completion(&db, file, position)
+        } else if cancel.is_cancelled() {
+            // If the request was already cancelled, do not start any async AI ranking work.
+            nova_lsp::completion(&db, file, position)
         } else if let Some(runtime) = state.runtime.as_ref() {
             let llm = state.ai.as_ref().map(|ai| ai.llm());
-            runtime.block_on(nova_ide::completions_with_ai(
-                &db,
-                file,
-                position,
-                &state.ai_config,
-                llm,
-            ))
+            let cancel_for_ranking = cancel.clone();
+            runtime.block_on(async {
+                tokio::select! {
+                    biased;
+                    _ = cancel_for_ranking.cancelled() => nova_lsp::completion(&db, file, position),
+                    ranked = nova_ide::completions_with_ai(&db, file, position, &state.ai_config, llm) => ranked,
+                }
+            })
         } else {
             nova_lsp::completion(&db, file, position)
         }

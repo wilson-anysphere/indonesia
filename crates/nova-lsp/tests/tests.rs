@@ -22,6 +22,9 @@ mod stdio_ai_cancellation;
 #[cfg(feature = "ai")]
 #[path = "suite/stdio_ai_did_change_configuration.rs"]
 mod stdio_ai_did_change_configuration;
+#[cfg(feature = "ai")]
+#[path = "suite/stdio_completion_ranking_cancellation.rs"]
+mod stdio_completion_ranking_cancellation;
 #[path = "suite/cli_help.rs"]
 mod cli_help;
 #[path = "suite/completion_resolve.rs"]
