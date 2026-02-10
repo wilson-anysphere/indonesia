@@ -92,19 +92,43 @@ where
     let mut omitted_any = false;
 
     // Preamble (e.g. commit headers) before the first `diff --git`.
-    for line in &lines[..starts[0]] {
-        out.push_str(line);
+    let preamble = &lines[..starts[0]];
+    if preamble_has_unified_headers(preamble) {
+        match filter_unified_diff(preamble, sentinel_line, is_excluded) {
+            Ok(filtered) => {
+                omitted_any |= filtered.omitted_any;
+                out.push_str(&filtered.text);
+            }
+            Err(DiffParseError::NoFileSections) => {
+                for line in preamble {
+                    out.push_str(line);
+                }
+            }
+            Err(DiffParseError::InvalidHeader) => return Err(DiffParseError::InvalidHeader),
+        }
+    } else {
+        for line in preamble {
+            out.push_str(line);
+        }
     }
 
     for (section_idx, &start) in starts.iter().enumerate() {
         let end = starts.get(section_idx + 1).copied().unwrap_or(lines.len());
+        let section_lines = &lines[start..end];
+
+        // A well-formed git file section has at most one unified header pair (`---` / `+++`).
+        // Multiple pairs suggest concatenated/mixed diff formats, which we treat as ambiguous and
+        // fail closed to avoid leaking excluded content.
+        if count_unified_file_headers(section_lines) > 1 {
+            return Err(DiffParseError::InvalidHeader);
+        }
         let header = lines
             .get(start)
             .copied()
             .ok_or(DiffParseError::InvalidHeader)?;
 
         let raw_paths = parse_diff_section_paths(header)
-            .or_else(|| parse_git_section_paths_fallback(&lines[start..end]))
+            .or_else(|| parse_git_section_paths_fallback(section_lines))
             .ok_or(DiffParseError::InvalidHeader)?;
         let mut any_path = false;
         let mut excluded = false;
@@ -136,6 +160,25 @@ where
         omitted_any,
         parsed: true,
     })
+}
+
+fn preamble_has_unified_headers(lines: &[&str]) -> bool {
+    for idx in 0..lines.len().saturating_sub(1) {
+        if is_unified_file_header_at(lines, idx) {
+            return true;
+        }
+    }
+    false
+}
+
+fn count_unified_file_headers(lines: &[&str]) -> usize {
+    let mut count = 0usize;
+    for idx in 0..lines.len().saturating_sub(1) {
+        if is_unified_file_header_at(lines, idx) {
+            count += 1;
+        }
+    }
+    count
 }
 
 fn parse_git_section_paths_fallback(section: &[&str]) -> Option<DiffSectionPaths> {

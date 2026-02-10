@@ -406,6 +406,59 @@ fn unified_diff_does_not_strip_real_a_directory_prefix_from_paths() {
 }
 
 #[test]
+fn mixed_unified_then_git_diff_filters_the_unified_preamble_section() {
+    let excluded_path = "src/secrets/Secret.java";
+
+    let excluded_preamble = r#"--- a/src/secrets/Secret.java
++++ b/src/secrets/Secret.java
+@@ -1 +1 @@
+-old
++MIXED_SECRET
+"#;
+
+    let allowed_section = r#"diff --git a/src/Ok.java b/src/Ok.java
+index 2222222..3333333 100644
+--- a/src/Ok.java
++++ b/src/Ok.java
+@@ -1 +1 @@
+-class Ok {}
++class Ok { int x = 11; }
+"#;
+
+    let diff = format!("{excluded_preamble}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("MIXED_SECRET"));
+    assert!(filtered.contains(allowed_section));
+}
+
+#[test]
+fn mixed_git_section_with_multiple_unified_headers_fails_closed() {
+    let diff = r#"diff --git a/src/Ok.java b/src/Ok.java
+index 2222222..3333333 100644
+--- a/src/Ok.java
++++ b/src/Ok.java
+@@ -1 +1 @@
+-class Ok {}
++class Ok { int x = 11; }
+--- a/src/secrets/Secret.java
++++ b/src/secrets/Secret.java
+@@ -1 +1 @@
+-old
++LEAK
+"#;
+
+    let filtered = filter_diff_for_excluded_paths_for_tests(diff, |_| false);
+    assert_eq!(filtered, sentinel_line("\n"));
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+}
+
+#[test]
 fn unified_diff_windows_paths_with_backslashes_and_timestamps_are_supported() {
     let excluded_path = r"C:\Users\alice\secrets\secret.txt";
 
