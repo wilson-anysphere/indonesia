@@ -82,18 +82,26 @@ fn sanitize_url(url: &str) -> String {
 }
 
 fn sanitize_url_tail(tail: &str) -> String {
-    let Some(q_pos) = tail.find('?') else {
-        return tail.to_owned();
+    let (before_fragment, has_fragment) = match tail.find('#') {
+        Some(pos) => (&tail[..pos], true),
+        None => (tail, false),
     };
 
-    let (before_q, after_q) = tail.split_at(q_pos + 1);
-    let (query, fragment) = match after_q.find('#') {
-        Some(hash_pos) => (&after_q[..hash_pos], &after_q[hash_pos..]),
-        None => (after_q, ""),
+    let sanitized = match before_fragment.find('?') {
+        Some(q_pos) => {
+            let (before_q, after_q) = before_fragment.split_at(q_pos + 1);
+            let query = &after_q;
+            let sanitized_query = sanitize_query(query);
+            format!("{before_q}{sanitized_query}")
+        }
+        None => before_fragment.to_owned(),
     };
 
-    let sanitized_query = sanitize_query(query);
-    format!("{before_q}{sanitized_query}{fragment}")
+    if has_fragment {
+        format!("{sanitized}#{REDACTION}")
+    } else {
+        sanitized
+    }
 }
 
 fn sanitize_query(query: &str) -> String {
@@ -107,27 +115,20 @@ fn sanitize_query(query: &str) -> String {
         }
 
         match part.split_once('=') {
-            Some((key, _value)) if is_sensitive_param(key) => {
+            Some((key, _value)) => {
                 out.push_str(key);
                 out.push('=');
+                // Be conservative: query parameters often contain secrets under arbitrary keys.
                 out.push_str(REDACTION);
             }
-            None if is_sensitive_param(part) => {
+            None => {
                 out.push_str(part);
                 out.push('=');
                 out.push_str(REDACTION);
             }
-            _ => out.push_str(part),
         }
     }
     out
-}
-
-fn is_sensitive_param(param: &str) -> bool {
-    matches!(
-        param.to_ascii_lowercase().as_str(),
-        "key" | "token" | "access_token" | "api_key" | "apikey" | "authorization"
-    )
 }
 
 #[cfg(test)]
@@ -139,9 +140,20 @@ mod tests {
         let input = "GET https://user:pass@example.com/path?token=abc&other=1";
         let out = redact_string(input);
 
-        assert!(out.contains("https://<redacted>@example.com/path?token=<redacted>&other=1"));
+        assert!(out.contains(
+            "https://<redacted>@example.com/path?token=<redacted>&other=<redacted>"
+        ));
         assert!(!out.contains("user:pass"));
         assert!(!out.contains("token=abc"));
+    }
+
+    #[test]
+    fn redacts_url_fragments() {
+        let input = "GET https://example.com/path#access_token=abc123";
+        let out = redact_string(input);
+
+        assert!(out.contains("https://example.com/path#<redacted>"));
+        assert!(!out.contains("abc123"));
     }
 
     #[test]

@@ -886,8 +886,12 @@ mod tests {
             "api key should be redacted"
         );
         assert!(
-            out.contains("foo=bar"),
-            "non-sensitive query params should remain"
+            !out.contains("foo=bar"),
+            "query param values should be redacted (unknown params may contain secrets)"
+        );
+        assert!(
+            out.contains("foo=<redacted>") || out.contains("foo=%3Credacted%3E"),
+            "expected foo query param value to be redacted, got: {out}"
         );
         assert!(
             out.contains("<redacted>@example.com"),
