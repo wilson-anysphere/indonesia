@@ -41,7 +41,7 @@ fn redact_sensitive_header_values(input: &str) -> String {
     static HEADER_RE: OnceLock<Regex> = OnceLock::new();
     let re = HEADER_RE.get_or_init(|| {
         Regex::new(
-            r"(?i)\b((?:x-[a-z0-9-]*api[-_]?key|api[-_]?key|access[_-]?token|x-[a-z0-9-]*token|token))\b\s*:\s*([^\r\n]+)",
+            r#"(?i)(['"]?\b(?:x-[a-z0-9-]*api[-_]?key|api[-_]?key|access[_-]?token|x-[a-z0-9-]*token|token)\b['"]?)\s*:\s*([^,}\r\n]+)"#,
         )
         .expect("header regex should compile")
     });
@@ -195,5 +195,16 @@ mod tests {
         assert!(out.contains("x-goog-api-key: <redacted>"));
         assert!(out.contains("api-key: <redacted>"));
         assert!(out.contains("token: <redacted>"));
+    }
+
+    #[test]
+    fn redacts_json_style_key_value_pairs() {
+        let secret = "super-secret-api-key";
+        let input = format!(r#"{{"api_key": "{secret}", "other": 1}}"#);
+        let out = redact_string(&input);
+
+        assert!(!out.contains(secret));
+        assert!(out.contains(r#""api_key": <redacted>"#));
+        assert!(out.contains(r#""other": 1"#));
     }
 }
