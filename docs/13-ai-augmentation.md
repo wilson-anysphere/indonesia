@@ -815,27 +815,30 @@ Depending on the editor integration, these may be surfaced as settings prefixed 
 Explain-only actions are always allowed regardless of these **code-edit gating** settings (but
 `ai.privacy.excluded_paths` can still force Nova to omit file-backed code context from the prompt).
 
-### Cloud multi-token completion policy (method-chain suggestions)
+### Cloud multi-token completions (method-chain suggestions)
 
 Nova's **multi-token completions** (suggesting short method chains / templates) build prompts that
-include **identifier-heavy lists** like:
+include identifier-heavy context like:
 
 - `Available methods:` (often contains project-specific APIs)
 - `Importable symbols:` (fully-qualified project class names)
 
-When `ai.privacy.anonymize_identifiers=true` (the default in cloud mode), Nova **does not send**
-these prompts to a cloud model. This avoids leaking raw project identifiers through these lists.
+Cloud multi-token completions are compatible with identifier anonymization:
 
-To enable cloud multi-token completions, you must **explicitly opt in** by disabling identifier
-anonymization:
+- **Enabled by default:** In cloud mode (`ai.privacy.local_only = false`), multi-token completions
+  run with **identifier anonymization enabled by default** (following `ai.privacy` defaults).
+- **Stable per-request placeholders:** Before sending the prompt to the provider, Nova replaces
+  identifiers with *stable placeholders for the lifetime of that completion request* (so repeated
+  identifiers map to the same placeholder within the prompt).
+- **Local de-anonymization:** When the model returns completion text, Nova de-anonymizes the output
+  locally (rewriting placeholders back to the original identifiers) before returning completion
+  items to the editor.
+- **Limitations:** If the model invents identifiers that were not present in the prompt, Nova cannot
+  map them back; unresolved placeholders may appear in the suggestion (or the item may be filtered
+  out by completion validation).
 
-```toml
-[ai.privacy]
-local_only = false
-anonymize_identifiers = false # required for cloud multi-token completions
-```
-
-Local-only mode (`ai.privacy.local_only=true`) is unaffected because code never leaves the machine.
+Local-only mode (`ai.privacy.local_only = true`) is unaffected because prompts never leave the
+machine.
 
 ---
 

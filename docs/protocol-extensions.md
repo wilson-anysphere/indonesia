@@ -1989,6 +1989,12 @@ Notes:
 - The stdio server only spawns background AI completions when `ai.enabled = true` and
   `ai.features.multi_token_completion = true` in `nova.toml`, and multi-token completions are not
   disabled by server-side env var overrides (see below).
+- **Cloud privacy / anonymization:** when multi-token completions use a cloud provider
+  (`ai.privacy.local_only = false`), Nova anonymizes identifiers in the provider-visible prompt by
+  default. Identifiers are replaced with **stable per-request placeholders**, and the returned
+  completion text is **de-anonymized locally** before being returned to the editor. If the model
+  invents new identifiers, placeholders may still appear (or the completion item may be filtered out
+  by validation).
 - `NOVA_AI_COMPLETIONS_MAX_ITEMS=<n>` overrides the server’s **AI multi-token completion max-items**
   setting (how many AI completion items may be surfaced for a single completion context).
   - `0` is treated as a **hard disable** of multi-token completions: the server does not spawn any
