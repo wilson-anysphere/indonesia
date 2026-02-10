@@ -42,6 +42,14 @@ impl Default for CodeAnonymizerOptions {
 ///
 /// This is sufficient for redacting/anonymizing snippets sent to external AI
 /// services while keeping the code readable for debugging.
+///
+/// ## Identifier mapping (request-scoped)
+///
+/// When `options.anonymize_identifiers=true`, this anonymizer assigns stable placeholder names
+/// (`id_0`, `id_1`, …) to each identifier it sees. The mapping is **request-scoped**: create a new
+/// [`CodeAnonymizer`] (and therefore a new mapping) per request. Do **not** reuse the mapping (or
+/// the anonymizer instance) across requests, otherwise callers may inadvertently correlate
+/// identifiers across unrelated prompts.
 #[derive(Debug, Default)]
 pub struct CodeAnonymizer {
     options: CodeAnonymizerOptions,
@@ -59,20 +67,33 @@ impl CodeAnonymizer {
     }
 
     /// Returns the identifier mapping collected so far (`original -> anonymized`).
+    ///
+    /// The mapping is **request-scoped**: create a new anonymizer per request and do not reuse the
+    /// mapping across requests. Reusing mappings across requests can leak cross-request identity
+    /// correlation (e.g., the same placeholder name referring to the same original identifier).
     pub fn identifier_map(&self) -> &HashMap<String, String> {
         &self.name_map
     }
 
     /// Returns a reverse identifier mapping (`anonymized -> original`).
     ///
-    /// This is useful for prompt pipelines that need to de-anonymize LLM output
-    /// before returning it to the user.
+    /// This is useful for prompt pipelines that need to de-anonymize LLM output before returning
+    /// it to the user.
+    ///
+    /// Deterministic behavior: if multiple originals map to the same anonymized identifier (this
+    /// should not happen for maps produced by [`CodeAnonymizer`]), the reverse map keeps the
+    /// lexicographically smallest original.
     pub fn reverse_identifier_map(&self) -> HashMap<String, String> {
-        let mut out = HashMap::with_capacity(self.name_map.len());
-        for (original, anon) in &self.name_map {
-            out.insert(anon.clone(), original.clone());
-        }
-        out
+        build_reverse_identifier_map(&self.name_map)
+    }
+
+    /// Consume the anonymizer and return its identifier mapping (original identifier → anonymized
+    /// identifier).
+    ///
+    /// See [`Self::identifier_map`] for important privacy notes: the mapping is **request-scoped**
+    /// and must not be reused across requests.
+    pub(crate) fn into_identifier_map(self) -> HashMap<String, String> {
+        self.name_map
     }
 
     pub fn anonymize(&mut self, code: &str) -> String {
@@ -324,6 +345,41 @@ impl CodeAnonymizer {
     }
 }
 
+/// Build the reverse identifier mapping (anonymized identifier → original identifier).
+///
+/// This is primarily used to de-anonymize model outputs within the same request.
+///
+/// The mapping is **request-scoped** and must not be reused across requests (see
+/// [`CodeAnonymizer`]).
+///
+/// ## Determinism
+///
+/// [`HashMap`] iteration order is intentionally not relied upon for conflict resolution. If
+/// multiple original identifiers map to the same anonymized identifier (this should not happen
+/// for maps produced by [`CodeAnonymizer`]), this helper deterministically keeps the
+/// lexicographically smallest original identifier.
+pub(crate) fn build_reverse_identifier_map(
+    identifier_map: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    use std::collections::hash_map::Entry;
+
+    let mut out = HashMap::with_capacity(identifier_map.len());
+    for (original, anonymized) in identifier_map {
+        match out.entry(anonymized.to_owned()) {
+            Entry::Vacant(v) => {
+                v.insert(original.to_owned());
+            }
+            Entry::Occupied(mut o) => {
+                // Deterministic conflict resolution (independent of HashMap iteration order).
+                if original < o.get() {
+                    o.insert(original.to_owned());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// De-anonymize Java-like code emitted by an LLM by rewriting placeholder identifiers back to the
 /// original names.
 ///
@@ -337,7 +393,10 @@ impl CodeAnonymizer {
 ///
 /// The `reverse_identifiers` map must map from the anonymous identifier (e.g. `"id_0"`) to the
 /// original identifier (e.g. `"UserService"`).
-pub fn deanonymize_java_like_code(code: &str, reverse_identifiers: &HashMap<String, String>) -> String {
+pub fn deanonymize_java_like_code(
+    code: &str,
+    reverse_identifiers: &HashMap<String, String>,
+) -> String {
     if reverse_identifiers.is_empty() {
         return code.to_string();
     }
@@ -445,8 +504,7 @@ pub fn deanonymize_multi_token_completion(
     }
 
     completion.label = deanonymize_java_like_code(&completion.label, reverse_identifiers);
-    completion.insert_text =
-        deanonymize_java_like_code(&completion.insert_text, reverse_identifiers);
+    completion.insert_text = deanonymize_java_like_code(&completion.insert_text, reverse_identifiers);
     for edit in &mut completion.additional_edits {
         deanonymize_additional_edit(edit, reverse_identifiers);
     }
@@ -467,7 +525,6 @@ pub fn deanonymize_additional_edit(
         }
     }
 }
-
 fn is_ident_start(c: char) -> bool {
     c == '_' || c == '$' || c.is_ascii_alphabetic()
 }
@@ -803,6 +860,91 @@ class Example {
         assert!(out.contains(".trim("), "{out}");
         assert!(out.contains(".toLowerCase("), "{out}");
         assert!(out.contains(".toUpperCase("), "{out}");
+    }
+
+    #[test]
+    fn identifier_mapping_contains_anonymized_identifiers_and_reverse_is_bijection() {
+        let code = r#"
+            class Foo {
+                Foo foo;
+                void bar(Foo baz) {
+                    Foo qux = baz;
+                    foo = qux;
+                }
+            }
+        "#;
+
+        let mut anonymizer = CodeAnonymizer::new(CodeAnonymizerOptions {
+            anonymize_identifiers: true,
+            redact_sensitive_strings: false,
+            redact_numeric_literals: false,
+            strip_or_redact_comments: false,
+        });
+
+        let _out = anonymizer.anonymize(code);
+
+        let forward = anonymizer.identifier_map().clone();
+        assert!(forward.contains_key("Foo"), "{forward:?}");
+        assert!(forward.contains_key("foo"), "{forward:?}");
+        assert!(forward.contains_key("bar"), "{forward:?}");
+        assert!(forward.contains_key("baz"), "{forward:?}");
+        assert!(forward.contains_key("qux"), "{forward:?}");
+
+        let reverse = build_reverse_identifier_map(&forward);
+        assert_eq!(
+            reverse.len(),
+            forward.len(),
+            "reverse map should be a bijection for anonymized identifiers"
+        );
+
+        for (original, anonymized) in &forward {
+            assert_eq!(
+                reverse.get(anonymized),
+                Some(original),
+                "expected reverse[{anonymized}] = {original}"
+            );
+        }
+
+        let moved = anonymizer.into_identifier_map();
+        assert_eq!(moved, forward);
+    }
+
+    #[test]
+    fn identifier_mapping_is_deterministic_for_repeated_anonymize_calls() {
+        let code = r#"class Foo { int count; void inc() { count++; } }"#;
+
+        let mut anonymizer = CodeAnonymizer::new(CodeAnonymizerOptions {
+            anonymize_identifiers: true,
+            redact_sensitive_strings: false,
+            redact_numeric_literals: false,
+            strip_or_redact_comments: false,
+        });
+
+        let out1 = anonymizer.anonymize(code);
+        let map1 = anonymizer.identifier_map().clone();
+
+        let out2 = anonymizer.anonymize(code);
+        let map2 = anonymizer.identifier_map().clone();
+
+        assert_eq!(out1, out2);
+        assert_eq!(map1, map2);
+    }
+
+    #[test]
+    fn reverse_identifier_map_conflicts_are_resolved_deterministically() {
+        let mut map1 = HashMap::new();
+        map1.insert("b".to_string(), "id_0".to_string());
+        map1.insert("a".to_string(), "id_0".to_string());
+
+        let mut map2 = HashMap::new();
+        map2.insert("a".to_string(), "id_0".to_string());
+        map2.insert("b".to_string(), "id_0".to_string());
+
+        let reverse1 = build_reverse_identifier_map(&map1);
+        let reverse2 = build_reverse_identifier_map(&map2);
+
+        assert_eq!(reverse1, reverse2);
+        assert_eq!(reverse1.get("id_0").map(String::as_str), Some("a"));
     }
 
     #[test]

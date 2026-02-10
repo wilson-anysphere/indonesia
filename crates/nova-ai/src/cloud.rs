@@ -316,8 +316,7 @@ impl LlmProvider for GeminiProvider {
         request: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<AiStream, AiError> {
-        let mut url =
-            self.endpoint(&format!("/models/{}:streamGenerateContent", self.model))?;
+        let mut url = self.endpoint(&format!("/models/{}:streamGenerateContent", self.model))?;
         url.query_pairs_mut()
             .append_pair("key", &self.api_key)
             .append_pair("alt", "sse");
