@@ -18132,6 +18132,18 @@ fn ensure_local_class_id(types: &mut TypeStore, analysis: &Analysis, class: &Cla
         })
     });
 
+    // If the class already has a non-empty method list, assume it came from a richer source
+    // (e.g. `SourceTypeProvider` / workspace indexing) which captures modifiers like `static`.
+    // The lightweight text-based `analysis.methods` model does not preserve those modifiers, so
+    // merging it here can introduce incorrect duplicates (e.g. static methods being added as
+    // instance methods).
+    if types
+        .class(id)
+        .is_some_and(|class_def| !class_def.methods.is_empty())
+    {
+        return id;
+    }
+
     let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens);
     let methods = analysis
         .methods
