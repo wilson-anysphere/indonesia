@@ -899,6 +899,7 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 || looks_like_mac_address_token(token)
                 || looks_like_uuid_token(token)
                 || looks_like_jwt_token(token)
+                || looks_like_base64url_triplet_token(token)
                 || token_contains_long_hex_run(token)
                 || looks_like_base64_token(token)
                 || looks_like_base32_token(token)
@@ -1635,6 +1636,52 @@ fn looks_like_jwt_token(tok: &str) -> bool {
     }
 
     is_base64url_segment(first) && is_base64url_segment(second) && is_base64url_segment(third)
+}
+
+fn looks_like_base64url_triplet_token(tok: &str) -> bool {
+    let token = tok.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')));
+    if token.len() < 50 {
+        return false;
+    }
+
+    let mut parts = token.split('.');
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    let Some(second) = parts.next() else {
+        return false;
+    };
+    let Some(third) = parts.next() else {
+        return false;
+    };
+    if parts.next().is_some() {
+        return false;
+    }
+
+    fn is_base64url_segment(seg: &str) -> bool {
+        seg.len() >= 6
+            && seg
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    }
+
+    if !(is_base64url_segment(first) && is_base64url_segment(second) && is_base64url_segment(third))
+    {
+        return false;
+    }
+
+    let segments = [first, second, third];
+    let longish = segments.iter().filter(|seg| seg.len() >= 10).count();
+    let has_long = segments.iter().any(|seg| seg.len() >= 20);
+    if longish < 2 || !has_long {
+        return false;
+    }
+
+    // Avoid treating `foo.bar.baz` identifiers as token-like; require at least one digit, `_`, or
+    // `-` so purely alphabetic dotted identifiers do not match.
+    token
+        .bytes()
+        .any(|b| b.is_ascii_digit() || matches!(b, b'-' | b'_'))
 }
 
 fn looks_like_base64_token(tok: &str) -> bool {

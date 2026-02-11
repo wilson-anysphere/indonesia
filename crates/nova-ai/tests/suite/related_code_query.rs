@@ -1126,6 +1126,33 @@ fn related_code_query_skips_jwt_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_base64url_triplet_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for base64url-triplet related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    // Exercise the heuristic without committing a literal that might look like a real token.
+    let focal_code = [
+        "AbcdefGhijklmnopqrstUVWX",
+        ".",
+        "abcdef",
+        ".",
+        "Zyxwvutsrqponmlkjihg_fedcba-XYZ",
+    ]
+    .concat();
+    let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for base64url-triplet-only focal code"
+    );
+}
+
+#[test]
 fn related_code_query_skips_base64_only_selections() {
     struct PanicSearch;
 
