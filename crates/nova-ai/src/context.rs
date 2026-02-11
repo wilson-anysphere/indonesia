@@ -884,6 +884,8 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
             if looks_like_email_address(token)
                 || looks_like_ipv4_address(token)
                 || looks_like_mac_address_token(token)
+                || looks_like_uuid_token(token)
+                || looks_like_jwt_token(token)
                 || token_contains_obvious_secret_fragment(token)
                 || token_contains_sensitive_assignment(token)
             {
@@ -1406,6 +1408,60 @@ fn looks_like_mac_address_token(tok: &str) -> bool {
     }
 
     false
+}
+
+fn looks_like_uuid_token(tok: &str) -> bool {
+    let token = tok.trim_matches(|c: char| !c.is_ascii_hexdigit() && c != '-');
+    if token.len() != 36 {
+        return false;
+    }
+    let mut parts = token.split('-');
+    let expected = [8usize, 4, 4, 4, 12];
+    for &len in &expected {
+        let Some(part) = parts.next() else {
+            return false;
+        };
+        if part.len() != len || !part.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return false;
+        }
+    }
+    parts.next().is_none()
+}
+
+fn looks_like_jwt_token(tok: &str) -> bool {
+    let token = tok.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')));
+    if token.len() < 60 {
+        return false;
+    }
+
+    let mut parts = token.split('.');
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    let Some(second) = parts.next() else {
+        return false;
+    };
+    let Some(third) = parts.next() else {
+        return false;
+    };
+    if parts.next().is_some() {
+        return false;
+    }
+
+    // Typical JWTs base64url-encode a JSON header, which starts with `{"` and therefore encodes to
+    // a string that begins with `eyJ`. This reduces false positives on dotted package/class names.
+    if !first.starts_with("eyJ") {
+        return false;
+    }
+
+    fn is_base64url_segment(seg: &str) -> bool {
+        seg.len() >= 10
+            && seg
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    }
+
+    is_base64url_segment(first) && is_base64url_segment(second) && is_base64url_segment(third)
 }
 
 fn push_query_token(out: &mut String, tok: &str, max_bytes: usize) -> bool {

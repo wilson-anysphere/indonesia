@@ -760,6 +760,44 @@ fn related_code_query_skips_delimited_number_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_uuid_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for uuid-only related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = "de305d54-75b4-431b-adb2-eb6b9e546014";
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for uuid-only focal code"
+    );
+}
+
+#[test]
+fn related_code_query_skips_jwt_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for jwt-only related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for jwt-only focal code"
+    );
+}
+
+#[test]
 fn related_code_query_skips_numeric_literal_only_selections() {
     struct PanicSearch;
 
