@@ -678,6 +678,17 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
             if before_is_sep || after_is_sep {
                 return true;
             }
+
+            // URI schemes can include punctuation (e.g. `vscode-remote://...`). If the surrounding
+            // token is immediately followed by `:/` or `:\\`, treat *all* identifiers within it as
+            // path-like so we don't emit low-signal queries such as `vscode`.
+            if after.is_some_and(|b| *b == b':')
+                && bytes
+                    .get(bounds.end + 1)
+                    .is_some_and(|b| *b == b'/' || *b == b'\\')
+            {
+                return true;
+            }
         }
     }
 
