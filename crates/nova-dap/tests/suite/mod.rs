@@ -24,6 +24,7 @@ mod debugger_ux;
 mod enable_method_return_values;
 mod exception_breakpoints;
 mod jdwp_client;
+mod json_error_sanitization;
 mod logpoints_hitcounts;
 mod outgoing_backpressure;
 mod output_truncation;

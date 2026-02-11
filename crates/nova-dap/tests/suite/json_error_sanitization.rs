@@ -1,0 +1,37 @@
+use crate::harness::spawn_wire_server;
+use serde_json::json;
+
+#[tokio::test]
+async fn wire_server_does_not_echo_string_values_in_launch_argument_errors() {
+    let (client, server_task) = spawn_wire_server();
+
+    client.initialize_handshake().await;
+
+    let secret = "nova-dap-wire-super-secret-token";
+    // `launch.port` expects a number (`u16`). Passing a string triggers:
+    // `invalid type: string "..."`.
+    let resp = client.request("launch", json!({ "port": secret })).await;
+
+    assert_eq!(
+        resp.get("success").and_then(|v| v.as_bool()),
+        Some(false),
+        "unexpected response: {resp}"
+    );
+
+    let message = resp
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        !message.contains(secret),
+        "expected DAP response error message to omit string values: {message}"
+    );
+    assert!(
+        message.contains("<redacted>"),
+        "expected DAP response error message to include redaction marker: {message}"
+    );
+
+    client.disconnect().await;
+    server_task.await.unwrap().unwrap();
+}
+

@@ -58,6 +58,16 @@ const OUTGOING_HIGH_CAPACITY: usize = 256;
 const OUTGOING_SHUTDOWN_CAPACITY: usize = 16;
 const OUTGOING_OUTPUT_CAPACITY: usize = 128;
 
+fn sanitize_serde_json_error(err: serde_json::Error) -> String {
+    // `serde_json::Error` display strings can include user-provided scalar values (e.g.
+    // `invalid type: string "..."`). DAP payloads can contain secrets (launch args/env, evaluated
+    // expressions, etc). Avoid echoing those values back in response messages.
+    match DapError::from(err) {
+        DapError::Json { message } => message,
+        other => other.to_string(),
+    }
+}
+
 #[derive(Clone)]
 struct OutgoingSender {
     shutdown: mpsc::Sender<Value>,
@@ -783,13 +793,14 @@ async fn handle_request_inner(
             {
                 Ok(args) => args,
                 Err(err) => {
+                    let message = sanitize_serde_json_error(err);
                     send_response(
                         out_tx,
                         seq,
                         request,
                         false,
                         None,
-                        Some(format!("launch arguments are invalid: {err}")),
+                        Some(format!("launch arguments are invalid: {message}")),
                     )
                     .await;
                     return;
@@ -3023,13 +3034,14 @@ async fn handle_request_inner(
             {
                 Ok(args) => args,
                 Err(err) => {
+                    let message = sanitize_serde_json_error(err);
                     send_response(
                         out_tx,
                         seq,
                         request,
                         false,
                         None,
-                        Some(format!("invalid setVariable arguments: {err}")),
+                        Some(format!("invalid setVariable arguments: {message}")),
                     )
                     .await;
                     return;
@@ -3411,8 +3423,9 @@ async fn handle_request_inner(
             let args: EvaluateArguments = match serde_json::from_value(request.arguments.clone()) {
                 Ok(args) => args,
                 Err(err) => {
+                    let message = sanitize_serde_json_error(err);
                     let body = EvaluateResult {
-                        result: format!("invalid evaluate arguments: {err}"),
+                        result: format!("invalid evaluate arguments: {message}"),
                         type_: None,
                         variables_reference: 0,
                         evaluate_name: None,
@@ -3488,13 +3501,14 @@ async fn handle_request_inner(
             {
                 Ok(args) => args,
                 Err(err) => {
+                    let message = sanitize_serde_json_error(err);
                     send_response(
                         out_tx,
                         seq,
                         request,
                         false,
                         None,
-                        Some(format!("invalid streamDebug arguments: {err}")),
+                        Some(format!("invalid streamDebug arguments: {message}")),
                     )
                     .await;
                     return;
@@ -3791,13 +3805,14 @@ async fn handle_request_inner(
                 match serde_json::from_value(request.arguments.clone()) {
                     Ok(args) => args,
                     Err(err) => {
+                        let message = sanitize_serde_json_error(err);
                         send_response(
                             out_tx,
                             seq,
                             request,
                             false,
                             None,
-                            Some(format!("invalid dataBreakpointInfo arguments: {err}")),
+                            Some(format!("invalid dataBreakpointInfo arguments: {message}")),
                         )
                         .await;
                         return;
@@ -3911,13 +3926,14 @@ async fn handle_request_inner(
                 match serde_json::from_value(request.arguments.clone()) {
                     Ok(args) => args,
                     Err(err) => {
+                        let message = sanitize_serde_json_error(err);
                         send_response(
                             out_tx,
                             seq,
                             request,
                             false,
                             None,
-                            Some(format!("invalid setDataBreakpoints arguments: {err}")),
+                            Some(format!("invalid setDataBreakpoints arguments: {message}")),
                         )
                         .await;
                         return;
@@ -4133,13 +4149,14 @@ async fn handle_request_inner(
             let args: HotSwapArgs = match serde_json::from_value(request.arguments.clone()) {
                 Ok(v) => v,
                 Err(err) => {
+                    let message = sanitize_serde_json_error(err);
                     send_response(
                         out_tx,
                         seq,
                         request,
                         false,
                         None,
-                        Some(format!("invalid arguments: {err}")),
+                        Some(format!("invalid arguments: {message}")),
                     )
                     .await;
                     return;
