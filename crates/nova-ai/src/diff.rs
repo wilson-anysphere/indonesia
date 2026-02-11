@@ -741,6 +741,17 @@ fn unified_diff_section_start(lines: &[&str], header_idx: usize) -> usize {
     // - SVN diff: `Index: path` + `====...`
     //
     // Capture these as part of the file section so excluded paths do not leak via pre-header lines.
+    if header_idx >= 3 {
+        let prev3 = lines[header_idx - 3];
+        let prev2 = lines[header_idx - 2];
+        let prev1 = lines[header_idx - 1];
+        if prev3.starts_with("Index: ")
+            && is_unified_section_delimiter(prev2)
+            && prev1.starts_with("diff ")
+        {
+            return header_idx - 3;
+        }
+    }
     if header_idx >= 2 {
         let prev2 = lines[header_idx - 2];
         let prev1 = lines[header_idx - 1];

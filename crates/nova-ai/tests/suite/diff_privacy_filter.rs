@@ -858,6 +858,44 @@ fn unified_diff_with_index_section_headers_is_supported() {
 }
 
 #[test]
+fn unified_diff_with_index_and_diff_u_preamble_is_supported() {
+    // Some tools may include both SVN-style `Index:` metadata and a diffutils-style `diff -u …`
+    // line before the `---`/`+++` headers. Ensure all of these lines are treated as part of the
+    // file section so excluded paths don't leak via the `Index:` line.
+    let excluded_path = "src/secrets/secret.txt";
+
+    let excluded_section = "Index: src/secrets/secret.txt\n\
+===================================================================\n\
+diff -u src/secrets/secret.txt src/secrets/secret.txt\n\
+--- src/secrets/secret.txt\t2026-02-10 12:00:00.000000000 +0000\n\
++++ src/secrets/secret.txt\t2026-02-10 12:00:00.000000000 +0000\n\
+@@ -1 +1 @@\n\
+-old\n\
++INDEX_DIFF_U_SECRET\n";
+
+    let allowed_section = "Index: src/Ok.java\n\
+===================================================================\n\
+diff -u src/Ok.java src/Ok.java\n\
+--- src/Ok.java\t2026-02-10 12:00:00.000000000 +0000\n\
++++ src/Ok.java\t2026-02-10 12:00:00.000000000 +0000\n\
+@@ -1 +1 @@\n\
+-class Ok {}\n\
++class Ok { int x = 24; }\n";
+
+    let diff = format!("{excluded_section}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("Index: src/secrets/secret.txt"));
+    assert!(!filtered.contains("INDEX_DIFF_U_SECRET"));
+    assert!(filtered.contains(allowed_section));
+}
+
+#[test]
 fn unified_diff_does_not_strip_real_a_directory_prefix_from_paths() {
     let excluded_path = "a/src/secrets/secret.txt";
 
