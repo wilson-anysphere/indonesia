@@ -11099,6 +11099,16 @@ pub(crate) fn infer_receiver_type_before_dot(
         }
     }
 
+    if inner == "this" {
+        return enclosing_class(&analysis, dot_offset).map(|c| c.name.clone());
+    }
+    if inner == "super" {
+        let Some(class) = enclosing_class(&analysis, dot_offset) else {
+            return Some("Object".to_string());
+        };
+        return Some(class.extends.clone().unwrap_or_else(|| "Object".to_string()));
+    }
+
     // Best-effort `this.<field>` / `super.<field>` support for parenthesized receivers like
     // `(this.foo).<cursor>`.
     if let Some((qualifier, rest)) = inner.split_once('.') {
