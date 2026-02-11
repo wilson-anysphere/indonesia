@@ -249,7 +249,11 @@ fn stdio_server_exposes_extensions_status_and_navigation_requests() {
 fn stdio_server_invalid_params_errors_do_not_echo_secret_string_values() {
     let _lock = crate::support::stdio_server_lock();
 
-    let secret = "NOVA_SECRET_DO_NOT_LEAK_FROM_INVALID_PARAMS";
+    // The secret intentionally contains an embedded quote. `serde_json::Error` display strings
+    // escape that quote (e.g. `string "prefix\"secret"`). Make sure the server sanitizes the full
+    // string even in the presence of escapes.
+    let secret_suffix = "NOVA_SECRET_DO_NOT_LEAK_FROM_INVALID_PARAMS";
+    let secret = format!("prefix\"{secret_suffix}");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -294,7 +298,7 @@ fn stdio_server_invalid_params_errors_do_not_echo_secret_string_values() {
     let error = resp.get("error").cloned().expect("expected error response");
     assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32602));
     assert!(
-        !resp.to_string().contains(secret),
+        !resp.to_string().contains(secret_suffix),
         "expected JSON-RPC error to omit secret string values; got: {resp:?}"
     );
 

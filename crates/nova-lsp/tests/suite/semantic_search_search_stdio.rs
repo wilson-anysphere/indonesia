@@ -142,7 +142,11 @@ semantic_search = true
 fn semantic_search_search_invalid_params_does_not_echo_secret_string_values() {
     let _lock = stdio_server_lock();
 
-    let secret = "NOVA_SEMANTIC_SEARCH_SECRET_DO_NOT_LEAK";
+    // The secret intentionally contains an embedded quote. `serde_json::Error` display strings
+    // escape that quote (e.g. `string "prefix\"secret"`). Make sure the server sanitizes the full
+    // string even in the presence of escapes.
+    let secret_suffix = "NOVA_SEMANTIC_SEARCH_SECRET_DO_NOT_LEAK";
+    let secret = format!("prefix\"{secret_suffix}");
 
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path();
@@ -216,7 +220,7 @@ semantic_search = true
     let error = resp.get("error").cloned().expect("expected error response");
     assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32602));
     assert!(
-        !resp.to_string().contains(secret),
+        !resp.to_string().contains(secret_suffix),
         "expected JSON-RPC error to omit secret string values; got: {resp:?}"
     );
 
