@@ -4996,6 +4996,46 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
             if value == 0x25 {
                 return Some(next);
             }
+            // Numeric percent entities can also be constructed by emitting the number sign (`#`)
+            // via an escape sequence (e.g. `u0023u0033u0037...` == `#37...` after decoding). Treat
+            // these as percent markers so obfuscated percent-encoded paths fail closed.
+            if value == 0x23 {
+                let mut j = next;
+                let base = match bytes.get(j) {
+                    Some(b'x') | Some(b'X') => {
+                        j += 1;
+                        16u32
+                    }
+                    _ => 10u32,
+                };
+                let mut entity_value = 0u32;
+                let mut significant = 0usize;
+                while j < bytes.len() && significant < 8 {
+                    let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, j) else {
+                        break;
+                    };
+                    if base == 10 && digit >= 10 {
+                        break;
+                    }
+                    let digit = digit as u32;
+                    if significant == 0 && digit == 0 {
+                        j = next;
+                        continue;
+                    }
+                    entity_value = entity_value
+                        .checked_mul(base)
+                        .and_then(|v| v.checked_add(digit))
+                        .unwrap_or(u32::MAX);
+                    significant += 1;
+                    j = next;
+                    if entity_value == 37 {
+                        if bytes.get(j).is_some_and(|b| *b == b';') {
+                            j += 1;
+                        }
+                        return Some(j);
+                    }
+                }
+            }
             if value == 0x26 {
                 if let Some(next) = percent_entity_end_after_ampersand(bytes, next) {
                     return Some(next);
