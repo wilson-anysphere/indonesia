@@ -896,6 +896,7 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 || looks_like_base64_token(token)
                 || looks_like_high_entropy_token(token)
                 || looks_like_user_at_host_token(token)
+                || token_contains_percent_encoded_path_separator(token)
                 || token_contains_obvious_secret_fragment(token)
                 || token_contains_sensitive_assignment(token)
             {
@@ -1069,8 +1070,12 @@ fn related_code_query_fallback(focal_code: &str) -> String {
     }
     let mut out = String::new();
 
-    for tok in redacted.split_whitespace() {
-        let tok = clean_query_word(tok);
+    for raw_tok in redacted.split_whitespace() {
+        if token_contains_percent_encoded_path_separator(raw_tok) {
+            continue;
+        }
+
+        let tok = clean_query_word(raw_tok);
         if tok.is_empty() {
             continue;
         }
@@ -1514,6 +1519,56 @@ fn looks_like_high_entropy_token(tok: &str) -> bool {
 
     let digits = token.bytes().filter(|b| b.is_ascii_digit()).count();
     digits >= 8 && is_mostly_alnum_or_symbols(token)
+}
+
+fn token_contains_percent_encoded_path_separator(tok: &str) -> bool {
+    fn hex_value(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let bytes = tok.as_bytes();
+    if bytes.len() < 3 {
+        return false;
+    }
+
+    let mut i = 0usize;
+    while i + 2 < bytes.len() {
+        if bytes[i] != b'%' {
+            i += 1;
+            continue;
+        }
+
+        let Some(hi) = hex_value(bytes[i + 1]) else {
+            i += 1;
+            continue;
+        };
+        let Some(lo) = hex_value(bytes[i + 2]) else {
+            i += 1;
+            continue;
+        };
+        let decoded = (hi << 4) | lo;
+
+        if decoded == b'/' || decoded == b'\\' {
+            return true;
+        }
+
+        // Double-encoded separators like `%252f` decode to `%2f`.
+        if decoded == b'%' && i + 4 < bytes.len() {
+            match (bytes[i + 3], bytes[i + 4]) {
+                (b'2', b'f' | b'F') | (b'5', b'c' | b'C') => return true,
+                _ => {}
+            }
+        }
+
+        i += 1;
+    }
+
+    false
 }
 
 fn token_contains_long_hex_run(tok: &str) -> bool {

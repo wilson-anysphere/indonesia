@@ -244,6 +244,44 @@ fn related_code_query_avoids_path_segments_with_internal_punctuation() {
 }
 
 #[test]
+fn related_code_query_avoids_percent_encoded_path_segments() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let search = CapturingSearch::default();
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+    let focal_code = format!(
+        "%2Fhome%2Fuser%2Fmy-{private_segment}-project%2Fsrc%2Fmain%2Fjava\nreturn foo.bar();\n"
+    );
+
+    let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+    let query = search
+        .last_query
+        .lock()
+        .expect("lock poisoned")
+        .clone()
+        .expect("query captured");
+
+    assert!(
+        !query.contains(private_segment),
+        "query should not include percent-encoded path fragments: {query}"
+    );
+    assert!(
+        query.contains("foo") || query.contains("bar"),
+        "expected query to retain non-path identifiers, got: {query}"
+    );
+}
+
+#[test]
 fn related_code_query_does_not_drop_identifiers_due_to_inline_string_paths() {
     #[derive(Default)]
     struct CapturingSearch {
@@ -476,6 +514,25 @@ fn related_code_query_skips_file_uri_only_selections() {
     assert!(
         req.related_code.is_empty(),
         "expected no related code for file-uri-only focal code"
+    );
+}
+
+#[test]
+fn related_code_query_skips_percent_encoded_path_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for percent-encoded path selections");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = "%2Fhome%2Fuser%2Fsecret%2Fcredentials";
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for percent-encoded path-only focal code"
     );
 }
 
