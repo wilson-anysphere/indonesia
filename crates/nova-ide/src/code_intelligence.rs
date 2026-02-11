@@ -11177,6 +11177,11 @@ pub(crate) fn infer_receiver_type_before_dot(
         return None;
     }
 
+    // Parenthesized string literal (or text block) receiver: `("foo").<cursor>` / `("""...""").<cursor>`.
+    if inner.starts_with('"') {
+        return Some("java.lang.String".to_string());
+    }
+
     // If the inner expression ends with `]` (array access/creation), reuse the same inference logic
     // we use for top-level array receivers.
     if end > 0 && bytes.get(end - 1).is_some_and(|b| *b == b']' || *b == b'}') {
