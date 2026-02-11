@@ -7988,7 +7988,7 @@ fn workspace_type_candidates(
 }
 
 fn dot_completion_context(text: &str, suffix_prefix_start: usize) -> Option<DotCompletionContext> {
-    let before = skip_whitespace_backwards(text, suffix_prefix_start);
+    let before = skip_trivia_backwards(text, suffix_prefix_start);
     if before == 0 {
         return None;
     }
@@ -22021,7 +22021,7 @@ pub(crate) fn skip_whitespace_backwards(text: &str, mut offset: usize) -> usize 
     offset
 }
 
-fn skip_trivia_backwards(text: &str, mut offset: usize) -> usize {
+pub(crate) fn skip_trivia_backwards(text: &str, mut offset: usize) -> usize {
     // Best-effort: skip whitespace and trailing block comments (`/* ... */`).
     //
     // We intentionally do *not* attempt to skip line comments here; detecting `//` reliably without

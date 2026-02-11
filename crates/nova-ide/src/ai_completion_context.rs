@@ -8,7 +8,7 @@ use crate::code_intelligence::{
     analyze_for_completion_context, identifier_prefix, infer_receiver_type_before_dot,
     field_type_for_receiver_type, infer_receiver_type_for_member_access,
     member_method_names_for_receiver_type_with_call_kind, receiver_before_dot,
-    skip_whitespace_backwards, CompletionContextAnalysis,
+    skip_trivia_backwards, CompletionContextAnalysis,
 };
 
 /// Build a [`MultiTokenCompletionContext`] for Nova's multi-token completion pipeline.
@@ -38,7 +38,7 @@ pub fn multi_token_completion_context(
     let analysis = analyze_for_completion_context(text);
 
     let (prefix_start, _) = identifier_prefix(text, offset);
-    let before = skip_whitespace_backwards(text, prefix_start);
+    let before = skip_trivia_backwards(text, prefix_start);
     let after_dot = before > 0 && text.as_bytes().get(before - 1) == Some(&b'.');
 
     let (_, receiver_type, receiver_call_kind) = receiver_at_offset(db, file, text, offset, &analysis);
@@ -74,7 +74,7 @@ fn receiver_at_offset(
     analysis: &CompletionContextAnalysis,
 ) -> (Option<String>, Option<String>, Option<CallKind>) {
     let (prefix_start, _) = identifier_prefix(text, offset);
-    let before = skip_whitespace_backwards(text, prefix_start);
+    let before = skip_trivia_backwards(text, prefix_start);
     if before == 0 || text.as_bytes().get(before - 1) != Some(&b'.') {
         return (None, None, None);
     }
@@ -202,7 +202,7 @@ fn call_chain_field_access_type(
     text: &str,
     dot_offset: usize,
 ) -> Option<String> {
-    let receiver_end = skip_whitespace_backwards(text, dot_offset);
+    let receiver_end = skip_trivia_backwards(text, dot_offset);
     if receiver_end == 0 {
         return None;
     }
@@ -226,12 +226,12 @@ fn call_chain_field_access_type(
         segments_rev.push(segment);
         chain_start = seg_start;
 
-        let before_seg = skip_whitespace_backwards(text, seg_start);
+        let before_seg = skip_trivia_backwards(text, seg_start);
         if before_seg == 0 || bytes.get(before_seg - 1) != Some(&b'.') {
             break;
         }
         let dot = before_seg - 1;
-        cursor_end = skip_whitespace_backwards(text, dot);
+        cursor_end = skip_trivia_backwards(text, dot);
         if cursor_end == 0 {
             break;
         }
@@ -244,11 +244,11 @@ fn call_chain_field_access_type(
 
     // Find the dot immediately before the start of the chain and ensure the segment before it ends
     // with `)`, i.e. `<call>().<field_chain>.<cursor>`.
-    let before_chain = skip_whitespace_backwards(text, chain_start);
+    let before_chain = skip_trivia_backwards(text, chain_start);
     let dot_before_chain = before_chain
         .checked_sub(1)
         .filter(|idx| bytes.get(*idx) == Some(&b'.'))?;
-    let prev_end = skip_whitespace_backwards(text, dot_before_chain);
+    let prev_end = skip_trivia_backwards(text, dot_before_chain);
     if prev_end == 0 || bytes.get(prev_end - 1) != Some(&b')') {
         return None;
     }
@@ -1309,6 +1309,55 @@ class A {
   void m() {
     Foo f = new Foo();
     f/*comment*/.<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Foo"),
+            "expected receiver type to contain `Foo`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "bar"));
+    }
+
+    #[test]
+    fn constructor_call_receiver_with_leading_block_comment_after_dot_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class Foo {
+  void bar() {}
+}
+
+class A {
+  void m() {
+    new Foo()./*comment*/<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Foo"),
+            "expected receiver type to contain `Foo`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "bar"));
+    }
+
+    #[test]
+    fn ident_receiver_with_leading_block_comment_after_dot_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class Foo {
+  void bar() {}
+}
+
+class A {
+  void m() {
+    Foo f = new Foo();
+    f./*comment*/<cursor>
   }
 }
 "#,

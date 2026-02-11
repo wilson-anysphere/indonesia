@@ -1534,6 +1534,55 @@ class A {
 }
 
 #[test]
+fn completion_resolves_new_expression_receiver_with_leading_block_comment_after_dot() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  void bar() {}
+}
+
+class A {
+  void m() {
+    new Foo()./*comment*/<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"bar"),
+        "expected completion list to contain Foo.bar for `new Foo()./*comment*/` receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_ident_receiver_with_leading_block_comment_after_dot() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  void bar() {}
+}
+
+class A {
+  void m() {
+    Foo f = new Foo();
+    f./*comment*/<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"bar"),
+        "expected completion list to contain Foo.bar for `f./*comment*/` receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_resolves_array_access_receiver() {
     let (db, file, pos) = fixture(
         r#"
