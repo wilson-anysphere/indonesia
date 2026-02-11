@@ -1177,6 +1177,59 @@ class A {
 }
 
 #[test]
+fn completion_resolves_parenthesized_call_chain_field_receiver_with_trailing_block_comment_in_chain() {
+    let (db, file, pos) = fixture(
+        r#"
+class B {
+  String s = "x";
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    (b()/*comment*/.s).<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"substring"),
+        "expected completion list to contain String.substring for parenthesized call-chain field receiver with trailing block comment; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_parenthesized_call_chain_field_receiver_with_trailing_line_comment_in_chain() {
+    let (db, file, pos) = fixture(
+        r#"
+class B {
+  String s = "x";
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    (b() // comment
+      .s).<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"substring"),
+        "expected completion list to contain String.substring for parenthesized call-chain field receiver with trailing line comment; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_resolves_dotted_field_chain_receiver() {
     let (db, file, pos) = fixture(
         r#"

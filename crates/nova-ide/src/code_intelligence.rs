@@ -11377,7 +11377,7 @@ fn infer_expr_type_for_parenthesized_member_chain(
         }
 
         let expr_end = expr_end.min(bytes.len());
-        let end = skip_whitespace_backwards(text, expr_end);
+        let end = skip_trivia_backwards(text, expr_end);
         if end <= expr_start {
             return None;
         }
@@ -11418,7 +11418,7 @@ fn infer_expr_type_for_parenthesized_member_chain(
         let ident = text.get(ident_start..end)?;
 
         if let Some(dot_pos) = last_top_level_dot(bytes, expr_start, ident_start) {
-            let lhs_end = skip_whitespace_backwards(text, dot_pos);
+            let lhs_end = skip_trivia_backwards(text, dot_pos);
             let lhs_ty = infer(
                 db,
                 file,
