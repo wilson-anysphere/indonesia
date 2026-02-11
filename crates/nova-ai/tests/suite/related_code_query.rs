@@ -425,9 +425,14 @@ fn related_code_query_avoids_unicode_separator_path_segments() {
         "\u{2215}", // ∕ division slash
         "\u{2044}", // ⁄ fraction slash
         "\u{FF0F}", // ／ fullwidth solidus
+        "\u{2571}", // ╱ box drawings light diagonal (slash-like)
+        "\u{29F6}", // ⧶ solidus with overbar
         "\u{29F8}", // ⧸ big solidus
         "\u{2216}", // ∖ set minus / backslash-like
         "\u{FF3C}", // ＼ fullwidth reverse solidus
+        "\u{2572}", // ╲ box drawings light diagonal (backslash-like)
+        "\u{29F5}", // ⧵ reverse solidus operator
+        "\u{29F7}", // ⧷ reverse solidus with horizontal stroke
         "\u{29F9}", // ⧹ big reverse solidus
         "\u{FE68}", // ﹨ small reverse solidus
     ] {
@@ -522,9 +527,14 @@ fn related_code_query_avoids_unicode_escaped_unicode_separator_path_segments() {
         r"\u2215", // ∕ division slash
         r"\u2044", // ⁄ fraction slash
         r"\uFF0F", // ／ fullwidth solidus
+        r"\u2571", // ╱ box drawings light diagonal (slash-like)
+        r"\u29F6", // ⧶ solidus with overbar
         r"\u29F8", // ⧸ big solidus
         r"\u2216", // ∖ set minus / backslash-like
         r"\uFF3C", // ＼ fullwidth reverse solidus
+        r"\u2572", // ╲ box drawings light diagonal (backslash-like)
+        r"\u29F5", // ⧵ reverse solidus operator
+        r"\u29F7", // ⧷ reverse solidus with horizontal stroke
         r"\u29F9", // ⧹ big reverse solidus
         r"\uFE68", // ﹨ small reverse solidus
         // 8-digit `\UXXXXXXXX` escape.
@@ -532,6 +542,11 @@ fn related_code_query_avoids_unicode_escaped_unicode_separator_path_segments() {
         // Braced unicode escapes.
         r"\u{2215}",
         r"\u{2216}",
+        r"\u{2571}",
+        r"\u{2572}",
+        r"\u{29F5}",
+        r"\u{29F6}",
+        r"\u{29F7}",
     ] {
         let search = CapturingSearch::default();
         let focal_code = format!(
@@ -577,14 +592,24 @@ fn related_code_query_avoids_hex_escaped_unicode_separator_path_segments() {
         r"\x2215", // ∕ division slash
         r"\x2044", // ⁄ fraction slash
         r"\xFF0F", // ／ fullwidth solidus
+        r"\x2571", // ╱ box drawings light diagonal (slash-like)
+        r"\x29F6", // ⧶ solidus with overbar
         r"\x29F8", // ⧸ big solidus
         r"\x2216", // ∖ set minus / backslash-like
         r"\xFF3C", // ＼ fullwidth reverse solidus
+        r"\x2572", // ╲ box drawings light diagonal (backslash-like)
+        r"\x29F5", // ⧵ reverse solidus operator
+        r"\x29F7", // ⧷ reverse solidus with horizontal stroke
         r"\x29F9", // ⧹ big reverse solidus
         r"\xFE68", // ﹨ small reverse solidus
         // Braced hex escape variant.
         r"\x{2215}",
         r"\x{2216}",
+        r"\x{2571}",
+        r"\x{2572}",
+        r"\x{29F5}",
+        r"\x{29F6}",
+        r"\x{29F7}",
     ] {
         let search = CapturingSearch::default();
         let focal_code = format!(
@@ -754,11 +779,16 @@ fn related_code_query_avoids_html_entity_unicode_separator_path_segments() {
         "&#8725;",  // ∕ division slash (U+2215)
         "&#8260;",  // ⁄ fraction slash (U+2044)
         "&#65295;", // ／ fullwidth solidus (U+FF0F)
+        "&#9585;",  // ╱ box drawings light diagonal (U+2571)
+        "&#10742;", // ⧶ solidus with overbar (U+29F6)
         "&#10744;", // ⧸ big solidus (U+29F8)
         "&frasl;",  // ⁄ fraction slash (named entity)
         // Backslash-like separators.
         "&#8726;",  // ∖ set minus / backslash-like (U+2216)
         "&#65340;", // ＼ fullwidth reverse solidus (U+FF3C)
+        "&#9586;",  // ╲ box drawings light diagonal (U+2572)
+        "&#10741;", // ⧵ reverse solidus operator (U+29F5)
+        "&#10743;", // ⧷ reverse solidus with horizontal stroke (U+29F7)
         "&#10745;", // ⧹ big reverse solidus (U+29F9)
         "&#65128;", // ﹨ small reverse solidus (U+FE68)
         "&setminus;", // ∖ set minus (named entity)
@@ -807,6 +837,8 @@ fn related_code_query_avoids_html_entity_unicode_separator_path_segments_without
         "&#8725",  // ∕ division slash (U+2215)
         "&#8260",  // ⁄ fraction slash (U+2044)
         "&#65295", // ／ fullwidth solidus (U+FF0F)
+        "&#9585",  // ╱ box drawings light diagonal (U+2571)
+        "&#10742", // ⧶ solidus with overbar (U+29F6)
         "&#10744", // ⧸ big solidus (U+29F8)
         "&frasl",
         "&amp;frasl",
@@ -814,6 +846,9 @@ fn related_code_query_avoids_html_entity_unicode_separator_path_segments_without
         // Backslash-like separators.
         "&#8726",  // ∖ set minus (U+2216)
         "&#65340", // ＼ fullwidth reverse solidus (U+FF3C)
+        "&#9586",  // ╲ box drawings light diagonal (U+2572)
+        "&#10741", // ⧵ reverse solidus operator (U+29F5)
+        "&#10743", // ⧷ reverse solidus with horizontal stroke (U+29F7)
         "&#10745", // ⧹ big reverse solidus (U+29F9)
         "&#65128", // ﹨ small reverse solidus (U+FE68)
         "&setminus",
@@ -1404,9 +1439,14 @@ fn related_code_query_skips_unicode_separator_path_only_selections() {
         "\u{2215}", // ∕ division slash
         "\u{2044}", // ⁄ fraction slash
         "\u{FF0F}", // ／ fullwidth solidus
+        "\u{2571}", // ╱ box drawings light diagonal (slash-like)
+        "\u{29F6}", // ⧶ solidus with overbar
         "\u{29F8}", // ⧸ big solidus
         "\u{2216}", // ∖ set minus / backslash-like
         "\u{FF3C}", // ＼ fullwidth reverse solidus
+        "\u{2572}", // ╲ box drawings light diagonal (backslash-like)
+        "\u{29F5}", // ⧵ reverse solidus operator
+        "\u{29F7}", // ⧷ reverse solidus with horizontal stroke
         "\u{29F9}", // ⧹ big reverse solidus
         "\u{FE68}", // ﹨ small reverse solidus
     ] {
@@ -1461,14 +1501,24 @@ fn related_code_query_skips_unicode_escaped_unicode_separator_path_only_selectio
         r"\u2215home\u2215user\u2215secret\u2215credentials",
         r"\u2044home\u2044user\u2044secret\u2044credentials",
         r"\uFF0Fhome\uFF0Fuser\uFF0Fsecret\uFF0Fcredentials",
+        r"\u2571home\u2571user\u2571secret\u2571credentials",
+        r"\u29F6home\u29F6user\u29F6secret\u29F6credentials",
         r"\u29F8home\u29F8user\u29F8secret\u29F8credentials",
         r"\u2216home\u2216user\u2216secret\u2216credentials",
         r"\uFF3Chome\uFF3Cuser\uFF3Csecret\uFF3Ccredentials",
+        r"\u2572home\u2572user\u2572secret\u2572credentials",
+        r"\u29F5home\u29F5user\u29F5secret\u29F5credentials",
+        r"\u29F7home\u29F7user\u29F7secret\u29F7credentials",
         r"\u29F9home\u29F9user\u29F9secret\u29F9credentials",
         r"\uFE68home\uFE68user\uFE68secret\uFE68credentials",
         r"\U00002215home\U00002215user\U00002215secret\U00002215credentials",
         r"\u{2215}home\u{2215}user\u{2215}secret\u{2215}credentials",
         r"\u{2216}home\u{2216}user\u{2216}secret\u{2216}credentials",
+        r"\u{2571}home\u{2571}user\u{2571}secret\u{2571}credentials",
+        r"\u{2572}home\u{2572}user\u{2572}secret\u{2572}credentials",
+        r"\u{29F5}home\u{29F5}user\u{29F5}secret\u{29F5}credentials",
+        r"\u{29F6}home\u{29F6}user\u{29F6}secret\u{29F6}credentials",
+        r"\u{29F7}home\u{29F7}user\u{29F7}secret\u{29F7}credentials",
     ] {
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
         assert!(
@@ -1548,12 +1598,22 @@ fn related_code_query_skips_hex_escaped_unicode_separator_path_only_selections()
         r"\x2216home\x2216user\x2216secret\x2216credentials",
         r"\x2044home\x2044user\x2044secret\x2044credentials",
         r"\xFF0Fhome\xFF0Fuser\xFF0Fsecret\xFF0Fcredentials",
+        r"\x2571home\x2571user\x2571secret\x2571credentials",
+        r"\x29F6home\x29F6user\x29F6secret\x29F6credentials",
         r"\x29F8home\x29F8user\x29F8secret\x29F8credentials",
         r"\xFF3Chome\xFF3Cuser\xFF3Csecret\xFF3Ccredentials",
+        r"\x2572home\x2572user\x2572secret\x2572credentials",
+        r"\x29F5home\x29F5user\x29F5secret\x29F5credentials",
+        r"\x29F7home\x29F7user\x29F7secret\x29F7credentials",
         r"\x29F9home\x29F9user\x29F9secret\x29F9credentials",
         r"\xFE68home\xFE68user\xFE68secret\xFE68credentials",
         r"\x{2215}home\x{2215}user\x{2215}secret\x{2215}credentials",
         r"\x{2216}home\x{2216}user\x{2216}secret\x{2216}credentials",
+        r"\x{2571}home\x{2571}user\x{2571}secret\x{2571}credentials",
+        r"\x{2572}home\x{2572}user\x{2572}secret\x{2572}credentials",
+        r"\x{29F5}home\x{29F5}user\x{29F5}secret\x{29F5}credentials",
+        r"\x{29F6}home\x{29F6}user\x{29F6}secret\x{29F6}credentials",
+        r"\x{29F7}home\x{29F7}user\x{29F7}secret\x{29F7}credentials",
     ] {
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
         assert!(
@@ -1657,10 +1717,15 @@ fn related_code_query_skips_html_entity_unicode_separator_path_only_selections()
         "&#8725;home&#8725;user&#8725;secret&#8725;credentials",
         "&#8260;home&#8260;user&#8260;secret&#8260;credentials",
         "&#65295;home&#65295;user&#65295;secret&#65295;credentials",
+        "&#9585;home&#9585;user&#9585;secret&#9585;credentials",
+        "&#10742;home&#10742;user&#10742;secret&#10742;credentials",
         "&#10744;home&#10744;user&#10744;secret&#10744;credentials",
         "&frasl;home&frasl;user&frasl;secret&frasl;credentials",
         "&#8726;home&#8726;user&#8726;secret&#8726;credentials",
         "&#65340;home&#65340;user&#65340;secret&#65340;credentials",
+        "&#9586;home&#9586;user&#9586;secret&#9586;credentials",
+        "&#10741;home&#10741;user&#10741;secret&#10741;credentials",
+        "&#10743;home&#10743;user&#10743;secret&#10743;credentials",
         "&#10745;home&#10745;user&#10745;secret&#10745;credentials",
         "&#65128;home&#65128;user&#65128;secret&#65128;credentials",
         "&setminus;home&setminus;user&setminus;secret&setminus;credentials",
@@ -1688,12 +1753,17 @@ fn related_code_query_skips_html_entity_unicode_separator_path_only_selections_w
         "&#8725home&#8725user&#8725secret&#8725credentials",
         "&#8260home&#8260user&#8260secret&#8260credentials",
         "&#65295home&#65295user&#65295secret&#65295credentials",
+        "&#9585home&#9585user&#9585secret&#9585credentials",
+        "&#10742home&#10742user&#10742secret&#10742credentials",
         "&#10744home&#10744user&#10744secret&#10744credentials",
         "&fraslhome&frasluser&fraslsecret&fraslcredentials",
         "&amp;fraslhome&amp;frasluser&amp;fraslsecret&amp;fraslcredentials",
         "&amp;amp;fraslhome&amp;amp;frasluser&amp;amp;fraslsecret&amp;amp;fraslcredentials",
         "&#8726home&#8726user&#8726secret&#8726credentials",
         "&#65340home&#65340user&#65340secret&#65340credentials",
+        "&#9586home&#9586user&#9586secret&#9586credentials",
+        "&#10741home&#10741user&#10741secret&#10741credentials",
+        "&#10743home&#10743user&#10743secret&#10743credentials",
         "&#10745home&#10745user&#10745secret&#10745credentials",
         "&#65128home&#65128user&#65128secret&#65128credentials",
         "&setminushome&setminususer&setminussecret&setminuscredentials",

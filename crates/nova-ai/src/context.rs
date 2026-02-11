@@ -1371,10 +1371,15 @@ fn unicode_path_separator_before(bytes: &[u8], idx: usize) -> bool {
             [0xE2, 0x88, 0x95] // U+2215 (division slash)
             | [0xE2, 0x81, 0x84] // U+2044 (fraction slash)
             | [0xEF, 0xBC, 0x8F] // U+FF0F (fullwidth solidus)
+            | [0xE2, 0x95, 0xB1] // U+2571 (box drawings light diagonal: ╱)
+            | [0xE2, 0xA7, 0xB6] // U+29F6 (solidus with overbar: ⧶)
             | [0xE2, 0xA7, 0xB8] // U+29F8 (big solidus)
             // Backslash-like separators.
             | [0xE2, 0x88, 0x96] // U+2216 (set minus / backslash-like)
             | [0xEF, 0xBC, 0xBC] // U+FF3C (fullwidth reverse solidus)
+            | [0xE2, 0x95, 0xB2] // U+2572 (box drawings light diagonal: ╲)
+            | [0xE2, 0xA7, 0xB5] // U+29F5 (reverse solidus operator: ⧵)
+            | [0xE2, 0xA7, 0xB7] // U+29F7 (reverse solidus with horizontal stroke: ⧷)
             | [0xE2, 0xA7, 0xB9] // U+29F9 (big reverse solidus)
             | [0xEF, 0xB9, 0xA8] // U+FE68 (small reverse solidus)
                 => return true,
@@ -1392,10 +1397,15 @@ fn unicode_path_separator_at(bytes: &[u8], idx: usize) -> bool {
             [0xE2, 0x88, 0x95] // U+2215 (division slash)
             | [0xE2, 0x81, 0x84] // U+2044 (fraction slash)
             | [0xEF, 0xBC, 0x8F] // U+FF0F (fullwidth solidus)
+            | [0xE2, 0x95, 0xB1] // U+2571 (box drawings light diagonal: ╱)
+            | [0xE2, 0xA7, 0xB6] // U+29F6 (solidus with overbar: ⧶)
             | [0xE2, 0xA7, 0xB8] // U+29F8 (big solidus)
             // Backslash-like separators.
             | [0xE2, 0x88, 0x96] // U+2216 (set minus / backslash-like)
             | [0xEF, 0xBC, 0xBC] // U+FF3C (fullwidth reverse solidus)
+            | [0xE2, 0x95, 0xB2] // U+2572 (box drawings light diagonal: ╲)
+            | [0xE2, 0xA7, 0xB5] // U+29F5 (reverse solidus operator: ⧵)
+            | [0xE2, 0xA7, 0xB7] // U+29F7 (reverse solidus with horizontal stroke: ⧷)
             | [0xE2, 0xA7, 0xB9] // U+29F9 (big reverse solidus)
             | [0xEF, 0xB9, 0xA8] // U+FE68 (small reverse solidus)
                 => return true,
@@ -1414,10 +1424,15 @@ fn html_entity_codepoint_is_path_separator(value: u32) -> bool {
             | 0x2215  // ∕ division slash
             | 0x2044  // ⁄ fraction slash
             | 0xFF0F  // ／ fullwidth solidus
+            | 0x2571  // ╱ box drawings light diagonal upper right to lower left
             | 0x29F8  // ⧸ big solidus
             // Backslash-like separators.
             | 0x2216  // ∖ set minus / backslash-like
             | 0xFF3C  // ＼ fullwidth reverse solidus
+            | 0x2572  // ╲ box drawings light diagonal upper left to lower right
+            | 0x29F5  // ⧵ reverse solidus operator
+            | 0x29F6  // ⧶ solidus with overbar
+            | 0x29F7  // ⧷ reverse solidus with horizontal stroke
             | 0x29F9  // ⧹ big reverse solidus
             | 0xFE68  // ﹨ small reverse solidus
     )
@@ -3168,10 +3183,15 @@ fn token_contains_unicode_path_separator(tok: &str) -> bool {
             [0xE2, 0x88, 0x95] // U+2215 (division slash)
                 | [0xE2, 0x81, 0x84] // U+2044 (fraction slash)
                 | [0xEF, 0xBC, 0x8F] // U+FF0F (fullwidth solidus)
+                | [0xE2, 0x95, 0xB1] // U+2571 (box drawings light diagonal: ╱)
+                | [0xE2, 0xA7, 0xB6] // U+29F6 (solidus with overbar: ⧶)
                 | [0xE2, 0xA7, 0xB8] // U+29F8 (big solidus)
                 // Backslash-like separators.
                 | [0xE2, 0x88, 0x96] // U+2216 (set minus / backslash-like)
                 | [0xEF, 0xBC, 0xBC] // U+FF3C (fullwidth reverse solidus)
+                | [0xE2, 0x95, 0xB2] // U+2572 (box drawings light diagonal: ╲)
+                | [0xE2, 0xA7, 0xB5] // U+29F5 (reverse solidus operator: ⧵)
+                | [0xE2, 0xA7, 0xB7] // U+29F7 (reverse solidus with horizontal stroke: ⧷)
                 | [0xE2, 0xA7, 0xB9] // U+29F9 (big reverse solidus)
                 | [0xEF, 0xB9, 0xA8] // U+FE68 (small reverse solidus)
         )
