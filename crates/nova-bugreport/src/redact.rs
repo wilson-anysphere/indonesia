@@ -58,7 +58,9 @@ fn redact_sensitive_header_values(input: &str) -> String {
     static HEADER_RE: OnceLock<Regex> = OnceLock::new();
     let re = HEADER_RE.get_or_init(|| {
         Regex::new(
-            r#"(?i)(['"]?\b(?:x-[a-z0-9-]*api[-_]?key|api[-_]?key|access[_-]?token|x-[a-z0-9-]*token|token)\b['"]?)\s*:\s*([^,}\r\n]+)"#,
+            // Note: `authorization` is handled separately so we can preserve the auth scheme
+            // (e.g. `Authorization: Bearer <redacted>`).
+            r#"(?i)(['"]?(?:[a-z0-9]+[-_])*(?:api[-_]?key|access[_-]?token|token|password|passwd|passphrase|secret)(?:[-_][a-z0-9]+)*['"]?)\s*:\s*([^,}\r\n]+)"#,
         )
         .expect("header regex should compile")
     });
@@ -101,7 +103,7 @@ fn redact_sensitive_kv_pairs(input: &str) -> String {
     static KV_RE: OnceLock<Regex> = OnceLock::new();
     let re = KV_RE.get_or_init(|| {
         Regex::new(
-            r"(?i)\b((?:key|token|access_token|api_key|apikey|authorization)\s*=\s*)([^\s&;]+)",
+            r"(?i)\b((?:[a-z0-9]+[-_])*(?:api[-_]?key|access[_-]?token|authorization|token|password|passwd|passphrase|secret)(?:[-_][a-z0-9]+)*\s*=\s*)([^\s&;]+)",
         )
         .expect("kv regex should compile")
     });
@@ -325,5 +327,38 @@ mod tests {
         assert!(!out.contains(secret));
         assert!(out.contains(r#""api_key": <redacted>"#));
         assert!(out.contains(r#""other": 1"#));
+    }
+
+    #[test]
+    fn redacts_password_and_secret_kv_pairs() {
+        let password = "hunter2";
+        let secret = "super-secret";
+        let input = format!(
+            "db_password={password} client_secret={secret} password = {password} secret={secret}"
+        );
+        let out = redact_string(&input);
+
+        assert!(!out.contains(password), "{out}");
+        assert!(!out.contains(secret), "{out}");
+        assert!(out.contains("db_password=<redacted>"), "{out}");
+        assert!(out.contains("client_secret=<redacted>"), "{out}");
+        assert!(out.contains("password = <redacted>"), "{out}");
+        assert!(out.contains("secret=<redacted>"), "{out}");
+    }
+
+    #[test]
+    fn redacts_password_and_secret_header_values() {
+        let password = "hunter2";
+        let secret = "super-secret";
+        let input = format!(
+            "password: {password}\n\"client_secret\": \"{secret}\",\nX-Auth-Token: {secret}\n"
+        );
+        let out = redact_string(&input);
+
+        assert!(!out.contains(password), "{out}");
+        assert!(!out.contains(secret), "{out}");
+        assert!(out.contains("password: <redacted>"), "{out}");
+        assert!(out.contains("\"client_secret\": <redacted>"), "{out}");
+        assert!(out.contains("X-Auth-Token: <redacted>"), "{out}");
     }
 }
