@@ -276,6 +276,8 @@ fn fingerprint_sources<DB: ?Sized + FileDatabase>(
     cancel: &CancellationToken,
 ) -> Option<u64> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    const SAMPLE: usize = 64;
+    const FULL_HASH_MAX: usize = 3 * SAMPLE;
     for (path, file_id) in files {
         if cancel.is_cancelled() {
             return None;
@@ -295,8 +297,149 @@ fn fingerprint_sources<DB: ?Sized + FileDatabase>(
         // mutate strings in place *and* keep the allocation stable.
         text.len().hash(&mut hasher);
         text.as_ptr().hash(&mut hasher);
+        // Pointer/len hashing is fast, but can collide when short-lived buffers reuse the same
+        // allocations (common in tests) or when text is mutated in place. Mix in a small,
+        // content-dependent sample to make cache invalidation deterministic without hashing full
+        // contents for large files.
+        let bytes = text.as_bytes();
+        if bytes.len() <= FULL_HASH_MAX {
+            bytes.hash(&mut hasher);
+        } else {
+            bytes[..SAMPLE].hash(&mut hasher);
+            let mid = bytes.len() / 2;
+            let mid_start = mid.saturating_sub(SAMPLE / 2);
+            let mid_end = (mid_start + SAMPLE).min(bytes.len());
+            bytes[mid_start..mid_end].hash(&mut hasher);
+            bytes[bytes.len() - SAMPLE..].hash(&mut hasher);
+        }
     }
     Some(hasher.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn jpa_project_cache_invalidates_when_file_text_changes_in_place_with_same_ptr_and_len() {
+        struct MutableDb {
+            file_a: FileId,
+            file_b: FileId,
+            path_a: PathBuf,
+            path_b: PathBuf,
+            text_a: String,
+            text_b: String,
+        }
+
+        impl FileDatabase for MutableDb {
+            fn file_content(&self, file_id: FileId) -> &str {
+                if file_id == self.file_a {
+                    self.text_a.as_str()
+                } else if file_id == self.file_b {
+                    self.text_b.as_str()
+                } else {
+                    ""
+                }
+            }
+
+            fn file_path(&self, file_id: FileId) -> Option<&std::path::Path> {
+                if file_id == self.file_a {
+                    Some(self.path_a.as_path())
+                } else if file_id == self.file_b {
+                    Some(self.path_b.as_path())
+                } else {
+                    None
+                }
+            }
+
+            fn all_file_ids(&self) -> Vec<FileId> {
+                vec![self.file_a, self.file_b]
+            }
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        let root = PathBuf::from(format!("/jpa-cache-inplace-mutation-test-{unique}"));
+
+        let file_a = FileId::from_raw(0);
+        let file_b = FileId::from_raw(1);
+        let path_a = root.join("src/main/java/com/example/User.java");
+        let path_b = root.join("src/main/java/com/example/Repo.java");
+
+        let prefix = "package com.example;\nimport jakarta.persistence.Entity;\n@Entity class User { /*";
+        let suffix = "*/ }\n";
+        let mut text_a = String::new();
+        text_a.push_str(prefix);
+        text_a.push_str(&"a".repeat(1024));
+        text_a.push_str(suffix);
+
+        let text_b = r#"package com.example;
+import org.springframework.data.jpa.repository.Query;
+class Repo {
+  @Query("SELECT u FROM User u WHERE u.name = :name")
+  void m() {}
+}
+"#
+        .to_string();
+
+        let mut db = MutableDb {
+            file_a,
+            file_b,
+            path_a,
+            path_b,
+            text_a,
+            text_b,
+        };
+
+        let cancel = CancellationToken::new();
+        let project1 =
+            project_for_file_with_cancel(&db, file_b, &cancel).expect("expected project");
+        let project2 =
+            project_for_file_with_cancel(&db, file_b, &cancel).expect("expected cache hit");
+        assert!(
+            Arc::ptr_eq(&project1, &project2),
+            "expected JPA project to be reused from cache"
+        );
+
+        // Mutate a byte in the middle of the buffer, preserving the allocation + length.
+        let ptr_before = db.text_a.as_ptr();
+        let len_before = db.text_a.len();
+        let mid_idx = len_before / 2;
+        assert!(
+            mid_idx > 64 && mid_idx + 64 < len_before,
+            "expected mutation index to be outside the sampled prefix/suffix regions"
+        );
+        unsafe {
+            let bytes = db.text_a.as_mut_vec();
+            assert_eq!(
+                bytes[mid_idx], b'a',
+                "expected mutation index to fall within the repeated marker content"
+            );
+            bytes[mid_idx] = b'b';
+        }
+        assert_eq!(
+            ptr_before,
+            db.text_a.as_ptr(),
+            "expected in-place mutation to keep the same allocation"
+        );
+        assert_eq!(
+            len_before,
+            db.text_a.len(),
+            "expected in-place mutation to keep the same length"
+        );
+
+        let project3 =
+            project_for_file_with_cancel(&db, file_b, &cancel).expect("expected rebuild");
+        assert!(
+            !Arc::ptr_eq(&project2, &project3),
+            "expected JPA project cache to invalidate when file text changes, even when pointer/len are stable"
+        );
+    }
 }
 
 fn fallback_root<DB: ?Sized + FileDatabase>(db: &DB) -> Option<PathBuf> {
