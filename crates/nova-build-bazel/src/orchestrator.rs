@@ -9,11 +9,32 @@ use std::time::SystemTime;
 pub type BazelBuildTaskId = u64;
 
 fn sanitize_anyhow_error_message(err: &anyhow::Error) -> String {
-    if err.chain().any(|source| source.is::<serde_json::Error>()) {
+    if err.chain().any(contains_serde_json_error) {
         sanitize_json_error_message(&err.to_string())
     } else {
         err.to_string()
     }
+}
+
+fn contains_serde_json_error(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(err) = current {
+        if err.is::<serde_json::Error>() {
+            return true;
+        }
+
+        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+            if let Some(inner) = io_err.get_ref() {
+                let inner: &(dyn std::error::Error + 'static) = inner;
+                if contains_serde_json_error(inner) {
+                    return true;
+                }
+            }
+        }
+
+        current = err.source();
+    }
+    false
 }
 
 fn sanitize_json_error_message(message: &str) -> String {
@@ -584,7 +605,8 @@ mod tests {
             ) -> Result<BspCompileOutcome> {
                 let err = serde_json::from_value::<bool>(serde_json::json!(self.secret.clone()))
                     .expect_err("expected type mismatch");
-                Err(anyhow::Error::new(err))
+                let io_err = std::io::Error::new(std::io::ErrorKind::Other, err);
+                Err(anyhow::Error::new(io_err))
             }
         }
 

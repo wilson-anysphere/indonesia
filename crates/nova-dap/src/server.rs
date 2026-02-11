@@ -103,11 +103,33 @@ fn sanitize_json_error_message(message: &str) -> String {
 }
 
 fn sanitize_anyhow_error_message(err: &anyhow::Error) -> String {
-    if err.chain().any(|source| source.is::<serde_json::Error>()) {
+    if err.chain().any(contains_serde_json_error) {
         sanitize_json_error_message(&err.to_string())
     } else {
         err.to_string()
     }
+}
+
+fn contains_serde_json_error(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(err) = current {
+        if err.is::<serde_json::Error>() {
+            return true;
+        }
+
+        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+            if let Some(inner) = io_err.get_ref() {
+                let inner: &(dyn std::error::Error + 'static) = inner;
+                if contains_serde_json_error(inner) {
+                    return true;
+                }
+            }
+        }
+
+        current = err.source();
+    }
+
+    false
 }
 
 pub struct DapServer<C: JdwpClient> {
@@ -1182,6 +1204,38 @@ mod tests {
         );
 
         let err: anyhow::Error = raw_err.into();
+        let message = sanitize_anyhow_error_message(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized anyhow error to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized anyhow error to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn dap_server_anyhow_errors_do_not_echo_string_values_when_wrapped_in_io_error() {
+        #[derive(Debug, Deserialize)]
+        struct Dummy {
+            port: u16,
+        }
+
+        let secret_suffix = "nova-dap-legacy-io-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
+        let _ = Dummy { port: 0 }.port;
+
+        let raw_err = serde_json::from_value::<Dummy>(json!({ "port": secret }))
+            .expect_err("expected type mismatch");
+        let raw_message = raw_err.to_string();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw serde_json error to include the string value so this test would catch leaks: {raw_message}"
+        );
+
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, raw_err);
+        let err: anyhow::Error = io_err.into();
         let message = sanitize_anyhow_error_message(&err);
         assert!(
             !message.contains(secret_suffix),

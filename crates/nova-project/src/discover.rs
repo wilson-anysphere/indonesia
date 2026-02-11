@@ -21,17 +21,25 @@ pub(crate) fn sanitize_error_message(err: &(dyn std::error::Error + 'static)) ->
 }
 
 fn error_chain_contains_serde_json(err: &(dyn std::error::Error + 'static)) -> bool {
-    let mut current: &(dyn std::error::Error + 'static) = err;
-    loop {
-        if current.is::<serde_json::Error>() {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(err) = current {
+        if err.is::<serde_json::Error>() {
             return true;
         }
 
-        let Some(source) = current.source() else {
-            return false;
-        };
-        current = source;
+        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+            if let Some(inner) = io_err.get_ref() {
+                let inner: &(dyn std::error::Error + 'static) = inner;
+                if error_chain_contains_serde_json(inner) {
+                    return true;
+                }
+            }
+        }
+
+        current = err.source();
     }
+
+    false
 }
 
 pub(crate) fn sanitize_json_error_message(message: &str) -> String {
@@ -1115,6 +1123,25 @@ mod tests {
         assert!(
             message.contains("<redacted>"),
             "expected ProjectError to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_message_does_not_echo_string_values_when_wrapped_in_io_error() {
+        let secret_suffix = "nova-project-io-serde-secret";
+        let secret = format!("prefix\"{secret_suffix}");
+        let serde_err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, serde_err);
+
+        let message = sanitize_error_message(&io_err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized error message to include redaction marker: {message}"
         );
     }
 

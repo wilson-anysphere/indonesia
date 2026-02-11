@@ -122,11 +122,32 @@ pub(crate) fn sanitize_anyhow_error_message(err: &anyhow::Error) -> String {
     // Many Nova subsystems use `anyhow` and error chains. If a `serde_json::Error` appears anywhere
     // in the chain, sanitize the overall stringified error to avoid echoing scalar values from the
     // original JSON payload (e.g. `invalid type: string "..."`).
-    if err.chain().any(|source| source.is::<serde_json::Error>()) {
+    if err.chain().any(contains_serde_json_error) {
         sanitize_json_error_message(&err.to_string())
     } else {
         err.to_string()
     }
+}
+
+fn contains_serde_json_error(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(err) = current {
+        if err.is::<serde_json::Error>() {
+            return true;
+        }
+
+        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+            if let Some(inner) = io_err.get_ref() {
+                let inner: &(dyn std::error::Error + 'static) = inner;
+                if contains_serde_json_error(inner) {
+                    return true;
+                }
+            }
+        }
+
+        current = err.source();
+    }
+    false
 }
 
 fn sanitize_json_error_message(message: &str) -> String {
@@ -838,6 +859,45 @@ mod tests {
         assert!(
             message.contains("<redacted>"),
             "expected sanitized serde_json error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn sanitize_anyhow_error_message_does_not_echo_string_values() {
+        let secret_suffix = "nova-lsp-anyhow-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
+        let serde_err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+        let err: anyhow::Error = serde_err.into();
+
+        let message = crate::sanitize_anyhow_error_message(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized anyhow error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized anyhow error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn sanitize_anyhow_error_message_does_not_echo_string_values_when_wrapped_in_io_error() {
+        let secret_suffix = "nova-lsp-anyhow-io-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
+        let serde_err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, serde_err);
+        let err: anyhow::Error = io_err.into();
+
+        let message = crate::sanitize_anyhow_error_message(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized anyhow error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized anyhow error message to include redaction marker: {message}"
         );
     }
 }

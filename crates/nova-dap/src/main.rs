@@ -130,11 +130,32 @@ fn sanitize_anyhow_error_message(err: &anyhow::Error) -> String {
     // `serde_json::Error` display strings can include user-provided scalar values (e.g.
     // `invalid type: string "..."`). Avoid echoing those values to stderr if DAP framing or
     // request parsing fails.
-    if err.chain().any(|source| source.is::<serde_json::Error>()) {
+    if err.chain().any(contains_serde_json_error) {
         sanitize_json_error_message(&format!("{err:#}"))
     } else {
         format!("{err:#}")
     }
+}
+
+fn contains_serde_json_error(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(err) = current {
+        if err.is::<serde_json::Error>() {
+            return true;
+        }
+
+        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+            if let Some(inner) = io_err.get_ref() {
+                let inner: &(dyn std::error::Error + 'static) = inner;
+                if contains_serde_json_error(inner) {
+                    return true;
+                }
+            }
+        }
+
+        current = err.source();
+    }
+    false
 }
 
 fn sanitize_json_error_message(message: &str) -> String {
@@ -214,6 +235,31 @@ mod json_error_sanitization_tests {
             .expect_err("expected type error");
 
         let err = Err::<(), _>(serde_err)
+            .context("failed to parse JSON")
+            .expect_err("expected anyhow error");
+
+        let message = sanitize_anyhow_error_message(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized anyhow error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized anyhow error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn sanitize_anyhow_error_message_does_not_echo_string_values_when_wrapped_in_io_error() {
+        use anyhow::Context as _;
+
+        let secret_suffix = "nova-dap-io-serde-secret";
+        let secret = format!("prefix\"{secret_suffix}");
+        let serde_err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, serde_err);
+
+        let err = Err::<(), _>(io_err)
             .context("failed to parse JSON")
             .expect_err("expected anyhow error");
 

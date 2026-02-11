@@ -16,6 +16,27 @@ use crate::{JavaVersion, ModuleConfig, WorkspaceModel};
 #[cfg(feature = "bazel")]
 use nova_build_bazel::{BazelWorkspace, CommandRunner, DefaultCommandRunner, JavaCompileInfo};
 
+fn contains_serde_json_error(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(err) = current {
+        if err.is::<serde_json::Error>() {
+            return true;
+        }
+
+        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+            if let Some(inner) = io_err.get_ref() {
+                let inner: &(dyn std::error::Error + 'static) = inner;
+                if contains_serde_json_error(inner) {
+                    return true;
+                }
+            }
+        }
+
+        current = err.source();
+    }
+    false
+}
+
 pub(crate) fn load_bazel_project(
     root: &Path,
     options: &LoadOptions,
@@ -368,10 +389,7 @@ pub fn load_bazel_workspace_model_with_runner<R: CommandRunner>(
         .and_then(|ws| ws.with_cache_path(cache_path))
         .map_err(|err| {
             let message = err.to_string();
-            let message = if err
-                .chain()
-                .any(|cause| cause.is::<serde_json::Error>())
-            {
+            let message = if err.chain().any(contains_serde_json_error) {
                 crate::discover::sanitize_json_error_message(&message)
             } else {
                 message
@@ -390,7 +408,7 @@ pub fn load_bazel_workspace_model_with_runner<R: CommandRunner>(
     .map_err(|err| ProjectError::Bazel {
         message: {
             let message = err.to_string();
-            if err.chain().any(|cause| cause.is::<serde_json::Error>()) {
+            if err.chain().any(contains_serde_json_error) {
                 crate::discover::sanitize_json_error_message(&message)
             } else {
                 message
@@ -417,7 +435,7 @@ pub fn load_bazel_workspace_model_with_runner<R: CommandRunner>(
                 return Err(ProjectError::Bazel {
                     message: {
                         let message = err.to_string();
-                        if err.chain().any(|cause| cause.is::<serde_json::Error>()) {
+                        if err.chain().any(contains_serde_json_error) {
                             crate::discover::sanitize_json_error_message(&message)
                         } else {
                             message

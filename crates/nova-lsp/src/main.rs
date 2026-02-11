@@ -89,17 +89,25 @@ fn sanitize_io_error_message(err: &std::io::Error) -> String {
 }
 
 fn error_chain_contains_serde_json(err: &(dyn std::error::Error + 'static)) -> bool {
-    let mut current: &(dyn std::error::Error + 'static) = err;
-    loop {
-        if current.is::<serde_json::Error>() {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(err) = current {
+        if err.is::<serde_json::Error>() {
             return true;
         }
 
-        let Some(source) = current.source() else {
-            return false;
-        };
-        current = source;
+        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+            if let Some(inner) = io_err.get_ref() {
+                let inner: &(dyn std::error::Error + 'static) = inner;
+                if error_chain_contains_serde_json(inner) {
+                    return true;
+                }
+            }
+        }
+
+        current = err.source();
     }
+
+    false
 }
 
 fn run() -> std::io::Result<()> {
