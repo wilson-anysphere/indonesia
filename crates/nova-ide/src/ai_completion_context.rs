@@ -471,6 +471,46 @@ class A {
     }
 
     #[test]
+    fn array_class_literal_receiver_type_and_methods_are_semantic() {
+        let ctx = ctx_for(
+            r#"
+class A {
+  void m() {
+    String[].class.<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("java.lang.Class"),
+            "expected receiver type to contain `java.lang.Class`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "getName"));
+    }
+
+    #[test]
+    fn array_class_literal_call_chain_receiver_type_and_methods_are_semantic() {
+        let ctx = ctx_for(
+            r#"
+class A {
+  void m() {
+    String[].class.getName().<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
     fn receiver_type_infers_this_field_access() {
         let ctx = ctx_for(
             r#"

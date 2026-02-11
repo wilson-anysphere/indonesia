@@ -12161,15 +12161,16 @@ fn infer_call_receiver_lexical(
         // single-token receiver returned by `receiver_before_dot` (which only supports
         // `this`/`super` qualification).
         let (_start, qualifier_prefix) = dotted_qualifier_prefix(text, call.name_span.start);
-        let receiver = qualifier_prefix
+        let mut receiver = qualifier_prefix
             .strip_suffix('.')
             .unwrap_or(qualifier_prefix.as_str())
             .to_string();
-        let receiver = if receiver.is_empty() {
-            receiver_before_dot(text, dot_offset)
-        } else {
-            receiver
-        };
+        // `dotted_qualifier_prefix` cannot recover type suffixes like `[]`, so receivers like
+        // `String[].class.<method>()` may be truncated to `class`. Fall back to
+        // `receiver_before_dot` when the qualifier parse is empty or clearly incomplete.
+        if receiver.is_empty() || receiver == "class" {
+            receiver = receiver_before_dot(text, dot_offset);
+        }
 
         if !receiver.is_empty() {
             let (mut receiver_ty, mut call_kind) =
@@ -22345,11 +22346,82 @@ fn method_reference_double_colon_offset(text: &str, prefix_start: usize) -> Opti
         .then(|| before - 2)
 }
 
+fn class_literal_receiver_before_dot(text: &str, dot_offset: usize) -> Option<String> {
+    let bytes = text.as_bytes();
+    if dot_offset == 0 || dot_offset > bytes.len() || bytes.get(dot_offset) != Some(&b'.') {
+        return None;
+    }
+
+    let receiver_end = skip_trivia_backwards(text, dot_offset);
+    if receiver_end == 0 {
+        return None;
+    }
+
+    let (class_start, segment) = identifier_prefix(text, receiver_end);
+    if segment != "class" {
+        return None;
+    }
+
+    // Ensure the `class` identifier is preceded by a dot (`<Type>.class`).
+    let before_class = skip_trivia_backwards(text, class_start);
+    let dot_before_class = before_class
+        .checked_sub(1)
+        .filter(|idx| bytes.get(*idx) == Some(&b'.'))?;
+
+    // Parse the type expression before `.class`. Support array types like `String[]` by accepting
+    // empty `[]` suffixes (with optional trivia inside).
+    let mut cursor_end = skip_trivia_backwards(text, dot_before_class);
+    if cursor_end == 0 {
+        return None;
+    }
+
+    let mut dims = 0usize;
+    while cursor_end > 0 && bytes.get(cursor_end - 1) == Some(&b']') {
+        let close_bracket = cursor_end - 1;
+        let open_bracket = find_matching_open_bracket(bytes, close_bracket)?;
+
+        // Only treat `[]`-like suffixes as array dimensions. If the bracket pair contains any
+        // non-trivia content (e.g. `arr[0]`), bail out.
+        if skip_trivia_backwards(text, close_bracket) != open_bracket + 1 {
+            break;
+        }
+
+        dims += 1;
+        cursor_end = skip_trivia_backwards(text, open_bracket);
+        if cursor_end == 0 {
+            break;
+        }
+    }
+
+    let (seg_start, segment) = identifier_prefix(text, cursor_end);
+    if segment.is_empty() {
+        return None;
+    }
+
+    let (_qual_start, qualifier_prefix) = dotted_qualifier_prefix(text, seg_start);
+    let mut ty = format!("{qualifier_prefix}{segment}");
+    ty = ty.trim().to_string();
+    if ty.is_empty() {
+        return None;
+    }
+
+    for _ in 0..dims {
+        ty.push_str("[]");
+    }
+
+    Some(format!("{ty}.class"))
+}
+
 pub(crate) fn receiver_before_dot(text: &str, dot_offset: usize) -> String {
     // Prefer the more precise receiver parsing logic used by postfix completions (supports string
     // literals, numeric literals, and `this`/`super`).
     if let Some(receiver) = simple_receiver_before_dot(text, dot_offset) {
         return receiver.expr;
+    }
+
+    // Class literals like `String.class.<cursor>` / `String[].class.<cursor>`.
+    if let Some(receiver) = class_literal_receiver_before_dot(text, dot_offset) {
+        return receiver;
     }
 
     // Fallback: dotted qualified receiver like `java.util.Map` / `pkg.Outer.Inner`.

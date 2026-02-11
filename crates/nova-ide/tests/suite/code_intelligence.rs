@@ -382,6 +382,46 @@ class A {
 }
 
 #[test]
+fn completion_includes_array_class_literal_members() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    String[].class.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"getName"),
+        "expected completion list to contain Class.getName for array class-literal receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_call_chain_receiver_after_array_class_literal_call() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    String[].class.getName().<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"substring"),
+        "expected completion list to contain String.substring after Class.getName call; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_includes_qualified_this_members() {
     let (db, file, pos) = fixture(
         r#"
