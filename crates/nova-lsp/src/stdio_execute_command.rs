@@ -12,6 +12,34 @@ use tokio_util::sync::CancellationToken;
 
 type RpcError = (i32, String, Option<serde_json::Value>);
 
+fn sanitize_json_error_message(message: &str) -> String {
+    // `serde_json::Error` display strings can include user-provided scalar values (e.g.
+    // `invalid type: string "..."`). Avoid echoing those values because executeCommand payloads
+    // can include diffs/prompts and other potentially sensitive strings.
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let Some(end) = rest.find('"') else {
+            // Unterminated quote: append the remainder and stop.
+            out.push_str(rest);
+            return out;
+        };
+
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn sanitize_serde_json_error(err: &serde_json::Error) -> String {
+    sanitize_json_error_message(&err.to_string())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ExecuteCommandParams {
@@ -30,7 +58,7 @@ pub(super) fn handle_execute_command(
     cancel: &CancellationToken,
 ) -> Result<serde_json::Value, RpcError> {
     let params: ExecuteCommandParams =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string(), None))?;
+        serde_json::from_value(params).map_err(|e| (-32602, sanitize_serde_json_error(&e), None))?;
 
     if state.ai.is_some() {
         if let Some(feature) = crate::stdio_ai::ai_action_feature_for_command(params.command.as_str())
@@ -121,7 +149,7 @@ pub(super) fn handle_execute_command(
             )
             .map_err(map_nova_lsp_error)?;
             let configs: Vec<nova_ide::DebugConfiguration> =
-                serde_json::from_value(configs_value).map_err(|e| (-32603, e.to_string(), None))?;
+                serde_json::from_value(configs_value).map_err(|e| (-32603, sanitize_serde_json_error(&e), None))?;
 
             let config =
                 select_debug_configuration_for_main(&configs, &args.main_class).ok_or_else(|| {
@@ -245,7 +273,7 @@ pub(super) fn handle_execute_command(
                 Ok(result) => {
                     if let nova_lsp::SafeDeleteResult::WorkspaceEdit(edit) = &result {
                         let id: RequestId = serde_json::from_value(json!(state.next_outgoing_id()))
-                            .map_err(|e| (-32603, e.to_string(), None))?;
+                            .map_err(|e| (-32603, sanitize_serde_json_error(&e), None))?;
                         client
                             .send_request(
                                 id,
@@ -298,5 +326,5 @@ fn parse_first_arg<T: serde::de::DeserializeOwned>(
         return Err((-32602, "missing command arguments".to_string(), None));
     }
     let first = args.remove(0);
-    serde_json::from_value(first).map_err(|e| (-32602, e.to_string(), None))
+    serde_json::from_value(first).map_err(|e| (-32602, sanitize_serde_json_error(&e), None))
 }

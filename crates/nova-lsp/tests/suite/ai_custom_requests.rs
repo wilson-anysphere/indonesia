@@ -137,6 +137,43 @@ fn stdio_ai_custom_request_invalid_params_does_not_echo_secret_string_values() {
     shutdown(child, stdin, stdout);
 }
 
+#[test]
+fn stdio_execute_command_invalid_params_does_not_echo_secret_string_values() {
+    let _lock = support::stdio_server_lock();
+
+    let secret = "NOVA_EXEC_COMMAND_SECRET_DO_NOT_LEAK";
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    std::fs::write(&config_path, "[ai]\nenabled = false\n").expect("write config");
+
+    let mut child = spawn_stdio_server(&config_path);
+    let (mut stdin, mut stdout) = initialize(&mut child);
+
+    // Pass a scalar instead of the expected params object. `serde_json::Error` would normally echo
+    // string values (including secrets) in its display output; ensure the server sanitizes that
+    // error before returning it to clients.
+    support::write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "workspace/executeCommand",
+            "params": secret,
+        }),
+    );
+
+    let resp = support::read_response_with_id(&mut stdout, 3);
+    let error = resp.get("error").cloned().expect("expected error response");
+    assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32602));
+    assert!(
+        !resp.to_string().contains(secret),
+        "expected JSON-RPC error to omit secret string values; got: {resp:?}"
+    );
+
+    shutdown(child, stdin, stdout);
+}
+
 fn code_review_request_omits_excluded_diff(req: &HttpMockRequest) -> bool {
     const SECRET_MARKER: &str = "DO_NOT_LEAK_THIS_SECRET";
     let Some(body) = req.body.as_deref() else {
