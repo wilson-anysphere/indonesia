@@ -11100,7 +11100,7 @@ fn cast_type_in_expr(expr: &str) -> Option<&str> {
 
 fn new_array_creation_type_name(text: &str, expr_end: usize) -> Option<String> {
     let bytes = text.as_bytes();
-    let end = skip_whitespace_backwards(text, expr_end.min(bytes.len()));
+    let end = skip_trivia_backwards(text, expr_end.min(bytes.len()));
     if end == 0 || bytes.get(end - 1) != Some(&b']') {
         return None;
     }
@@ -11112,7 +11112,7 @@ fn new_array_creation_type_name(text: &str, expr_end: usize) -> Option<String> {
     let type_end = loop {
         dims += 1;
         let open_bracket = find_matching_open_bracket(bytes, close_bracket)?;
-        let before_open = skip_whitespace_backwards(text, open_bracket);
+        let before_open = skip_trivia_backwards(text, open_bracket);
         if before_open == 0 {
             return None;
         }
@@ -11142,7 +11142,7 @@ fn new_array_creation_type_name(text: &str, expr_end: usize) -> Option<String> {
 
     // Ensure the base type name is preceded by `new`, so we don't misinterpret array indexing
     // expressions (`arr[0]`) as array creation.
-    let before_type = skip_whitespace_backwards(text, qual_start);
+    let before_type = skip_trivia_backwards(text, qual_start);
     if before_type < 3 {
         return None;
     }
@@ -22574,6 +22574,78 @@ class A {
 
         let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
         assert_eq!(ty.as_deref(), Some("int[]"));
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_new_array_creation_type_with_comment_between_type_and_bracket(
+    ) {
+        let java = r#"
+class A {
+  void m() {
+    new int/*comment*/[0].
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("new int/*comment*/[0].")
+            .expect("expected `new int/*comment*/[0].` in fixture")
+            + "new int/*comment*/[0]".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert_eq!(ty.as_deref(), Some("int[]"));
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_new_array_creation_type_with_comment_between_new_and_type(
+    ) {
+        let java = r#"
+class A {
+  void m() {
+    new/*comment*/int[0].
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("new/*comment*/int[0].")
+            .expect("expected `new/*comment*/int[0].` in fixture")
+            + "new/*comment*/int[0]".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert_eq!(ty.as_deref(), Some("int[]"));
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_new_array_creation_type_with_comment_between_dimensions(
+    ) {
+        let java = r#"
+class A {
+  void m() {
+    new int[0]/*comment*/[0].
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("new int[0]/*comment*/[0].")
+            .expect("expected `new int[0]/*comment*/[0].` in fixture")
+            + "new int[0]/*comment*/[0]".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert_eq!(ty.as_deref(), Some("int[][]"));
     }
 
     #[test]
