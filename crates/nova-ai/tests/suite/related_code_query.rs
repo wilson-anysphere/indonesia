@@ -354,6 +354,55 @@ fn related_code_query_avoids_html_entity_percent_encoded_path_segments() {
 }
 
 #[test]
+fn related_code_query_avoids_unicode_separator_path_segments() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+    for sep in [
+        "\u{2215}", // ∕ division slash
+        "\u{2044}", // ⁄ fraction slash
+        "\u{FF0F}", // ／ fullwidth solidus
+        "\u{29F8}", // ⧸ big solidus
+        "\u{2216}", // ∖ set minus / backslash-like
+        "\u{FF3C}", // ＼ fullwidth reverse solidus
+        "\u{29F9}", // ⧹ big reverse solidus
+        "\u{FE68}", // ﹨ small reverse solidus
+    ] {
+        let search = CapturingSearch::default();
+        let focal_code = format!(
+            "{sep}home{sep}user{sep}my-{private_segment}-project{sep}src{sep}main{sep}java\nreturn foo.bar();\n"
+        );
+
+        let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+        let query = search
+            .last_query
+            .lock()
+            .expect("lock poisoned")
+            .clone()
+            .expect("query captured");
+
+        assert!(
+            !query.contains(private_segment),
+            "query should not include unicode path fragments: {query}"
+        );
+        assert!(
+            query.contains("foo") || query.contains("bar"),
+            "expected query to retain non-path identifiers, got: {query}"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_avoids_unicode_escaped_path_segments() {
     #[derive(Default)]
     struct CapturingSearch {
@@ -896,6 +945,36 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections() {
         assert!(
             req.related_code.is_empty(),
             "expected no related code for HTML entity percent-encoded path-only focal code"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_unicode_separator_path_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for unicode path separator selections");
+        }
+    }
+
+    let search = PanicSearch;
+    for sep in [
+        "\u{2215}", // ∕ division slash
+        "\u{2044}", // ⁄ fraction slash
+        "\u{FF0F}", // ／ fullwidth solidus
+        "\u{29F8}", // ⧸ big solidus
+        "\u{2216}", // ∖ set minus / backslash-like
+        "\u{FF3C}", // ＼ fullwidth reverse solidus
+        "\u{29F9}", // ⧹ big reverse solidus
+        "\u{FE68}", // ﹨ small reverse solidus
+    ] {
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for unicode separator path-only focal code"
         );
     }
 }

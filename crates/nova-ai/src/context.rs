@@ -826,6 +826,9 @@ fn sensitive_assignment_line_ranges(text: &str) -> Vec<Range<usize>> {
 fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, tok: &str) -> bool {
     let bytes = text.as_bytes();
     if start > 0 {
+        if unicode_path_separator_before(bytes, start) {
+            return true;
+        }
         let prev = bytes[start - 1];
         if prev == b'/' || prev == b'\\' {
             return true;
@@ -839,6 +842,9 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         }
     }
     if end < bytes.len() {
+        if unicode_path_separator_at(bytes, end) {
+            return true;
+        }
         let next = bytes[end];
         if next == b'/' || next == b'\\' {
             return true;
@@ -970,9 +976,11 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
             }
 
             let before_is_sep = before.is_some_and(|b| *b == b'/' || *b == b'\\')
+                || unicode_path_separator_before(bytes, bounds.start)
                 || before_idx.is_some_and(|idx| braced_unicode_escape_is_path_separator(bytes, idx))
                 || before_idx.is_some_and(|idx| html_entity_is_path_separator(bytes, idx));
             let after_is_sep = after.is_some_and(|b| *b == b'/' || *b == b'\\')
+                || unicode_path_separator_at(bytes, bounds.end)
                 || html_entity_is_path_separator(bytes, bounds.end);
             if before_is_sep || after_is_sep {
                 return true;
@@ -1064,6 +1072,47 @@ fn braced_unicode_escape_is_path_separator(bytes: &[u8], end_brace: usize) -> bo
     }
 
     matches!(value, 0x2F | 0x5C)
+}
+
+fn unicode_path_separator_before(bytes: &[u8], idx: usize) -> bool {
+    if idx >= 3 {
+        match &bytes[idx - 3..idx] {
+            // Slash-like separators.
+            [0xE2, 0x88, 0x95] // U+2215 (division slash)
+            | [0xE2, 0x81, 0x84] // U+2044 (fraction slash)
+            | [0xEF, 0xBC, 0x8F] // U+FF0F (fullwidth solidus)
+            | [0xE2, 0xA7, 0xB8] // U+29F8 (big solidus)
+            // Backslash-like separators.
+            | [0xE2, 0x88, 0x96] // U+2216 (set minus / backslash-like)
+            | [0xEF, 0xBC, 0xBC] // U+FF3C (fullwidth reverse solidus)
+            | [0xE2, 0xA7, 0xB9] // U+29F9 (big reverse solidus)
+            | [0xEF, 0xB9, 0xA8] // U+FE68 (small reverse solidus)
+                => return true,
+            _ => {}
+        }
+    }
+
+    false
+}
+
+fn unicode_path_separator_at(bytes: &[u8], idx: usize) -> bool {
+    if idx + 3 <= bytes.len() {
+        match &bytes[idx..idx + 3] {
+            // Slash-like separators.
+            [0xE2, 0x88, 0x95] // U+2215 (division slash)
+            | [0xE2, 0x81, 0x84] // U+2044 (fraction slash)
+            | [0xEF, 0xBC, 0x8F] // U+FF0F (fullwidth solidus)
+            | [0xE2, 0xA7, 0xB8] // U+29F8 (big solidus)
+            // Backslash-like separators.
+            | [0xE2, 0x88, 0x96] // U+2216 (set minus / backslash-like)
+            | [0xEF, 0xBC, 0xBC] // U+FF3C (fullwidth reverse solidus)
+            | [0xE2, 0xA7, 0xB9] // U+29F9 (big reverse solidus)
+            | [0xEF, 0xB9, 0xA8] // U+FE68 (small reverse solidus)
+                => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
@@ -1511,6 +1560,9 @@ fn related_code_query_fallback(focal_code: &str) -> String {
             continue;
         }
         if token_contains_html_entity_percent_encoded_path_separator(raw_tok) {
+            continue;
+        }
+        if token_contains_unicode_path_separator(raw_tok) {
             continue;
         }
 
@@ -2402,6 +2454,25 @@ fn token_contains_html_entity_percent_encoded_path_separator(tok: &str) -> bool 
         }
     }
     false
+}
+
+fn token_contains_unicode_path_separator(tok: &str) -> bool {
+    let bytes = tok.as_bytes();
+    bytes.windows(3).any(|window| {
+        matches!(
+            window,
+            // Slash-like separators.
+            [0xE2, 0x88, 0x95] // U+2215 (division slash)
+                | [0xE2, 0x81, 0x84] // U+2044 (fraction slash)
+                | [0xEF, 0xBC, 0x8F] // U+FF0F (fullwidth solidus)
+                | [0xE2, 0xA7, 0xB8] // U+29F8 (big solidus)
+                // Backslash-like separators.
+                | [0xE2, 0x88, 0x96] // U+2216 (set minus / backslash-like)
+                | [0xEF, 0xBC, 0xBC] // U+FF3C (fullwidth reverse solidus)
+                | [0xE2, 0xA7, 0xB9] // U+29F9 (big reverse solidus)
+                | [0xEF, 0xB9, 0xA8] // U+FE68 (small reverse solidus)
+        )
+    })
 }
 
 fn token_contains_long_hex_run(tok: &str) -> bool {
