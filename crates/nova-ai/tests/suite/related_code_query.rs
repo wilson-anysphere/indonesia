@@ -2915,6 +2915,10 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_wit
         "&#x75;0025u0032u0046", // %2F
         "&#117;0025u0035u0043", // %5C
         "&#x75;0025u0035u0043", // %5C
+        // `u0025` where the digits are themselves emitted via hex numeric entities (`&#x30;` == `0`,
+        // etc), yielding `u0025` across multiple decode passes.
+        "&#x75;&#x30;&#x30;&#x32;&#x35;u0032u0046", // %2F
+        "&#x75;&#x30;&#x30;&#x32;&#x35;u0035u0043", // %5C
         // Escaped ampersand starting a nested `&num;` entity (`u0026u0026num;...`).
         "u0026u0026num;37u0032u0046",  // %2F
         // Digits for the numeric percent entity (`37`) emitted via unicode escapes after `&num;`.

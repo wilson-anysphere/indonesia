@@ -960,7 +960,11 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
             let mut i = start;
             while i > scan_start {
                 i -= 1;
-                if percent_marker_end(bytes, i) == Some(start) {
+                let Some(marker_end) = percent_marker_end(bytes, i) else {
+                    continue;
+                };
+
+                if marker_end == start {
                     if let Some((value, _next)) =
                         percent_encoded_byte_after_obfuscated_digits(bytes, start)
                     {
@@ -969,6 +973,18 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                         }
                     }
                     break;
+                }
+
+                // HTML/unicode obfuscation can split the percent marker itself across token
+                // boundaries (e.g. `&#x75;&#x30;&#x30;&#x32;&#x35;...` == `u0025...`), leaving
+                // escape fragments like `x30` in the semantic-search candidate set. Treat
+                // identifiers that fall *inside* a percent marker as path-like when the marker is
+                // followed by a path separator byte.
+                if marker_end > start
+                    && percent_encoded_byte_after_obfuscated_digits(bytes, marker_end)
+                        .is_some_and(|(value, _)| percent_encoded_byte_is_path_like(value))
+                {
+                    return true;
                 }
             }
         }
