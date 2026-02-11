@@ -332,11 +332,26 @@ impl ClassIndex {
         java_files.sort_by(|(a, _), (b, _)| a.cmp(b));
 
         let mut hasher = DefaultHasher::new();
+        const SAMPLE: usize = 64;
+        const FULL_HASH_MAX: usize = 3 * SAMPLE;
         for (path, file_id) in &java_files {
             path.hash(&mut hasher);
             let text = db.file_content(*file_id);
             text.len().hash(&mut hasher);
             text.as_ptr().hash(&mut hasher);
+            // Mix in a small content-dependent sample so the fingerprint changes even if the text
+            // buffer is mutated in place (keeping pointer/len stable).
+            let bytes = text.as_bytes();
+            if bytes.len() <= FULL_HASH_MAX {
+                bytes.hash(&mut hasher);
+            } else {
+                bytes[..SAMPLE].hash(&mut hasher);
+                let mid = bytes.len() / 2;
+                let mid_start = mid.saturating_sub(SAMPLE / 2);
+                let mid_end = (mid_start + SAMPLE).min(bytes.len());
+                bytes[mid_start..mid_end].hash(&mut hasher);
+                bytes[bytes.len() - SAMPLE..].hash(&mut hasher);
+            }
         }
         let fingerprint = hasher.finish();
 
