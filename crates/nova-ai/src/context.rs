@@ -5448,6 +5448,11 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
                     return Some(next);
                 }
             }
+        } else if let Some(end) = marker_end_after_hex_escape_x_prefix(bytes, idx + 1) {
+            // The hex escape digits can themselves be emitted via escape sequences (e.g.
+            // `xu0032u0035...` == `x25...` after decoding). Treat these as percent markers so
+            // obfuscated paths cannot leak into semantic-search queries.
+            return Some(end);
         }
     }
 
