@@ -943,7 +943,7 @@ fn related_code_query_avoids_named_html_entity_path_segments() {
     }
 
     let private_segment = "NOVA_AI_PRIVATE_USER_12345";
-    for sep in ["&sol;", "&bsol;", "&Backslash;"] {
+    for sep in ["&sol;", "&slash;", "&bsol;", "&Backslash;"] {
         let search = CapturingSearch::default();
         let focal_code = format!(
             "{sep}home{sep}user{sep}my-{private_segment}-project{sep}src{sep}main{sep}java\nreturn foo.bar();\n"
@@ -985,12 +985,15 @@ fn related_code_query_avoids_named_html_entity_path_segments_without_semicolons(
     let private_segment = "NOVA_AI_PRIVATE_USER_12345";
     for sep in [
         "&sol",
+        "&slash",
         "&bsol",
         "&Backslash",
         "&amp;sol",
+        "&amp;slash",
         "&amp;bsol",
         "&amp;Backslash",
         "&amp;amp;sol",
+        "&amp;amp;slash",
         "&amp;amp;bsol",
         "&amp;amp;Backslash",
     ] {
@@ -1820,6 +1823,7 @@ fn related_code_query_skips_named_html_entity_path_only_selections() {
     let search = PanicSearch;
     for focal_code in [
         "&sol;home&sol;user&sol;secret&sol;credentials",
+        "&slash;home&slash;user&slash;secret&slash;credentials",
         "&bsol;home&bsol;user&bsol;secret&bsol;credentials",
         "&Backslash;home&Backslash;user&Backslash;secret&Backslash;credentials",
     ] {
@@ -1844,12 +1848,15 @@ fn related_code_query_skips_named_html_entity_path_only_selections_without_semic
     let search = PanicSearch;
     for focal_code in [
         "&solhome&soluser&solsecret&solcredentials",
+        "&slashhome&slashuser&slashsecret&slashcredentials",
         "&bsolhome&bsoluser&bsolsecret&bsolcredentials",
         "&Backslashhome&Backslashuser&Backslashsecret&Backslashcredentials",
         "&amp;solhome&amp;soluser&amp;solsecret&amp;solcredentials",
+        "&amp;slashhome&amp;slashuser&amp;slashsecret&amp;slashcredentials",
         "&amp;bsolhome&amp;bsoluser&amp;bsolsecret&amp;bsolcredentials",
         "&amp;Backslashhome&amp;Backslashuser&amp;Backslashsecret&amp;Backslashcredentials",
         "&amp;amp;solhome&amp;amp;soluser&amp;amp;solsecret&amp;amp;solcredentials",
+        "&amp;amp;slashhome&amp;amp;slashuser&amp;amp;slashsecret&amp;amp;slashcredentials",
         "&amp;amp;bsolhome&amp;amp;bsoluser&amp;amp;bsolsecret&amp;amp;bsolcredentials",
         "&amp;amp;Backslashhome&amp;amp;Backslashuser&amp;amp;Backslashsecret&amp;amp;Backslashcredentials",
     ] {
