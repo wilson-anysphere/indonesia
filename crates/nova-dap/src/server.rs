@@ -36,6 +36,52 @@ fn dap_outgoing_is_success(outgoing: &Outgoing) -> bool {
         .unwrap_or(true)
 }
 
+fn sanitize_json_error_message(message: &str) -> String {
+    // `serde_json::Error` display strings can include user-provided scalar values (for example:
+    // `invalid type: string "..."` or `unknown field `...``). Avoid echoing those values in error
+    // messages because DAP payloads can include secrets (launch args/env, evaluated expressions,
+    // etc).
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let Some(end) = rest.find('"') else {
+            // Unterminated quote: append the remainder and stop.
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+
+    // `serde` wraps unknown fields/variants in backticks:
+    // `unknown field `secret`, expected ...`
+    //
+    // Redact only the first backticked segment so we keep the expected value list actionable.
+    if let Some(start) = out.find('`') {
+        if let Some(end_rel) = out[start.saturating_add(1)..].find('`') {
+            let end = start.saturating_add(1).saturating_add(end_rel);
+            if start + 1 <= end && end <= out.len() {
+                out.replace_range(start + 1..end, "<redacted>");
+            }
+        }
+    }
+
+    out
+}
+
+fn sanitize_anyhow_error_message(err: &anyhow::Error) -> String {
+    if err.chain().any(|source| source.is::<serde_json::Error>()) {
+        sanitize_json_error_message(&err.to_string())
+    } else {
+        err.to_string()
+    }
+}
+
 pub struct DapServer<C: JdwpClient> {
     next_seq: u64,
     db: InMemoryFileStore,
@@ -110,10 +156,11 @@ impl<C: JdwpClient> DapServer<C> {
                 Ok(Err(err)) => Outgoing {
                     messages: {
                         did_error = true;
+                        let message = sanitize_anyhow_error_message(&err);
                         vec![serde_json::to_value(Response::error(
                             self.alloc_seq(),
                             &request,
-                            err.to_string(),
+                            message,
                         ))?]
                     },
                     wait_for_stop: false,
@@ -1083,6 +1130,38 @@ mod tests {
 
     fn event_name(message: &Value) -> Option<&str> {
         message.get("event").and_then(|value| value.as_str())
+    }
+
+    #[test]
+    fn dap_server_anyhow_errors_do_not_echo_string_values_from_serde_json() {
+        #[derive(Debug, Deserialize)]
+        struct Dummy {
+            port: u16,
+        }
+
+        let secret = "nova-dap-legacy-super-secret-token";
+        // Ensure the field is considered "read" so this test doesn't introduce new dead-code
+        // warnings beyond the ones already in this crate's test suite.
+        let _ = Dummy { port: 0 }.port;
+
+        let raw_err = serde_json::from_value::<Dummy>(json!({ "port": secret }))
+            .expect_err("expected type mismatch");
+        let raw_message = raw_err.to_string();
+        assert!(
+            raw_message.contains(secret),
+            "expected raw serde_json error to include the string value so this test would catch leaks: {raw_message}"
+        );
+
+        let err: anyhow::Error = raw_err.into();
+        let message = sanitize_anyhow_error_message(&err);
+        assert!(
+            !message.contains(secret),
+            "expected sanitized anyhow error to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized anyhow error to include redaction marker: {message}"
+        );
     }
 
     #[test]
