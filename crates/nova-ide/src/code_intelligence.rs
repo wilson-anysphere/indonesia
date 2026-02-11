@@ -11163,20 +11163,77 @@ pub(crate) fn infer_receiver_type_before_dot(
     // `infer_receiver_type_for_member_access` already knows how to resolve dotted field chains
     // semantically (including inherited fields + interface constants). Reuse it here so that
     // completions still work when the entire receiver expression is wrapped in parentheses.
+    fn normalized_dotted_chain_in_span(tokens: &[Token], start: usize, end: usize) -> Option<String> {
+        if start >= end {
+            return None;
+        }
+
+        // `Analysis::tokens` is in source order with monotonic spans. Use the token stream to
+        // recover dotted identifier chains while ignoring trivia (whitespace/comments), e.g.:
+        //
+        // - `(this.b/*comment*/.s).<cursor>`
+        // - `(this.b // comment\n  .s).<cursor>`
+        //
+        // We only accept `Ident ('.' Ident)+` so other expressions (calls, indexing, operators)
+        // don't accidentally get treated as a dotted receiver chain.
+        let mut i = tokens.partition_point(|t| t.span.end <= start);
+        let mut out = String::new();
+        let mut expecting_ident = true;
+        let mut saw_dot = false;
+
+        while let Some(tok) = tokens.get(i) {
+            if tok.span.start >= end {
+                break;
+            }
+            if tok.span.start < start || tok.span.end > end {
+                return None;
+            }
+
+            match tok.kind {
+                TokenKind::Ident => {
+                    if !expecting_ident {
+                        return None;
+                    }
+                    out.push_str(tok.text.as_str());
+                    expecting_ident = false;
+                }
+                TokenKind::Symbol('.') => {
+                    if expecting_ident {
+                        return None;
+                    }
+                    saw_dot = true;
+                    out.push('.');
+                    expecting_ident = true;
+                }
+                _ => return None,
+            }
+
+            i += 1;
+        }
+
+        if out.is_empty() || expecting_ident || !saw_dot {
+            return None;
+        }
+
+        Some(out)
+    }
+
     let normalized: String = inner
         .chars()
         .filter(|ch| !ch.is_ascii_whitespace())
         .collect();
-    if normalized.contains('.')
-        && normalized
+    let normalized_for_dotted_chain =
+        normalized_dotted_chain_in_span(&analysis.tokens, start, end).unwrap_or_else(|| normalized.clone());
+    if normalized_for_dotted_chain.contains('.')
+        && normalized_for_dotted_chain
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.')
     {
         if let Some((ty, kind)) =
-            infer_receiver_type_for_member_access(db, file, normalized.as_str(), dot_offset)
+            infer_receiver_type_for_member_access(db, file, normalized_for_dotted_chain.as_str(), dot_offset)
         {
             let trimmed = ty.trim();
-            let receiver_trimmed = normalized.trim();
+            let receiver_trimmed = normalized_for_dotted_chain.trim();
             let is_unresolved_type_ref = kind == CallKind::Static && trimmed == receiver_trimmed;
             if !is_unresolved_type_ref {
                 return Some(ty);

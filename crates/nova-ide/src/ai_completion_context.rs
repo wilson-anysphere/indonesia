@@ -1908,6 +1908,61 @@ class A {
     }
 
     #[test]
+    fn parenthesized_dotted_field_chain_receiver_with_trailing_block_comment_in_chain_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class B {
+  String s = "x";
+}
+
+class A {
+  B b = new B();
+
+  void m() {
+    (this.b/*comment*/.s).<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "length"));
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
+    fn parenthesized_dotted_field_chain_receiver_with_trailing_line_comment_in_chain_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class B {
+  String s = "x";
+}
+
+class A {
+  B b = new B();
+
+  void m() {
+    (this.b // comment
+      .s).<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "length"));
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
     fn parenthesized_call_chain_field_access_receiver_type_and_methods_are_semantic() {
         let ctx = ctx_for(
             r#"
