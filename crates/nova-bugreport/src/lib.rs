@@ -117,6 +117,10 @@ fn sanitize_json_error_message(message: &str) -> String {
     nova_core::sanitize_json_error_message(message)
 }
 
+fn sanitize_toml_error_message(message: &str) -> String {
+    nova_core::sanitize_toml_error_message(message)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrashRecord {
     pub timestamp_unix_ms: u128,
@@ -294,14 +298,16 @@ pub fn install_panic_hook(config: PanicHookConfig, notifier: PanicNotifier) {
 
                 let timestamp_unix_ms = unix_ms_now();
                 let message = redact::redact_string(&panic_message(info));
-                // Panic payloads frequently include debug-formatted error values (e.g.
-                // `called Result::unwrap() on an Err value: Error("invalid type: string \"...\"")`).
-                // If the panic is ultimately caused by a `serde_json::Error`, that debug string can
-                // embed user-controlled scalar values.
-                //
-                // Best-effort: apply the same quoted/backticked redaction we use for `serde_json`
-                // errors so panic messages are safe to include in bug report bundles and logs.
-                let message = sanitize_json_error_message(&message);
+                 // Panic payloads frequently include debug-formatted error values (e.g.
+                 // `called Result::unwrap() on an Err value: Error("invalid type: string \"...\"")`).
+                 // If the panic is ultimately caused by a `serde_json::Error` or `toml::de::Error`,
+                 // that debug string can embed user-controlled scalar values (and `toml`'s display
+                 // output can include a raw source snippet).
+                 //
+                 // Best-effort: apply the most conservative redaction we have (TOML sanitizer,
+                 // which includes the JSON sanitizer) so panic messages are safe to include in bug
+                 // report bundles and logs.
+                 let message = sanitize_toml_error_message(&message);
                 let location = info.location().map(|loc| format!("{loc}"));
                 let backtrace = include_backtrace
                     .then(|| format!("{:?}", std::backtrace::Backtrace::force_capture()))
@@ -518,7 +524,11 @@ fn read_persisted_crashes(path: &Path, max_records: usize) -> Vec<CrashRecord> {
 
 fn sanitize_crash_record(record: &mut CrashRecord) {
     let message = redact::redact_string(&record.message);
-    record.message = sanitize_json_error_message(&message);
+    // Crash payloads are opaque strings. Use the TOML sanitizer because it covers:
+    // - serde/serde_json error quoting (double quotes + user-controlled backticks), and
+    // - toml::de::Error display snippets (pipe-prefixed source excerpt blocks) + single-quoted
+    //   scalars (e.g. semver parse errors).
+    record.message = sanitize_toml_error_message(&message);
     if let Some(bt) = record.backtrace.as_mut() {
         *bt = redact::redact_string(bt);
     }
@@ -1174,6 +1184,102 @@ mod tests {
         assert!(
             crashes_text.contains("<redacted>"),
             "expected sanitized crash record to include redaction marker: {crashes_text}"
+        );
+    }
+
+    #[test]
+    fn crash_records_strip_toml_display_snippet_blocks() {
+        let secret_suffix = "nova-bugreport-toml-snippet-secret";
+        let secret_number = 42_424_242u64;
+        let secret_number_text = secret_number.to_string();
+        let raw_message = format!(
+            "called unwrap: TOML parse error at line 1, column 10\n1 | api_key = \"{secret_suffix}\"\n2 | enabled = {secret_number}\n  |          ^"
+        );
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw crash message to include snippet secret so this test catches leaks: {raw_message}"
+        );
+        assert!(
+            raw_message.contains(&secret_number_text),
+            "expected raw crash message to include snippet numeric value so this test catches leaks: {raw_message}"
+        );
+
+        let crash_store = CrashStore::new(10);
+        crash_store.record(CrashRecord {
+            timestamp_unix_ms: 0,
+            message: raw_message,
+            location: None,
+            backtrace: None,
+        });
+
+        let config = NovaConfig::default();
+        let buffer = LogBuffer::new(1);
+        let perf = PerfStats::default();
+        let bundle = create_bug_report_bundle(
+            &config,
+            &buffer,
+            &crash_store,
+            &perf,
+            BugReportOptions::default(),
+        )
+        .expect("bundle creation failed");
+
+        let crashes_text = std::fs::read_to_string(bundle.path().join("crashes.json"))
+            .expect("crashes read failed");
+        assert!(
+            !crashes_text.contains(secret_suffix),
+            "expected crash sanitizer to omit TOML snippet contents: {crashes_text}"
+        );
+        assert!(
+            !crashes_text.contains(&secret_number_text),
+            "expected crash sanitizer to omit TOML snippet numeric values: {crashes_text}"
+        );
+        assert!(
+            !crashes_text.contains("api_key ="),
+            "expected crash sanitizer to strip TOML source snippet lines: {crashes_text}"
+        );
+    }
+
+    #[test]
+    fn crash_records_sanitize_toml_single_quoted_values() {
+        let secret_suffix = "nova-bugreport-toml-single-quote-secret";
+        let raw_message = format!(
+            "called unwrap: invalid semver version 'prefix\\'{secret_suffix}', expected 1.2.3"
+        );
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw crash message to include single-quoted secret so this test catches leaks: {raw_message}"
+        );
+
+        let crash_store = CrashStore::new(10);
+        crash_store.record(CrashRecord {
+            timestamp_unix_ms: 0,
+            message: raw_message,
+            location: None,
+            backtrace: None,
+        });
+
+        let config = NovaConfig::default();
+        let buffer = LogBuffer::new(1);
+        let perf = PerfStats::default();
+        let bundle = create_bug_report_bundle(
+            &config,
+            &buffer,
+            &crash_store,
+            &perf,
+            BugReportOptions::default(),
+        )
+        .expect("bundle creation failed");
+
+        let crashes_text = std::fs::read_to_string(bundle.path().join("crashes.json"))
+            .expect("crashes read failed");
+        assert!(
+            !crashes_text.contains(secret_suffix),
+            "expected crash sanitizer to omit single-quoted scalar values: {crashes_text}"
+        );
+        assert!(
+            crashes_text.contains("<redacted>"),
+            "expected crash sanitizer to include redaction marker: {crashes_text}"
         );
     }
 
