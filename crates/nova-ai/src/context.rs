@@ -2674,6 +2674,16 @@ fn token_contains_percent_encoded_path_separator(tok: &str) -> bool {
         return false;
     }
 
+    // Handle nested percent-encoding of separators without needing to fully decode (e.g.
+    // `%252525252F` → `%25` (percent sign) repeated many times + `2F`). These appear in logs when
+    // data is repeatedly URL-encoded, and we want to treat them as path-like regardless of the
+    // nesting depth.
+    for (idx, b) in bytes.iter().enumerate() {
+        if *b == b'%' && percent_encoded_path_separator_len(&bytes[idx + 1..]).is_some() {
+            return true;
+        }
+    }
+
     fn bytes_contain_path_separator(bytes: &[u8]) -> bool {
         if bytes.iter().any(|b| *b == b'/' || *b == b'\\') || bytes_contain_unicode_path_separator(bytes)
         {
@@ -2696,7 +2706,7 @@ fn token_contains_percent_encoded_path_separator(tok: &str) -> bool {
     // stops changing.
     let mut current: Vec<u8> = bytes.to_vec();
     let mut next: Vec<u8> = Vec::with_capacity(current.len());
-    for _ in 0..4 {
+    for _ in 0..8 {
         next.clear();
         let mut i = 0usize;
         let mut changed = false;

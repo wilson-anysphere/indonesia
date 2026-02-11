@@ -271,6 +271,12 @@ fn related_code_query_avoids_percent_encoded_path_segments() {
         // Quad-encoded.
         "%2525252F",
         "%2525255C",
+        // Quint-encoded.
+        "%252525252F",
+        "%252525255C",
+        // Sext-encoded.
+        "%25252525252F",
+        "%25252525255C",
     ] {
         let search = CapturingSearch::default();
         let focal_code = format!(
@@ -1554,6 +1560,10 @@ fn related_code_query_skips_percent_encoded_path_only_selections() {
         "%25255Chome%25255Cuser%25255Csecret%25255Ccredentials",
         "%2525252Fhome%2525252Fuser%2525252Fsecret%2525252Fcredentials",
         "%2525255Chome%2525255Cuser%2525255Csecret%2525255Ccredentials",
+        "%252525252Fhome%252525252Fuser%252525252Fsecret%252525252Fcredentials",
+        "%252525255Chome%252525255Cuser%252525255Csecret%252525255Ccredentials",
+        "%25252525252Fhome%25252525252Fuser%25252525252Fsecret%25252525252Fcredentials",
+        "%25252525255Chome%25252525255Cuser%25252525255Csecret%25252525255Ccredentials",
     ] {
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
         assert!(
