@@ -539,9 +539,9 @@ fn sanitize_toml_error_message(message: &str) -> String {
     // Only redact the *first* backticked segment so we keep the expected value list actionable.
     if let Some(start) = out.find('`') {
         let after_start = &out[start.saturating_add(1)..];
-        let end = if let Some(end_rel) = after_start.find("`, expected") {
+        let end = if let Some(end_rel) = after_start.rfind("`, expected") {
             Some(start.saturating_add(1).saturating_add(end_rel))
-        } else if let Some(end_rel) = after_start.find('`') {
+        } else if let Some(end_rel) = after_start.rfind('`') {
             Some(start.saturating_add(1).saturating_add(end_rel))
         } else {
             None
@@ -721,6 +721,45 @@ mod tests {
         assert!(
             !message.contains(secret_suffix),
             "expected sanitized toml error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized toml error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn toml_error_sanitization_does_not_echo_backticked_values_with_embedded_expected_delimiter() {
+        #[derive(serde::Deserialize)]
+        struct Dummy {
+            #[allow(dead_code)]
+            kind: Kind,
+        }
+
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum Kind {
+            Foo,
+        }
+
+        let secret_suffix = "nova-ext-toml-backticked-secret-token";
+        let secret = format!("prefix`, expected {secret_suffix}");
+        let text = format!(r#"kind = "{secret}""#);
+
+        let raw_err = match toml::from_str::<Dummy>(&text) {
+            Ok(_) => panic!("expected unknown variant"),
+            Err(err) => err,
+        };
+        let raw_message = raw_err.message();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw toml error message to include the string value so this test would catch leaks: {raw_message}"
+        );
+
+        let message = sanitize_toml_error_message(raw_message);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized toml error message to omit backticked values: {message}"
         );
         assert!(
             message.contains("<redacted>"),

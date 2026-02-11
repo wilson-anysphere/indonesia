@@ -1557,9 +1557,9 @@ fn sanitize_toml_error_message(message: &str) -> String {
     // actionable while still avoiding leaks of user-provided values.
     if let Some(start) = out.find('`') {
         let after_start = &out[start.saturating_add(1)..];
-        let end = if let Some(end_rel) = after_start.find("`, expected") {
+        let end = if let Some(end_rel) = after_start.rfind("`, expected") {
             Some(start.saturating_add(1).saturating_add(end_rel))
-        } else if let Some(end_rel) = after_start.find('`') {
+        } else if let Some(end_rel) = after_start.rfind('`') {
             Some(start.saturating_add(1).saturating_add(end_rel))
         } else {
             None

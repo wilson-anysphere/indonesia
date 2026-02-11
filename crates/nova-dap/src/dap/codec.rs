@@ -55,9 +55,9 @@ fn sanitize_json_error_message(message: &str) -> String {
     // Redact only the first backticked segment so we keep the expected value list actionable.
     if let Some(start) = out.find('`') {
         let after_start = &out[start.saturating_add(1)..];
-        let end = if let Some(end_rel) = after_start.find("`, expected") {
+        let end = if let Some(end_rel) = after_start.rfind("`, expected") {
             Some(start.saturating_add(1).saturating_add(end_rel))
-        } else if let Some(end_rel) = after_start.find('`') {
+        } else if let Some(end_rel) = after_start.rfind('`') {
             Some(start.saturating_add(1).saturating_add(end_rel))
         } else {
             None
@@ -324,7 +324,7 @@ mod tests {
         }
 
         let secret_suffix = "dap-codec-backticked-secret";
-        let secret = format!("prefix`{secret_suffix}");
+        let secret = format!("prefix`, expected {secret_suffix}");
         let payload = format!(r#"{{"{secret}": 1}}"#);
         let framed = format!("Content-Length: {}\r\n\r\n{}", payload.len(), payload);
 

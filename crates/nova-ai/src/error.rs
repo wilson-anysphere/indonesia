@@ -84,9 +84,9 @@ impl fmt::Display for AiError {
             // Redact only the first backticked segment so we keep the expected value list actionable.
             if let Some(start) = out.find('`') {
                 let after_start = &out[start.saturating_add(1)..];
-                let end = if let Some(end_rel) = after_start.find("`, expected") {
+                let end = if let Some(end_rel) = after_start.rfind("`, expected") {
                     Some(start.saturating_add(1).saturating_add(end_rel))
-                } else if let Some(end_rel) = after_start.find('`') {
+                } else if let Some(end_rel) = after_start.rfind('`') {
                     Some(start.saturating_add(1).saturating_add(end_rel))
                 } else {
                     None
@@ -174,9 +174,9 @@ impl fmt::Debug for AiError {
 
             if let Some(start) = out.find('`') {
                 let after_start = &out[start.saturating_add(1)..];
-                let end = if let Some(end_rel) = after_start.find("`, expected") {
+                let end = if let Some(end_rel) = after_start.rfind("`, expected") {
                     Some(start.saturating_add(1).saturating_add(end_rel))
-                } else if let Some(end_rel) = after_start.find('`') {
+                } else if let Some(end_rel) = after_start.rfind('`') {
                     Some(start.saturating_add(1).saturating_add(end_rel))
                 } else {
                     None
