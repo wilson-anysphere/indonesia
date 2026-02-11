@@ -536,8 +536,16 @@ fn sanitize_toml_error_message(message: &str) -> String {
     // `serde` / `toml` wrap offending enum variants (and unknown fields) in backticks:
     // `unknown field `secret`, expected ...`
     //
-    // Only redact the *first* backticked segment so we keep the expected value list actionable.
-    if let Some(start) = out.find('`') {
+    // Only redact the first backticked segment for unknown field/variant errors, because that
+    // segment can contain user-controlled content (the unknown key/variant).
+    //
+    // Other serde diagnostics (e.g. `missing field `foo``) also use backticks, but those refer to
+    // schema field names and are safe + useful to keep.
+    let start = ["unknown field `", "unknown variant `"]
+        .iter()
+        .filter_map(|pattern| out.find(pattern).map(|pos| pos + pattern.len().saturating_sub(1)))
+        .min();
+    if let Some(start) = start {
         let after_start = &out[start.saturating_add(1)..];
         let end = if let Some(end_rel) = after_start.rfind("`, expected") {
             Some(start.saturating_add(1).saturating_add(end_rel))
@@ -764,6 +772,36 @@ mod tests {
         assert!(
             message.contains("<redacted>"),
             "expected sanitized toml error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn toml_error_sanitization_preserves_missing_field_names() {
+        #[derive(Debug, serde::Deserialize)]
+        struct Dummy {
+            #[allow(dead_code)]
+            required: String,
+        }
+
+        let raw_err = toml::from_str::<Dummy>("").expect_err("expected missing field");
+        let raw_message = raw_err.message();
+        assert!(
+            raw_message.contains("missing field"),
+            "expected raw toml error message to mention missing field: {raw_message}"
+        );
+        assert!(
+            raw_message.contains("`required`"),
+            "expected raw toml error message to include the missing field name: {raw_message}"
+        );
+
+        let message = sanitize_toml_error_message(raw_message);
+        assert!(
+            message.contains("`required`"),
+            "expected sanitized toml error message to preserve the missing field name: {message}"
+        );
+        assert!(
+            !message.contains("<redacted>"),
+            "expected missing-field toml error message to avoid unnecessary redaction: {message}"
         );
     }
 

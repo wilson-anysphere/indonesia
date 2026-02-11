@@ -1539,6 +1539,7 @@ fn sanitize_toml_error_message(message: &str) -> String {
     // quoted substrings to avoid leaking arbitrary config string values (including secrets) even
     // when no snippet is included.
     static QUOTED_STRING_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static SINGLE_QUOTED_STRING_RE: OnceLock<regex::Regex> = OnceLock::new();
 
     // Handle escaped quotes (e.g. `\"`) inside the quoted substring. `toml::de::Error::message()`
     // includes string values using a debug-like escaping style, so an embedded quote will appear as
@@ -1549,13 +1550,27 @@ fn sanitize_toml_error_message(message: &str) -> String {
     });
 
     let mut out = re.replace_all(message, r#""<redacted>""#).into_owned();
+    let re_single = SINGLE_QUOTED_STRING_RE.get_or_init(|| {
+        regex::Regex::new(r#"'(?:\\.|[^'\\])*'"#)
+            .expect("single-quoted-string regex should compile")
+    });
+    out = re_single
+        .replace_all(&out, "'<redacted>'")
+        .into_owned();
 
     // `serde` / `toml` wrap offending enum variants (and unknown fields) in backticks:
     // `unknown variant `secret`, expected one of `a`, `b``
     //
-    // Only redact the *first* backticked segment so we keep the expected/allowed value list
-    // actionable while still avoiding leaks of user-provided values.
-    if let Some(start) = out.find('`') {
+    // Only redact the first backticked segment for unknown field/variant errors, because that
+    // segment can contain user-controlled content (the unknown key/variant).
+    //
+    // Other serde diagnostics (e.g. `missing field `foo``) also use backticks, but those refer to
+    // schema field names and are safe + useful to keep.
+    let start = ["unknown field `", "unknown variant `"]
+        .iter()
+        .filter_map(|pattern| out.find(pattern).map(|pos| pos + pattern.len().saturating_sub(1)))
+        .min();
+    if let Some(start) = start {
         let after_start = &out[start.saturating_add(1)..];
         let end = if let Some(end_rel) = after_start.rfind("`, expected") {
             Some(start.saturating_add(1).saturating_add(end_rel))
@@ -2668,6 +2683,52 @@ mod toml_tests {
         assert!(
             rendered.contains("<redacted>"),
             "expected JSON log line to include redaction marker: {rendered}"
+        );
+    }
+
+    #[test]
+    fn toml_error_sanitization_preserves_missing_field_names() {
+        #[derive(Debug, serde::Deserialize)]
+        struct Dummy {
+            #[allow(dead_code)]
+            required: String,
+        }
+
+        let raw_err = toml::from_str::<Dummy>("").expect_err("expected missing field error");
+        let raw_message = raw_err.message();
+        assert!(
+            raw_message.contains("missing field"),
+            "expected raw toml error message to mention missing field: {raw_message}"
+        );
+        assert!(
+            raw_message.contains("`required`"),
+            "expected raw toml error message to include the missing field name: {raw_message}"
+        );
+
+        let message = sanitize_toml_error_message(raw_message);
+        assert!(
+            message.contains("`required`"),
+            "expected sanitized toml error message to preserve the missing field name: {message}"
+        );
+        assert!(
+            !message.contains("<redacted>"),
+            "expected missing-field toml error message to avoid unnecessary redaction: {message}"
+        );
+    }
+
+    #[test]
+    fn toml_error_sanitization_redacts_single_quoted_values() {
+        let secret_suffix = "nova-config-toml-single-quote-secret";
+        let message = format!("invalid semver version '{secret_suffix}': boom");
+        let sanitized = sanitize_toml_error_message(&message);
+
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected toml error sanitizer to redact single-quoted values: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected toml error sanitizer to include redaction marker: {sanitized}"
         );
     }
 }
