@@ -627,6 +627,116 @@ fn related_code_query_avoids_html_entity_path_segments_without_semicolons() {
 }
 
 #[test]
+fn related_code_query_avoids_html_entity_unicode_separator_path_segments() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+    for sep in [
+        // Slash-like separators.
+        "&#8725;",  // ∕ division slash (U+2215)
+        "&#8260;",  // ⁄ fraction slash (U+2044)
+        "&#65295;", // ／ fullwidth solidus (U+FF0F)
+        "&#10744;", // ⧸ big solidus (U+29F8)
+        "&frasl;",  // ⁄ fraction slash (named entity)
+        // Backslash-like separators.
+        "&#8726;",  // ∖ set minus / backslash-like (U+2216)
+        "&#65340;", // ＼ fullwidth reverse solidus (U+FF3C)
+        "&#10745;", // ⧹ big reverse solidus (U+29F9)
+        "&#65128;", // ﹨ small reverse solidus (U+FE68)
+        "&setminus;", // ∖ set minus (named entity)
+    ] {
+        let search = CapturingSearch::default();
+        let focal_code = format!(
+            "{sep}home{sep}user{sep}my-{private_segment}-project{sep}src{sep}main{sep}java\nreturn foo.bar();\n"
+        );
+
+        let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+        let query = search
+            .last_query
+            .lock()
+            .expect("lock poisoned")
+            .clone()
+            .expect("query captured");
+
+        assert!(
+            !query.contains(private_segment),
+            "query should not include HTML entity unicode path fragments: {query}"
+        );
+        assert!(
+            query.contains("foo") || query.contains("bar"),
+            "expected query to retain non-path identifiers, got: {query}"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_avoids_html_entity_unicode_separator_path_segments_without_semicolons() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+    for sep in [
+        // Slash-like separators.
+        "&#8725",  // ∕ division slash (U+2215)
+        "&#8260",  // ⁄ fraction slash (U+2044)
+        "&#65295", // ／ fullwidth solidus (U+FF0F)
+        "&#10744", // ⧸ big solidus (U+29F8)
+        "&frasl",
+        "&amp;frasl",
+        "&amp;amp;frasl",
+        // Backslash-like separators.
+        "&#8726",  // ∖ set minus (U+2216)
+        "&#65340", // ＼ fullwidth reverse solidus (U+FF3C)
+        "&#10745", // ⧹ big reverse solidus (U+29F9)
+        "&#65128", // ﹨ small reverse solidus (U+FE68)
+        "&setminus",
+        "&amp;setminus",
+        "&amp;amp;setminus",
+    ] {
+        let search = CapturingSearch::default();
+        let focal_code = format!(
+            "{sep}home{sep}user{sep}my-{private_segment}-project{sep}src{sep}main{sep}java\nreturn foo.bar();\n"
+        );
+
+        let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+        let query = search
+            .last_query
+            .lock()
+            .expect("lock poisoned")
+            .clone()
+            .expect("query captured");
+
+        assert!(
+            !query.contains(private_segment),
+            "query should not include HTML entity unicode path fragments without semicolons: {query}"
+        );
+        assert!(
+            query.contains("foo") || query.contains("bar"),
+            "expected query to retain non-path identifiers, got: {query}"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_avoids_double_escaped_html_entity_path_segments_without_semicolons() {
     #[derive(Default)]
     struct CapturingSearch {
@@ -1299,6 +1409,72 @@ fn related_code_query_skips_html_entity_path_only_selections_without_semicolons(
         assert!(
             req.related_code.is_empty(),
             "expected no related code for HTML entity path-only focal code without semicolons"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_html_entity_unicode_separator_path_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for HTML entity unicode path selections");
+        }
+    }
+
+    let search = PanicSearch;
+    for focal_code in [
+        "&#8725;home&#8725;user&#8725;secret&#8725;credentials",
+        "&#8260;home&#8260;user&#8260;secret&#8260;credentials",
+        "&#65295;home&#65295;user&#65295;secret&#65295;credentials",
+        "&#10744;home&#10744;user&#10744;secret&#10744;credentials",
+        "&frasl;home&frasl;user&frasl;secret&frasl;credentials",
+        "&#8726;home&#8726;user&#8726;secret&#8726;credentials",
+        "&#65340;home&#65340;user&#65340;secret&#65340;credentials",
+        "&#10745;home&#10745;user&#10745;secret&#10745;credentials",
+        "&#65128;home&#65128;user&#65128;secret&#65128;credentials",
+        "&setminus;home&setminus;user&setminus;secret&setminus;credentials",
+    ] {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for HTML entity unicode path-only focal code"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_html_entity_unicode_separator_path_only_selections_without_semicolons() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for HTML entity unicode path selections without semicolons");
+        }
+    }
+
+    let search = PanicSearch;
+    for focal_code in [
+        "&#8725home&#8725user&#8725secret&#8725credentials",
+        "&#8260home&#8260user&#8260secret&#8260credentials",
+        "&#65295home&#65295user&#65295secret&#65295credentials",
+        "&#10744home&#10744user&#10744secret&#10744credentials",
+        "&fraslhome&frasluser&fraslsecret&fraslcredentials",
+        "&amp;fraslhome&amp;frasluser&amp;fraslsecret&amp;fraslcredentials",
+        "&amp;amp;fraslhome&amp;amp;frasluser&amp;amp;fraslsecret&amp;amp;fraslcredentials",
+        "&#8726home&#8726user&#8726secret&#8726credentials",
+        "&#65340home&#65340user&#65340secret&#65340credentials",
+        "&#10745home&#10745user&#10745secret&#10745credentials",
+        "&#65128home&#65128user&#65128secret&#65128credentials",
+        "&setminushome&setminususer&setminussecret&setminuscredentials",
+        "&amp;setminushome&amp;setminususer&amp;setminussecret&amp;setminuscredentials",
+        "&amp;amp;setminushome&amp;amp;setminususer&amp;amp;setminussecret&amp;amp;setminuscredentials",
+    ] {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for HTML entity unicode path-only focal code without semicolons"
         );
     }
 }

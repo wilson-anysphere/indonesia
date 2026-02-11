@@ -942,6 +942,14 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                         .as_bytes()
                         .get(..9)
                         .is_some_and(|frag| frag.eq_ignore_ascii_case(b"backslash"))
+                    || token
+                        .as_bytes()
+                        .get(..5)
+                        .is_some_and(|frag| frag.eq_ignore_ascii_case(b"frasl"))
+                    || token
+                        .as_bytes()
+                        .get(..8)
+                        .is_some_and(|frag| frag.eq_ignore_ascii_case(b"setminus"))
             } else {
                 false
             };
@@ -1044,7 +1052,7 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                         .unwrap_or(u32::MAX);
                     digits += 1;
                     j += 1;
-                    if matches!(value, 47 | 92) {
+                    if html_entity_codepoint_is_path_separator(value) {
                         matched = true;
                         break;
                     }
@@ -1105,7 +1113,7 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                             .unwrap_or(u32::MAX);
                         digits += 1;
                         j += 1;
-                        if matches!(value, 47 | 92) {
+                        if html_entity_codepoint_is_path_separator(value) {
                             return true;
                         }
                     }
@@ -1124,6 +1132,12 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                         || bytes
                             .get(start..start + 9)
                             .is_some_and(|frag| frag.eq_ignore_ascii_case(b"backslash"))
+                        || bytes
+                            .get(start..start + 5)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"frasl"))
+                        || bytes
+                            .get(start..start + 8)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"setminus"))
                 }
 
                 fn html_percent_fragment_is_percent_encoded_separator(bytes: &[u8], start: usize) -> bool {
@@ -1389,6 +1403,24 @@ fn unicode_path_separator_at(bytes: &[u8], idx: usize) -> bool {
     false
 }
 
+fn html_entity_codepoint_is_path_separator(value: u32) -> bool {
+    matches!(
+        value,
+        // ASCII separators.
+        47 | 92
+            // Slash-like separators.
+            | 0x2215  // ∕ division slash
+            | 0x2044  // ⁄ fraction slash
+            | 0xFF0F  // ／ fullwidth solidus
+            | 0x29F8  // ⧸ big solidus
+            // Backslash-like separators.
+            | 0x2216  // ∖ set minus / backslash-like
+            | 0xFF3C  // ＼ fullwidth reverse solidus
+            | 0x29F9  // ⧹ big reverse solidus
+            | 0xFE68  // ﹨ small reverse solidus
+    )
+}
+
 fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
     fn hex_value(b: u8) -> Option<u8> {
         match b {
@@ -1428,6 +1460,8 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
         if name.eq_ignore_ascii_case(b"sol")
             || name.eq_ignore_ascii_case(b"bsol")
             || name.eq_ignore_ascii_case(b"backslash")
+            || name.eq_ignore_ascii_case(b"frasl")
+            || name.eq_ignore_ascii_case(b"setminus")
         {
             return true;
         }
@@ -1454,6 +1488,8 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
             if rest.eq_ignore_ascii_case(b"sol")
                 || rest.eq_ignore_ascii_case(b"bsol")
                 || rest.eq_ignore_ascii_case(b"backslash")
+                || rest.eq_ignore_ascii_case(b"frasl")
+                || rest.eq_ignore_ascii_case(b"setminus")
             {
                 return true;
             }
@@ -1493,7 +1529,7 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
                         .unwrap_or(u32::MAX);
                 }
 
-                if matches!(value, 47 | 92) {
+                if html_entity_codepoint_is_path_separator(value) {
                     return true;
                 }
             }
@@ -1536,7 +1572,7 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
             .unwrap_or(u32::MAX);
     }
 
-    matches!(value, 47 | 92)
+    html_entity_codepoint_is_path_separator(value)
 }
 
 fn html_entity_is_percent(bytes: &[u8], end_semicolon: usize) -> bool {
@@ -2728,6 +2764,12 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
             || bytes
                 .get(start..start + 9)
                 .is_some_and(|frag| frag.eq_ignore_ascii_case(b"backslash"))
+            || bytes
+                .get(start..start + 5)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"frasl"))
+            || bytes
+                .get(start..start + 8)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"setminus"))
     }
 
     // Handle nested `&amp;#47...` patterns where the escaped entity itself does not have a trailing
@@ -2787,7 +2829,7 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
                 .unwrap_or(u32::MAX);
             digits += 1;
             k += 1;
-            if matches!(value, 47 | 92) {
+            if html_entity_codepoint_is_path_separator(value) {
                 return true;
             }
         }
@@ -2864,7 +2906,7 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
                 .unwrap_or(u32::MAX);
             digits += 1;
             j += 1;
-            if matches!(value, 47 | 92) {
+            if html_entity_codepoint_is_path_separator(value) {
                 return true;
             }
         }
