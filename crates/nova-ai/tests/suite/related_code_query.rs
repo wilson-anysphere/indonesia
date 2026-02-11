@@ -446,15 +446,19 @@ fn related_code_query_avoids_html_entity_percent_encoded_path_segments() {
         // `%2F` via HTML entity percent sign.
         "&#37;2F",
         "&#x25;2F",
+        "&#00000000037;2F",
+        "&#x00000000025;2F",
         "&percnt;2F",
         // Nested HTML escaping of the percent entity itself.
         "&amp;#37;2F",
+        "&amp;#00000000037;2F",
         "&amp;percnt;2F",
         // Nested percent-encoding (`%252F`) with HTML entity percent sign.
         "&#37;252F",
         "&amp;#37;252F",
         // Backslash separator (`%5C`).
         "&#37;5C",
+        "&#00000000037;5C",
         "&percnt;5C",
         "&amp;#37;5C",
         // Nested percent-encoded backslash (`%255C`).
@@ -503,13 +507,18 @@ fn related_code_query_avoids_html_entity_percent_encoded_path_segments_without_s
         // `%2F` via HTML entity percent sign, without `;` terminator.
         "&#372F",
         "&#x252F",
+        "&#000000000372F",
+        "&#x000000000252F",
         "&percnt2F",
         // Nested HTML escaping of the percent entity itself.
         "&amp;#372F",
+        "&amp;#000000000372F",
         "&amp;percnt2F",
         // Backslash separator (`%5C`).
         "&#375C",
         "&#x255C",
+        "&#000000000375C",
+        "&#x000000000255C",
         "&percnt5C",
         "&amp;#375C",
     ] {
@@ -826,7 +835,16 @@ fn related_code_query_avoids_html_entity_path_segments() {
     }
 
     let private_segment = "NOVA_AI_PRIVATE_USER_12345";
-    for sep in ["&#47;", "&#x2F;", "&#92;", "&#x5C;"] {
+    for sep in [
+        "&#47;",
+        "&#x2F;",
+        "&#92;",
+        "&#x5C;",
+        "&#00000000047;",
+        "&#x00000000002F;",
+        "&#00000000092;",
+        "&#x00000000005C;",
+    ] {
         let search = CapturingSearch::default();
         let focal_code = format!(
             "{sep}home{sep}user{sep}my-{private_segment}-project{sep}src{sep}main{sep}java\nreturn foo.bar();\n"
@@ -866,7 +884,16 @@ fn related_code_query_avoids_html_entity_path_segments_without_semicolons() {
     }
 
     let private_segment = "NOVA_AI_PRIVATE_USER_12345";
-    for sep in ["&#47", "&#x2F", "&#92", "&#x5C"] {
+    for sep in [
+        "&#47",
+        "&#x2F",
+        "&#92",
+        "&#x5C",
+        "&#00000000047",
+        "&#x00000000002F",
+        "&#00000000092",
+        "&#x00000000005C",
+    ] {
         let search = CapturingSearch::default();
         let focal_code = format!(
             "{sep}home{sep}user{sep}my-{private_segment}-project{sep}src{sep}main{sep}java\nreturn foo.bar();\n"
@@ -1047,10 +1074,18 @@ fn related_code_query_avoids_double_escaped_html_entity_path_segments_without_se
         "&amp;#x2F",
         "&amp;#92",
         "&amp;#x5C",
+        "&amp;#00000000047",
+        "&amp;#x00000000002F",
+        "&amp;#00000000092",
+        "&amp;#x00000000005C",
         "&amp;amp;#47",
         "&amp;amp;#x2F",
         "&amp;amp;#92",
         "&amp;amp;#x5C",
+        "&amp;amp;#00000000047",
+        "&amp;amp;#x00000000002F",
+        "&amp;amp;#00000000092",
+        "&amp;amp;#x00000000005C",
     ] {
         let search = CapturingSearch::default();
         let focal_code = format!(
@@ -1189,10 +1224,18 @@ fn related_code_query_avoids_double_escaped_html_entity_path_segments() {
         "&amp;#x2F;",
         "&amp;#92;",
         "&amp;#x5C;",
+        "&amp;#00000000047;",
+        "&amp;#x00000000002F;",
+        "&amp;#00000000092;",
+        "&amp;#x00000000005C;",
         "&amp;amp;#47;",
         "&amp;amp;#x2F;",
         "&amp;amp;#92;",
         "&amp;amp;#x5C;",
+        "&amp;amp;#00000000047;",
+        "&amp;amp;#x00000000002F;",
+        "&amp;amp;#00000000092;",
+        "&amp;amp;#x00000000005C;",
         "&amp;sol;",
         "&amp;bsol;",
         "&amp;Backslash;",
@@ -1611,12 +1654,16 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections() {
     for focal_code in [
         "&#37;2Fhome&#37;2Fuser&#37;2Fsecret&#37;2Fcredentials",
         "&#x25;2Fhome&#x25;2Fuser&#x25;2Fsecret&#x25;2Fcredentials",
+        "&#00000000037;2Fhome&#00000000037;2Fuser&#00000000037;2Fsecret&#00000000037;2Fcredentials",
+        "&#x00000000025;2Fhome&#x00000000025;2Fuser&#x00000000025;2Fsecret&#x00000000025;2Fcredentials",
         "&percnt;2Fhome&percnt;2Fuser&percnt;2Fsecret&percnt;2Fcredentials",
         "&amp;#37;2Fhome&amp;#37;2Fuser&amp;#37;2Fsecret&amp;#37;2Fcredentials",
+        "&amp;#00000000037;2Fhome&amp;#00000000037;2Fuser&amp;#00000000037;2Fsecret&amp;#00000000037;2Fcredentials",
         "&amp;percnt;2Fhome&amp;percnt;2Fuser&amp;percnt;2Fsecret&amp;percnt;2Fcredentials",
         "&#37;252Fhome&#37;252Fuser&#37;252Fsecret&#37;252Fcredentials",
         "&amp;#37;252Fhome&amp;#37;252Fuser&amp;#37;252Fsecret&amp;#37;252Fcredentials",
         "&#37;5Chome&#37;5Cuser&#37;5Csecret&#37;5Ccredentials",
+        "&#00000000037;5Chome&#00000000037;5Cuser&#00000000037;5Csecret&#00000000037;5Ccredentials",
         "&percnt;5Chome&percnt;5Cuser&percnt;5Csecret&percnt;5Ccredentials",
         "&amp;#37;5Chome&amp;#37;5Cuser&amp;#37;5Csecret&amp;#37;5Ccredentials",
     ] {
@@ -1642,11 +1689,16 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_wit
     for focal_code in [
         "&#372Fhome&#372Fuser&#372Fsecret&#372Fcredentials",
         "&#x252Fhome&#x252Fuser&#x252Fsecret&#x252Fcredentials",
+        "&#000000000372Fhome&#000000000372Fuser&#000000000372Fsecret&#000000000372Fcredentials",
+        "&#x000000000252Fhome&#x000000000252Fuser&#x000000000252Fsecret&#x000000000252Fcredentials",
         "&percnt2Fhome&percnt2Fuser&percnt2Fsecret&percnt2Fcredentials",
         "&amp;#372Fhome&amp;#372Fuser&amp;#372Fsecret&amp;#372Fcredentials",
+        "&amp;#000000000372Fhome&amp;#000000000372Fuser&amp;#000000000372Fsecret&amp;#000000000372Fcredentials",
         "&amp;percnt2Fhome&amp;percnt2Fuser&amp;percnt2Fsecret&amp;percnt2Fcredentials",
         "&#375Chome&#375Cuser&#375Csecret&#375Ccredentials",
         "&#x255Chome&#x255Cuser&#x255Csecret&#x255Ccredentials",
+        "&#000000000375Chome&#000000000375Cuser&#000000000375Csecret&#000000000375Ccredentials",
+        "&#x000000000255Chome&#x000000000255Cuser&#x000000000255Csecret&#x000000000255Ccredentials",
         "&percnt5Chome&percnt5Cuser&percnt5Csecret&percnt5Ccredentials",
         "&amp;#375Chome&amp;#375Cuser&amp;#375Csecret&amp;#375Ccredentials",
     ] {
@@ -1905,6 +1957,10 @@ fn related_code_query_skips_html_entity_path_only_selections() {
         "&#x2F;home&#x2F;user&#x2F;secret&#x2F;credentials",
         "&#92;home&#92;user&#92;secret&#92;credentials",
         "&#x5C;home&#x5C;user&#x5C;secret&#x5C;credentials",
+        "&#00000000047;home&#00000000047;user&#00000000047;secret&#00000000047;credentials",
+        "&#x00000000002F;home&#x00000000002F;user&#x00000000002F;secret&#x00000000002F;credentials",
+        "&#00000000092;home&#00000000092;user&#00000000092;secret&#00000000092;credentials",
+        "&#x00000000005C;home&#x00000000005C;user&#x00000000005C;secret&#x00000000005C;credentials",
     ] {
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
         assert!(
@@ -1930,6 +1986,10 @@ fn related_code_query_skips_html_entity_path_only_selections_without_semicolons(
         "&#x2Fhome&#x2Fuser&#x2Fsecret&#x2Fcredentials",
         "&#92home&#92user&#92secret&#92credentials",
         "&#x5Chome&#x5Cuser&#x5Csecret&#x5Ccredentials",
+        "&#00000000047home&#00000000047user&#00000000047secret&#00000000047credentials",
+        "&#x00000000002Fhome&#x00000000002Fuser&#x00000000002Fsecret&#x00000000002Fcredentials",
+        "&#00000000092home&#00000000092user&#00000000092secret&#00000000092credentials",
+        "&#x00000000005Chome&#x00000000005Cuser&#x00000000005Csecret&#x00000000005Ccredentials",
     ] {
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
         assert!(

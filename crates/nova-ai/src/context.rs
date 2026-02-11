@@ -1003,9 +1003,9 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                         false
                     } else {
                         let mut value = 0u32;
-                        let mut digits = 0usize;
+                        let mut significant = 0usize;
                         let mut matched = false;
-                        while j < token_bytes.len() && digits < 8 {
+                        while j < token_bytes.len() && significant < 8 {
                             let b = token_bytes[j];
                             let digit = if base == 16 {
                                 match b {
@@ -1019,11 +1019,15 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                             } else {
                                 break;
                             };
+                            if significant == 0 && digit == 0 {
+                                j += 1;
+                                continue;
+                            }
                             value = value
                                 .checked_mul(base)
                                 .and_then(|v| v.checked_add(digit))
                                 .unwrap_or(u32::MAX);
-                            digits += 1;
+                            significant += 1;
                             j += 1;
                             if value == 37 {
                                 matched = true;
@@ -1052,9 +1056,9 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                     _ => 10u32,
                 };
                 let mut value = 0u32;
-                let mut digits = 0usize;
+                let mut significant = 0usize;
                 let mut matched = false;
-                while j < bytes.len() && digits < 8 {
+                while j < bytes.len() && significant < 8 {
                     let b = bytes[j];
                     let digit = if base == 16 {
                         match b {
@@ -1068,11 +1072,15 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                     } else {
                         break;
                     };
+                    if significant == 0 && digit == 0 {
+                        j += 1;
+                        continue;
+                    }
                     value = value
                         .checked_mul(base)
                         .and_then(|v| v.checked_add(digit))
                         .unwrap_or(u32::MAX);
-                    digits += 1;
+                    significant += 1;
                     j += 1;
                     if html_entity_codepoint_is_path_separator(value) {
                         matched = true;
@@ -1116,8 +1124,8 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                     }
 
                     let mut value = 0u32;
-                    let mut digits = 0usize;
-                    while j < bytes.len() && digits < 8 {
+                    let mut significant = 0usize;
+                    while j < bytes.len() && significant < 8 {
                         let b = bytes[j];
                         let digit = if base == 16 {
                             let Some(v) = hex_value(b) else {
@@ -1129,11 +1137,15 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                         } else {
                             break;
                         };
+                        if significant == 0 && digit == 0 {
+                            j += 1;
+                            continue;
+                        }
                         value = value
                             .checked_mul(base)
                             .and_then(|v| v.checked_add(digit))
                             .unwrap_or(u32::MAX);
-                        digits += 1;
+                        significant += 1;
                         j += 1;
                         if html_entity_codepoint_is_path_separator(value) {
                             return true;
@@ -1210,8 +1222,8 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                     }
 
                     let mut value = 0u32;
-                    let mut digits = 0usize;
-                    while k < bytes.len() && digits < 8 {
+                    let mut significant = 0usize;
+                    while k < bytes.len() && significant < 8 {
                         let b = bytes[k];
                         let digit = if base == 16 {
                             match b {
@@ -1225,11 +1237,15 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                         } else {
                             break;
                         };
+                        if significant == 0 && digit == 0 {
+                            k += 1;
+                            continue;
+                        }
                         value = value
                             .checked_mul(base)
                             .and_then(|v| v.checked_add(digit))
                             .unwrap_or(u32::MAX);
-                        digits += 1;
+                        significant += 1;
                         k += 1;
                         if value == 37 {
                             return bytes
@@ -1568,7 +1584,13 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
                 if j >= rest.len() {
                     return false;
                 }
-                let digits = &rest[j..];
+                let mut digits = &rest[j..];
+                while digits.first().is_some_and(|b| *b == b'0') {
+                    digits = &digits[1..];
+                }
+                if digits.is_empty() {
+                    return false;
+                }
                 if digits.len() > 8 {
                     return false;
                 }
@@ -1611,7 +1633,13 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
         return false;
     }
 
-    let digits = &bytes[j..end_semicolon];
+    let mut digits = &bytes[j..end_semicolon];
+    while digits.first().is_some_and(|b| *b == b'0') {
+        digits = &digits[1..];
+    }
+    if digits.is_empty() {
+        return false;
+    }
     if digits.len() > 8 {
         return false;
     }
@@ -1705,7 +1733,13 @@ fn html_entity_is_percent(bytes: &[u8], end_semicolon: usize) -> bool {
                     return false;
                 }
 
-                let digits = &rest[j..];
+                let mut digits = &rest[j..];
+                while digits.first().is_some_and(|b| *b == b'0') {
+                    digits = &digits[1..];
+                }
+                if digits.is_empty() {
+                    return false;
+                }
                 if digits.len() > 8 {
                     return false;
                 }
@@ -1749,7 +1783,13 @@ fn html_entity_is_percent(bytes: &[u8], end_semicolon: usize) -> bool {
         return false;
     }
 
-    let digits = &bytes[j..end_semicolon];
+    let mut digits = &bytes[j..end_semicolon];
+    while digits.first().is_some_and(|b| *b == b'0') {
+        digits = &digits[1..];
+    }
+    if digits.is_empty() {
+        return false;
+    }
     if digits.len() > 8 {
         return false;
     }
@@ -3025,8 +3065,8 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
         }
 
         let mut value = 0u32;
-        let mut digits = 0usize;
-        while k < bytes.len() && digits < 8 {
+        let mut significant = 0usize;
+        while k < bytes.len() && significant < 8 {
             let b = bytes[k];
             let digit = if base == 16 {
                 let Some(v) = hex_value(b) else {
@@ -3038,11 +3078,15 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
             } else {
                 break;
             };
+            if significant == 0 && digit == 0 {
+                k += 1;
+                continue;
+            }
             value = value
                 .checked_mul(base)
                 .and_then(|v| v.checked_add(digit))
                 .unwrap_or(u32::MAX);
-            digits += 1;
+            significant += 1;
             k += 1;
             if html_entity_codepoint_is_path_separator(value) {
                 return true;
@@ -3102,8 +3146,8 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
 
         let digits_start = j;
         let mut value = 0u32;
-        let mut digits = 0usize;
-        while j < bytes.len() && digits < 8 {
+        let mut significant = 0usize;
+        while j < bytes.len() && significant < 8 {
             let b = bytes[j];
             let digit = if base == 16 {
                 let Some(v) = hex_value(b) else {
@@ -3115,11 +3159,15 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
             } else {
                 break;
             };
+            if significant == 0 && digit == 0 {
+                j += 1;
+                continue;
+            }
             value = value
                 .checked_mul(base)
                 .and_then(|v| v.checked_add(digit))
                 .unwrap_or(u32::MAX);
-            digits += 1;
+            significant += 1;
             j += 1;
             if html_entity_codepoint_is_path_separator(value) {
                 return true;
@@ -3163,8 +3211,8 @@ fn token_contains_html_entity_percent_encoded_path_separator(tok: &str) -> bool 
         }
 
         let mut value = 0u32;
-        let mut digits = 0usize;
-        while j < bytes.len() && digits < 8 {
+        let mut significant = 0usize;
+        while j < bytes.len() && significant < 8 {
             let b = bytes[j];
             let digit = if base == 16 {
                 let Some(v) = hex_value(b) else {
@@ -3176,11 +3224,15 @@ fn token_contains_html_entity_percent_encoded_path_separator(tok: &str) -> bool 
             } else {
                 break;
             };
+            if significant == 0 && digit == 0 {
+                j += 1;
+                continue;
+            }
             value = value
                 .checked_mul(base)
                 .and_then(|v| v.checked_add(digit))
                 .unwrap_or(u32::MAX);
-            digits += 1;
+            significant += 1;
             j += 1;
             if value == 37 {
                 return Some(j);
