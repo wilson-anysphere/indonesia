@@ -9,6 +9,14 @@ async fn wire_server_does_not_echo_string_values_in_launch_argument_errors() {
 
     let secret_suffix = "nova-dap-wire-super-secret-token";
     let secret = format!("prefix\"{secret_suffix}");
+    // Ensure this test would actually catch leaks if sanitization regressed.
+    let raw_err = serde_json::from_value::<u16>(json!(secret.clone())).expect_err("type mismatch");
+    let raw_message = raw_err.to_string();
+    assert!(
+        raw_message.contains(secret_suffix),
+        "expected raw serde_json error string to include the string value so this test catches leaks: {raw_message}"
+    );
+
     // `launch.port` expects a number (`u16`). Passing a string triggers:
     // `invalid type: string "..."`.
     let resp = client.request("launch", json!({ "port": secret })).await;
@@ -91,6 +99,27 @@ async fn wire_server_does_not_echo_backticked_values_in_test_argument_errors() {
 
     let secret_suffix = "nova-dap-wire-backticked-secret";
     let secret = format!("prefix`, expected {secret_suffix}");
+
+    // Ensure this test would actually catch leaks if sanitization regressed.
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct TestSerdeJsonArgs {
+        #[allow(dead_code)]
+        foo: u32,
+        #[allow(dead_code)]
+        flag: bool,
+    }
+    let raw_err = serde_json::from_value::<TestSerdeJsonArgs>(json!({
+        "foo": 1,
+        "flag": true,
+        secret.clone(): 1,
+    }))
+    .expect_err("expected unknown field error");
+    let raw_message = raw_err.to_string();
+    assert!(
+        raw_message.contains(secret_suffix),
+        "expected raw serde_json error string to include the backticked value so this test catches leaks: {raw_message}"
+    );
 
     let mut args = serde_json::Map::new();
     args.insert(secret, json!(1));
