@@ -960,6 +960,18 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                         .as_bytes()
                         .get(..8)
                         .is_some_and(|frag| frag.eq_ignore_ascii_case(b"setminus"))
+                    || token
+                        .as_bytes()
+                        .get(..5)
+                        .is_some_and(|frag| frag.eq_ignore_ascii_case(b"setmn"))
+                    || token
+                        .as_bytes()
+                        .get(..13)
+                        .is_some_and(|frag| frag.eq_ignore_ascii_case(b"smallsetminus"))
+                    || token
+                        .as_bytes()
+                        .get(..6)
+                        .is_some_and(|frag| frag.eq_ignore_ascii_case(b"ssetmn"))
             } else {
                 false
             };
@@ -1154,6 +1166,15 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                         || bytes
                             .get(start..start + 8)
                             .is_some_and(|frag| frag.eq_ignore_ascii_case(b"setminus"))
+                        || bytes
+                            .get(start..start + 5)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"setmn"))
+                        || bytes
+                            .get(start..start + 13)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"smallsetminus"))
+                        || bytes
+                            .get(start..start + 6)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"ssetmn"))
                 }
 
                 fn html_percent_fragment_is_percent_encoded_separator(bytes: &[u8], start: usize) -> bool {
@@ -1495,6 +1516,9 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
             || name.eq_ignore_ascii_case(b"backslash")
             || name.eq_ignore_ascii_case(b"frasl")
             || name.eq_ignore_ascii_case(b"setminus")
+            || name.eq_ignore_ascii_case(b"setmn")
+            || name.eq_ignore_ascii_case(b"smallsetminus")
+            || name.eq_ignore_ascii_case(b"ssetmn")
         {
             return true;
         }
@@ -1525,6 +1549,9 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
                 || rest.eq_ignore_ascii_case(b"backslash")
                 || rest.eq_ignore_ascii_case(b"frasl")
                 || rest.eq_ignore_ascii_case(b"setminus")
+                || rest.eq_ignore_ascii_case(b"setmn")
+                || rest.eq_ignore_ascii_case(b"smallsetminus")
+                || rest.eq_ignore_ascii_case(b"ssetmn")
             {
                 return true;
             }
@@ -2926,6 +2953,15 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
             || bytes
                 .get(start..start + 8)
                 .is_some_and(|frag| frag.eq_ignore_ascii_case(b"setminus"))
+            || bytes
+                .get(start..start + 5)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"setmn"))
+            || bytes
+                .get(start..start + 13)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"smallsetminus"))
+            || bytes
+                .get(start..start + 6)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"ssetmn"))
     }
 
     // Handle nested `&amp;#47...` patterns where the escaped entity itself does not have a trailing

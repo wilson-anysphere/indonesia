@@ -793,6 +793,9 @@ fn related_code_query_avoids_html_entity_unicode_separator_path_segments() {
         "&#10745;", // ⧹ big reverse solidus (U+29F9)
         "&#65128;", // ﹨ small reverse solidus (U+FE68)
         "&setminus;", // ∖ set minus (named entity)
+        "&setmn;", // ∖ set minus (alias)
+        "&smallsetminus;", // ∖ set minus (alias)
+        "&ssetmn;", // ∖ set minus (alias)
     ] {
         let search = CapturingSearch::default();
         let focal_code = format!(
@@ -858,6 +861,15 @@ fn related_code_query_avoids_html_entity_unicode_separator_path_segments_without
         "&setminus",
         "&amp;setminus",
         "&amp;amp;setminus",
+        "&setmn",
+        "&amp;setmn",
+        "&amp;amp;setmn",
+        "&smallsetminus",
+        "&amp;smallsetminus",
+        "&amp;amp;smallsetminus",
+        "&ssetmn",
+        "&amp;ssetmn",
+        "&amp;amp;ssetmn",
     ] {
         let search = CapturingSearch::default();
         let focal_code = format!(
@@ -1737,6 +1749,9 @@ fn related_code_query_skips_html_entity_unicode_separator_path_only_selections()
         "&#10745;home&#10745;user&#10745;secret&#10745;credentials",
         "&#65128;home&#65128;user&#65128;secret&#65128;credentials",
         "&setminus;home&setminus;user&setminus;secret&setminus;credentials",
+        "&setmn;home&setmn;user&setmn;secret&setmn;credentials",
+        "&smallsetminus;home&smallsetminus;user&smallsetminus;secret&smallsetminus;credentials",
+        "&ssetmn;home&ssetmn;user&ssetmn;secret&ssetmn;credentials",
     ] {
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
         assert!(
@@ -1780,6 +1795,15 @@ fn related_code_query_skips_html_entity_unicode_separator_path_only_selections_w
         "&setminushome&setminususer&setminussecret&setminuscredentials",
         "&amp;setminushome&amp;setminususer&amp;setminussecret&amp;setminuscredentials",
         "&amp;amp;setminushome&amp;amp;setminususer&amp;amp;setminussecret&amp;amp;setminuscredentials",
+        "&setmnhome&setmnuser&setmnsecret&setmncredentials",
+        "&amp;setmnhome&amp;setmnuser&amp;setmnsecret&amp;setmncredentials",
+        "&amp;amp;setmnhome&amp;amp;setmnuser&amp;amp;setmnsecret&amp;amp;setmncredentials",
+        "&smallsetminushome&smallsetminususer&smallsetminussecret&smallsetminuscredentials",
+        "&amp;smallsetminushome&amp;smallsetminususer&amp;smallsetminussecret&amp;smallsetminuscredentials",
+        "&amp;amp;smallsetminushome&amp;amp;smallsetminususer&amp;amp;smallsetminussecret&amp;amp;smallsetminuscredentials",
+        "&ssetmnhome&ssetmnuser&ssetmnsecret&ssetmncredentials",
+        "&amp;ssetmnhome&amp;ssetmnuser&amp;ssetmnsecret&amp;ssetmncredentials",
+        "&amp;amp;ssetmnhome&amp;amp;ssetmnuser&amp;amp;ssetmnsecret&amp;amp;ssetmncredentials",
     ] {
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
         assert!(
