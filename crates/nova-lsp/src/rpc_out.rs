@@ -53,7 +53,12 @@ impl<W: io::Write> RpcOut for WriteRpcOut<W> {
     fn send_request(&self, id: RequestId, method: &str, params: Value) -> io::Result<()> {
         let mut writer = self.writer.lock().unwrap();
         let id = serde_json::to_value(&id)
-            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err.to_string()))?;
+            .map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    crate::stdio_sanitize::sanitize_serde_json_error(&err),
+                )
+            })?;
         crate::codec::write_json_message(
             &mut *writer,
             &serde_json::json!({

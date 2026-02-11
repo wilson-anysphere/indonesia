@@ -5,6 +5,43 @@ use std::process::{Command, Stdio};
 use crate::support::{read_response_with_id, write_jsonrpc_message};
 
 #[test]
+fn stdio_initialize_parse_errors_do_not_echo_secret_string_values() {
+    let _lock = crate::support::stdio_server_lock();
+
+    // The secret intentionally contains an embedded quote. When `lsp_server` fails to deserialize
+    // an incoming JSON-RPC message, it can surface a `serde_json::Error` display string that echoes
+    // scalar values (e.g. `invalid type: string "..."`). Ensure the server sanitizes those error
+    // strings before they hit stderr/logs.
+    let secret_suffix = "NOVA_SECRET_DO_NOT_LEAK_FROM_INIT_PARSE";
+    let secret = format!("prefix\"{secret_suffix}");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    {
+        let mut stdin = child.stdin.take().expect("stdin");
+        write_jsonrpc_message(&mut stdin, &json!(secret));
+    }
+
+    let output = child.wait_with_output().expect("wait_with_output");
+    assert!(
+        !output.status.success(),
+        "expected invalid initialize message to exit non-zero, got {output:?}"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains(secret_suffix),
+        "expected initialize parse error output to omit secret string values; got: {stderr}"
+    );
+}
+
+#[test]
 fn stdio_exit_without_shutdown_returns_failure_status() {
     let _lock = crate::support::stdio_server_lock();
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))

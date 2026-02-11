@@ -21,14 +21,27 @@ pub(super) fn perform_initialize_handshake(
     let init_start = Instant::now();
     let (init_id, init_params) = connection
         .initialize_start()
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+        .map_err(|err| {
+            // `lsp_server::ProtocolError` can wrap `serde_json::Error` when the incoming message
+            // cannot be parsed. Those error display strings can include user-provided scalar values
+            // (e.g. `invalid type: string "..."`); sanitize before surfacing via stderr/logs.
+            io::Error::new(
+                io::ErrorKind::Other,
+                crate::stdio_sanitize::sanitize_json_error_message(&err.to_string()),
+            )
+        })?;
 
     apply_initialize_params(init_params, state);
 
     let init_result = initialize_result_json();
     connection
         .initialize_finish(init_id, init_result)
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err.to_string()))?;
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                crate::stdio_sanitize::sanitize_json_error_message(&err.to_string()),
+            )
+        })?;
     metrics.record_request("initialize", init_start.elapsed());
 
     // Start distributed router/indexing (if enabled) after the initialize handshake completes.

@@ -2,7 +2,7 @@ pub(crate) fn sanitize_serde_json_error(err: &serde_json::Error) -> String {
     sanitize_json_error_message(&err.to_string())
 }
 
-fn sanitize_json_error_message(message: &str) -> String {
+pub(crate) fn sanitize_json_error_message(message: &str) -> String {
     // `serde_json::Error` display strings can include user-provided scalar values (for example:
     // `invalid type: string "..."`). Conservatively redact all double-quoted substrings so secrets
     // are not echoed back through JSON-RPC error messages.
