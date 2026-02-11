@@ -1818,6 +1818,14 @@ fn log_line_contains_serde_json_error(line: &str) -> bool {
         || line.contains("unknown variant")
 }
 
+fn log_line_contains_toml_error_scalar(line: &str) -> bool {
+    // Some TOML diagnostics quote user-provided scalar values using single quotes (notably semver
+    // parsing failures, e.g. `invalid semver version '...'`). Those values can be sensitive (API
+    // keys, tokens, etc) and may make their way into tracing logs, which are later included in bug
+    // report bundles.
+    line.contains("invalid semver version")
+}
+
 fn log_line_looks_like_toml_snippet(line: &str) -> bool {
     // `toml::de::Error`'s default `Display` output includes a source snippet block that can leak
     // raw config/manifest contents into logs (and therefore bug report bundles). These snippet
@@ -1850,6 +1858,12 @@ fn log_line_looks_like_toml_snippet(line: &str) -> bool {
     }
 
     false
+}
+
+fn json_log_line_contains_toml_error_scalar(line: &str) -> bool {
+    // JSON log lines are single-line objects; scalar error phrases are still visible as plain
+    // substrings.
+    line.contains("invalid semver version")
 }
 
 fn json_log_line_contains_toml_snippet(line: &str) -> bool {
@@ -1897,13 +1911,17 @@ fn sanitize_bugreport_log_line(line: &str) -> String {
     // When `logging.json=true`, log lines are JSON objects. Preserve valid JSON by parsing and
     // re-serializing instead of redacting quotes across the entire line.
     if line.trim_start().starts_with('{')
-        && (log_line_contains_serde_json_error(line) || json_log_line_contains_toml_snippet(line))
+        && (log_line_contains_serde_json_error(line)
+            || json_log_line_contains_toml_snippet(line)
+            || json_log_line_contains_toml_error_scalar(line))
     {
         return sanitize_json_log_line(line);
     }
 
     if log_line_contains_serde_json_error(line) {
         sanitize_json_error_message(line)
+    } else if log_line_contains_toml_error_scalar(line) {
+        sanitize_toml_error_message(line)
     } else if log_line_looks_like_toml_snippet(line) {
         sanitize_toml_error_message(line)
     } else {
@@ -1935,6 +1953,8 @@ fn sanitize_json_log_value(value: serde_json::Value) -> serde_json::Value {
         serde_json::Value::String(s) => {
             if log_line_contains_serde_json_error(&s) {
                 serde_json::Value::String(sanitize_json_error_message(&s))
+            } else if log_line_contains_toml_error_scalar(&s) {
+                serde_json::Value::String(sanitize_toml_error_message(&s))
             } else if s.lines().any(log_line_looks_like_toml_snippet) {
                 serde_json::Value::String(sanitize_toml_error_message(&s))
             } else {
@@ -1957,7 +1977,10 @@ fn sanitize_json_log_value(value: serde_json::Value) -> serde_json::Value {
 }
 
 fn sanitize_json_log_line(line: &str) -> String {
-    if !log_line_contains_serde_json_error(line) && !json_log_line_contains_toml_snippet(line) {
+    if !log_line_contains_serde_json_error(line)
+        && !json_log_line_contains_toml_snippet(line)
+        && !json_log_line_contains_toml_error_scalar(line)
+    {
         return line.to_owned();
     }
 
@@ -2085,6 +2108,47 @@ mod bugreport_log_sanitization_tests {
         );
         serde_json::from_str::<serde_json::Value>(&sanitized)
             .expect("expected sanitized bugreport log line to remain valid JSON");
+    }
+
+    #[test]
+    fn sanitize_bugreport_log_line_redacts_toml_semver_error_values() {
+        let secret_suffix = "nova-config-semver-secret";
+        let message =
+            format!("invalid semver version 'prefix\\'{secret_suffix}', expected 1.2.3");
+        assert!(
+            message.contains(secret_suffix),
+            "expected raw semver message to include the secret so this test catches leaks: {message}"
+        );
+
+        let sanitized = sanitize_bugreport_log_line(&message);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected log sanitizer to omit single-quoted scalar values from TOML errors: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected log sanitizer to include redaction marker: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn sanitize_bugreport_log_line_redacts_toml_semver_values_in_json_log_lines() {
+        let secret_suffix = "nova-config-semver-json-secret";
+        let message =
+            format!("invalid semver version 'prefix\\'{secret_suffix}', expected 1.2.3");
+        let line = serde_json::json!({ "message": message }).to_string();
+        assert!(
+            line.contains(secret_suffix),
+            "expected raw JSON log line to include the secret so this test catches leaks: {line}"
+        );
+
+        let sanitized = sanitize_bugreport_log_line(&line);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected JSON log sanitizer to omit single-quoted scalar values from TOML errors: {sanitized}"
+        );
+        serde_json::from_str::<serde_json::Value>(&sanitized)
+            .expect("expected sanitized semver JSON log line to remain valid JSON");
     }
 }
 
