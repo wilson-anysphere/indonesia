@@ -54,18 +54,22 @@ pub fn sanitize_json_error_message(message: &str) -> String {
     }
     out.push_str(rest);
 
-    // `serde` wraps unknown fields/variants in backticks:
-    // `unknown field `secret`, expected ...`
+    // `serde` uses backticks in a few different diagnostics:
     //
-    // Only redact the first backticked segment for unknown field/variant errors, because that
-    // segment can contain user-controlled content (the unknown key/variant).
+    // - `unknown field `secret`, expected ...` (user-controlled key → redact)
+    // - `unknown variant `secret`, expected ...` (user-controlled variant → redact)
+    // - `invalid type: integer `123`, expected ...` (user-controlled scalar → redact)
+    // - `missing field `foo`` (schema field name → keep)
+    // - `expected `,` or `}` at line ...` (parser expected tokens → keep)
     //
-    // Other serde diagnostics (e.g. `missing field `foo``) also use backticks, but those refer to
-    // schema field names and are safe + useful to keep.
-    let start = ["unknown field `", "unknown variant `"]
+    // Redact only when the backticked segment is known to contain user-controlled content.
+    let mut start = ["unknown field `", "unknown variant `"]
         .iter()
         .filter_map(|pattern| out.find(pattern).map(|pos| pos + pattern.len().saturating_sub(1)))
         .min();
+    if start.is_none() && (out.contains("invalid type:") || out.contains("invalid value:")) {
+        start = out.find('`');
+    }
     if let Some(start) = start {
         let after_start = &out[start.saturating_add(1)..];
         let end = if let Some(end_rel) = after_start.rfind("`, expected") {
@@ -158,6 +162,28 @@ mod tests {
         // `missing field` errors refer to schema field names (not user-controlled values). Keep
         // these intact so invalid-params errors remain actionable for clients.
         let message = "missing field `textDocument`";
+        let sanitized = sanitize_json_error_message(message);
+        assert_eq!(sanitized, message);
+    }
+
+    #[test]
+    fn sanitize_json_error_message_redacts_backticked_numeric_values() {
+        let message = "invalid type: integer `123`, expected a boolean";
+        let sanitized = sanitize_json_error_message(message);
+        assert!(
+            !sanitized.contains("123"),
+            "expected sanitized message to omit backticked scalar values: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected sanitized message to include redaction marker: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn sanitize_json_error_message_preserves_expected_token_backticks() {
+        // Parser errors can include expected tokens in backticks; keep these intact.
+        let message = "expected `,` or `}` at line 1 column 8";
         let sanitized = sanitize_json_error_message(message);
         assert_eq!(sanitized, message);
     }
