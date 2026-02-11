@@ -334,6 +334,13 @@ fn related_code_query_avoids_escaped_percent_encoded_path_segments() {
         "x255C",
         "x{25}2F",
         "x{25}5C",
+        // CSS-style backslash hex escapes for `%` (`\25`) followed by `2F`/`5C` digits.
+        r"\252F",
+        r"\25252F",
+        r"\0000252F",
+        r"\255C",
+        r"\25255C",
+        r"\0000255C",
         // Octal escapes for `%` (`\045`) as seen in some stack traces/log dumps.
         r"\0452F",
         r"\045252F",
@@ -1787,6 +1794,12 @@ fn related_code_query_skips_escaped_percent_encoded_path_only_selections() {
         "x252F",
         "x25252F",
         "x{25}2F",
+        r"\252F",
+        r"\25252F",
+        r"\0000252F",
+        r"\255C",
+        r"\25255C",
+        r"\0000255C",
         r"\0452F",
         r"\045252F",
     ] {

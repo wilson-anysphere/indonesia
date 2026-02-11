@@ -3035,6 +3035,9 @@ fn token_contains_backslash_hex_escaped_path_separator(tok: &str) -> bool {
             if html_entity_codepoint_is_path_separator(value) {
                 return true;
             }
+            if value == 37 && percent_encoded_path_separator_len(&bytes[j..]).is_some() {
+                return true;
+            }
         }
 
         i += 1;
