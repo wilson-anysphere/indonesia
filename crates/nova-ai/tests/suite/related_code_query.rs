@@ -1016,6 +1016,49 @@ fn related_code_query_skips_google_api_key_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_aws_access_key_id_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for AWS access key ID related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_codes = [
+        ["AK", "IA", "IOSFODNN7EXAMPLE"].concat(),
+        ["AS", "IA", "IOSFODNN7EXAMPLE"].concat(),
+    ];
+    for focal_code in &focal_codes {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for AWS access key ID-only focal code"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_google_oauth_client_secret_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for Google client secret related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = ["GOC", "SPX", "-", "not-a-real-client-secret-but-long-enough"].concat();
+    let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for Google client secret-only focal code"
+    );
+}
+
+#[test]
 fn related_code_query_skips_github_pat_only_selections() {
     struct PanicSearch;
 
