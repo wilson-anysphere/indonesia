@@ -2451,6 +2451,50 @@ mod toml_tests {
     }
 
     #[test]
+    fn log_buffer_sanitizes_serde_json_error_messages_with_backticked_unknown_fields() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OnlyFoo {
+            #[allow(dead_code)]
+            foo: u32,
+        }
+
+        let buffer = Arc::new(LogBuffer::new(64));
+        let subscriber = tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::EnvFilter::default()
+                    .add_directive(tracing_subscriber::filter::LevelFilter::WARN.into()),
+            )
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(LogBufferMakeWriter {
+                        buffer: buffer.clone(),
+                    })
+                    .with_ansi(false),
+            );
+
+        tracing::subscriber::with_default(subscriber, || {
+            let secret_suffix = "nova-config-log-buffer-backtick-secret-token";
+            let secret = format!("prefix`, expected {secret_suffix}");
+            let json = format!(r#"{{"{secret}": 1}}"#);
+            let serde_err =
+                serde_json::from_str::<OnlyFoo>(&json).expect_err("expected unknown field");
+            let io_err = std::io::Error::new(std::io::ErrorKind::Other, serde_err);
+            tracing::warn!(target: "nova.config", error = ?io_err, "failed to parse JSON");
+        });
+
+        let text = buffer.last_lines(64).join("\n");
+        assert!(
+            !text.contains("nova-config-log-buffer-backtick-secret-token"),
+            "expected log buffer to omit backticked scalar values from serde_json errors: {text}"
+        );
+        assert!(
+            text.contains("<redacted>"),
+            "expected log buffer to include redaction marker: {text}"
+        );
+    }
+
+    #[test]
     fn json_logging_sanitizes_serde_json_error_messages_and_remains_valid_json() {
         use std::io;
 
@@ -2528,6 +2572,98 @@ mod toml_tests {
         assert!(
             !rendered.contains("nova-config-json-log-secret-token"),
             "expected JSON log line to omit string scalar values from serde_json errors: {rendered}"
+        );
+        assert!(
+            rendered.contains("<redacted>"),
+            "expected JSON log line to include redaction marker: {rendered}"
+        );
+    }
+
+    #[test]
+    fn json_logging_sanitizes_serde_json_error_messages_with_backticked_unknown_fields() {
+        use std::io;
+
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OnlyFoo {
+            #[allow(dead_code)]
+            foo: u32,
+        }
+
+        #[derive(Clone)]
+        struct SharedBytesMakeWriter {
+            bytes: Arc<std::sync::Mutex<Vec<u8>>>,
+        }
+
+        struct SharedBytesWriter {
+            bytes: Arc<std::sync::Mutex<Vec<u8>>>,
+        }
+
+        impl io::Write for SharedBytesWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                let mut guard = self.bytes.lock().expect("bytes mutex poisoned");
+                guard.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> tracing_subscriber::fmt::writer::MakeWriter<'a> for SharedBytesMakeWriter {
+            type Writer = SharedBytesWriter;
+
+            fn make_writer(&'a self) -> Self::Writer {
+                SharedBytesWriter {
+                    bytes: self.bytes.clone(),
+                }
+            }
+        }
+
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let make_writer = SanitizingMakeWriter {
+            inner: SharedBytesMakeWriter { bytes: bytes.clone() },
+            mode: LogSanitizeMode::Json,
+        };
+
+        let subscriber = tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::EnvFilter::default()
+                    .add_directive(tracing_subscriber::filter::LevelFilter::WARN.into()),
+            )
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .with_writer(make_writer)
+                    .with_ansi(false),
+            );
+
+        tracing::subscriber::with_default(subscriber, || {
+            let secret_suffix = "nova-config-json-log-backtick-secret-token";
+            let secret = format!("prefix`, expected {secret_suffix}");
+            let json = format!(r#"{{"{secret}": 1}}"#);
+            let serde_err =
+                serde_json::from_str::<OnlyFoo>(&json).expect_err("expected unknown field");
+            let io_err = std::io::Error::new(std::io::ErrorKind::Other, serde_err);
+            tracing::warn!(target: "nova.config", error = ?io_err, "failed to parse JSON");
+        });
+
+        let out = {
+            let guard = bytes.lock().expect("bytes mutex poisoned");
+            String::from_utf8_lossy(&guard).into_owned()
+        };
+        let line = out
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .expect("expected at least one log line");
+        let value: serde_json::Value =
+            serde_json::from_str(line).expect("expected sanitized output to remain valid JSON");
+
+        let rendered = value.to_string();
+        assert!(
+            !rendered.contains("nova-config-json-log-backtick-secret-token"),
+            "expected JSON log line to omit backticked scalar values from serde_json errors: {rendered}"
         );
         assert!(
             rendered.contains("<redacted>"),
