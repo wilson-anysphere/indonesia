@@ -10970,6 +10970,26 @@ pub(crate) fn infer_receiver_type_before_dot(
         return None;
     }
 
+    // String literal receiver: `"foo".<cursor>` and `"foo"::<cursor>`.
+    //
+    // `receiver_before_dot` / `receiver_before_double_colon` handle the common `"...".` case, but
+    // this helper is also used as a fallback for method reference completions when the receiver
+    // parser returns an empty string. Recognize string literals here so `"foo"::` still infers a
+    // `java.lang.String` receiver type.
+    if bytes.get(end - 1) == Some(&b'"') {
+        // Best-effort: find the opening quote on the same line, skipping escaped quotes.
+        let mut i = end - 1;
+        while i > 0 {
+            i -= 1;
+            if bytes[i] == b'\n' {
+                break;
+            }
+            if bytes[i] == b'"' && !is_escaped_quote(bytes, i) {
+                return Some("java.lang.String".to_string());
+            }
+        }
+    }
+
     // Array access receiver: `arr[0].<cursor>` / `((Foo[]) obj)[0].<cursor>`.
     if bytes.get(end - 1) == Some(&b']') {
         // Array creation receiver: `new int[0].<cursor>` / `new String[0][0].<cursor>`.

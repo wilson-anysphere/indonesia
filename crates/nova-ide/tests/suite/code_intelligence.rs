@@ -2256,6 +2256,26 @@ class A {
 }
 
 #[test]
+fn completion_resolves_method_reference_string_literal_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    java.util.function.Supplier<Integer> sup = "hello"::<|>;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain String.length for string literal receiver method reference; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_resolves_method_reference_class_literal_receiver() {
     let (db, file, pos) = fixture(
         r#"
