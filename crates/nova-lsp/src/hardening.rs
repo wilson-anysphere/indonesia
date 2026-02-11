@@ -401,7 +401,7 @@ pub fn handle_bug_report(params: serde_json::Value) -> Result<serde_json::Value>
                 Ok(())
             })
             .build()
-            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+            .map_err(|err| NovaLspError::Internal(crate::sanitize_error_message(&err)))?;
 
     Ok(serde_json::json!({
         "path": bundle.path(),

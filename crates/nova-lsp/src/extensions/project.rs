@@ -177,7 +177,12 @@ pub fn handle_project_configuration(params: serde_json::Value) -> Result<serde_j
 
     let root = PathBuf::from(&params.project_root);
     let config = nova_project::load_project(&root)
-        .map_err(|err| NovaLspError::Internal(format!("failed to load project: {err}")))?;
+        .map_err(|err| {
+            NovaLspError::Internal(format!(
+                "failed to load project: {}",
+                crate::sanitize_error_message(&err)
+            ))
+        })?;
 
     let resp = ProjectConfigurationResponse {
         schema_version: SCHEMA_VERSION,

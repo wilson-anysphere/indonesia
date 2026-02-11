@@ -29,7 +29,7 @@ pub fn handle_run(params: serde_json::Value) -> Result<serde_json::Value> {
             "test run failed with exit code {}",
             resp.exit_code
         ))),
-        Err(err) => status_guard.mark_failure(Some(err.to_string())),
+        Err(err) => status_guard.mark_failure(Some(crate::sanitize_error_message(err))),
     }
 
     let resp = resp_result.map_err(map_testing_error)?;
@@ -49,7 +49,7 @@ pub fn handle_debug_configuration(params: serde_json::Value) -> Result<serde_jso
 fn map_testing_error(err: nova_testing::NovaTestingError) -> NovaLspError {
     match err {
         nova_testing::NovaTestingError::InvalidRequest(msg) => NovaLspError::InvalidParams(msg),
-        other => NovaLspError::Internal(other.to_string()),
+        other => NovaLspError::Internal(crate::sanitize_error_message(&other)),
     }
 }
 
@@ -59,6 +59,34 @@ mod tests {
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn sanitize_testing_errors_does_not_echo_string_values_when_wrapped_in_io_error() {
+        let secret_suffix = "nova-lsp-testing-io-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
+        let serde_err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, serde_err);
+        let raw_message = io_err.to_string();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw io error message to include the string value so this test catches leaks: {raw_message}"
+        );
+
+        let testing_err: nova_testing::NovaTestingError = io_err.into();
+        let mapped = super::map_testing_error(testing_err);
+        let NovaLspError::Internal(message) = mapped else {
+            panic!("expected internal error; got: {mapped:?}");
+        };
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized testing error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized testing error message to include redaction marker: {message}"
+        );
+    }
 
     #[cfg(unix)]
     #[test]

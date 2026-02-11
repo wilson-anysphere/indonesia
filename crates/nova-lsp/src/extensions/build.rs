@@ -59,7 +59,7 @@ fn cached_bazel_workspace_for_root(workspace_root: &Path) -> Result<CachedBazelW
 
     let cache_path = CacheDir::new(&canonical, CacheConfig::from_env())
         .map(|dir| dir.queries_dir().join("bazel.json"))
-        .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_error_message(&err)))?;
     let runner = nova_build_bazel::DefaultCommandRunner::default();
     let workspace = nova_build_bazel::BazelWorkspace::new(canonical.clone(), runner)
         .and_then(|ws| ws.with_cache_path(cache_path))
@@ -950,7 +950,7 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
         options.nova_config = nova_config;
         options.nova_config_path = nova_config_path;
         let config = load_project_with_options(&requested_root, &options)
-            .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+            .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_error_message(&err)))?;
 
         let project_root = config.workspace_root.clone();
         let manager = super::build_manager_for_root(&project_root, Duration::from_secs(60));
@@ -1374,7 +1374,7 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
     let mut options = LoadOptions::default();
     options.nova_config = nova_config;
     let config = load_project_with_options(&requested_root, &options)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_error_message(&err)))?;
     let project_root = config.workspace_root.clone();
 
     let manager = super::build_manager_for_root(&project_root, Duration::from_secs(120));
@@ -1460,7 +1460,9 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                     nova_project::BuildSystem::Gradle => {
                         let workspace_model =
                             load_workspace_model_with_options(&project_root, &options)
-                                .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+                                .map_err(|err| {
+                                    NovaLspError::InvalidParams(crate::sanitize_error_message(&err))
+                                })?;
                         let mut gradle_project_paths_by_root: BTreeMap<PathBuf, String> =
                             BTreeMap::new();
                         let mut gradle_roots_by_project_path: BTreeMap<String, PathBuf> =
@@ -1828,7 +1830,7 @@ impl CommandRunner for BuildStatusCommandRunner {
                     .lock()
                     .unwrap_or_else(|err| err.into_inner());
                 if last_error.is_none() {
-                    *last_error = Some(err.to_string());
+                    *last_error = Some(crate::sanitize_error_message(err));
                 }
             }
         }

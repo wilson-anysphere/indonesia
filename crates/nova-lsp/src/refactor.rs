@@ -622,7 +622,7 @@ pub fn handle_move_method(
             to_class: params.to_class,
         },
     )
-    .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))?;
+    .map_err(|err| crate::NovaLspError::InvalidParams(crate::sanitize_error_message(&err)))?;
 
     workspace_edit_to_lsp_with_uri_mapper(&db, &edit, |file| {
         Ok(uri_by_id
@@ -630,7 +630,7 @@ pub fn handle_move_method(
             .cloned()
             .expect("move refactor edit only touches known open files"))
     })
-    .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))
+    .map_err(|err| crate::NovaLspError::InvalidParams(crate::sanitize_error_message(&err)))
 }
 
 pub fn handle_move_static_member(
@@ -646,7 +646,7 @@ pub fn handle_move_static_member(
             to_class: params.to_class,
         },
     )
-    .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))?;
+    .map_err(|err| crate::NovaLspError::InvalidParams(crate::sanitize_error_message(&err)))?;
 
     workspace_edit_to_lsp_with_uri_mapper(&db, &edit, |file| {
         Ok(uri_by_id
@@ -654,7 +654,7 @@ pub fn handle_move_static_member(
             .cloned()
             .expect("move refactor edit only touches known open files"))
     })
-    .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))
+    .map_err(|err| crate::NovaLspError::InvalidParams(crate::sanitize_error_message(&err)))
 }
 
 pub fn handle_safe_delete(
@@ -662,7 +662,7 @@ pub fn handle_safe_delete(
     params: SafeDeleteParams,
 ) -> crate::Result<SafeDeleteResult> {
     let outcome = safe_delete(index, params.target.into_target(), params.mode)
-        .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| crate::NovaLspError::InvalidParams(crate::sanitize_error_message(&err)))?;
 
     match outcome {
         SafeDeleteOutcome::Preview { report } => {
@@ -672,7 +672,7 @@ pub fn handle_safe_delete(
         }
         SafeDeleteOutcome::Applied { edit } => {
             let edit = workspace_edit_to_lsp(index, &edit)
-                .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))?;
+                .map_err(|err| crate::NovaLspError::InvalidParams(crate::sanitize_error_message(&err)))?;
             Ok(SafeDeleteResult::WorkspaceEdit(edit))
         }
     }

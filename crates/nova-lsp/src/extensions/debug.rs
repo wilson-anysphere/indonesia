@@ -27,7 +27,7 @@ pub fn handle_debug_configurations(params: serde_json::Value) -> Result<serde_js
         .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
 
     let project = Project::load_from_dir(Path::new(&params.project_root))
-        .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_error_message(&err)))?;
     let configs = project.discover_debug_configurations();
     serde_json::to_value(configs)
         .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
@@ -50,7 +50,7 @@ pub fn handle_hot_swap(params: serde_json::Value) -> Result<serde_json::Value> {
 
     let project_root = PathBuf::from(&params.project_root);
     let project = nova_project::load_project_with_workspace_config(&project_root)
-        .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_error_message(&err)))?;
 
     let mut changed_files = Vec::new();
     for file in params.changed_files {
@@ -72,7 +72,7 @@ pub fn handle_hot_swap(params: serde_json::Value) -> Result<serde_json::Value> {
     let mut jdwp = TcpJdwpClient::new();
     let host = params.host.as_deref().unwrap_or("127.0.0.1");
     jdwp.connect(host, params.port)
-        .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_error_message(&err)))?;
 
     let mut engine = HotSwapEngine::new(build, jdwp);
     let result = engine.hot_swap(&changed_files);

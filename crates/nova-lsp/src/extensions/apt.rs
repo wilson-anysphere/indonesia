@@ -245,7 +245,7 @@ fn load_project_with_workspace_config(
     options.nova_config = config.clone();
     options.nova_config_path = config_path;
     let project = load_project_with_options(&workspace_root, &options)
-        .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_error_message(&err)))?;
     Ok((project, config))
 }
 

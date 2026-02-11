@@ -154,7 +154,12 @@ fn read_java_sources(root: &Path) -> Result<Vec<JavaSource>> {
     let mut sources = Vec::with_capacity(java_files.len());
     for path in java_files {
         let text = fs::read_to_string(&path)
-            .map_err(|err| NovaLspError::Internal(format!("failed to read {path:?}: {err}")))?;
+            .map_err(|err| {
+                NovaLspError::Internal(format!(
+                    "failed to read {path:?}: {}",
+                    crate::sanitize_error_message(&err)
+                ))
+            })?;
         let rel = path
             .strip_prefix(root)
             .unwrap_or(&path)
@@ -177,7 +182,12 @@ fn read_config_files(root: &Path) -> Result<Vec<ConfigFile>> {
     let mut out = Vec::new();
     for path in config_paths {
         let text = fs::read_to_string(&path)
-            .map_err(|err| NovaLspError::Internal(format!("failed to read {path:?}: {err}")))?;
+            .map_err(|err| {
+                NovaLspError::Internal(format!(
+                    "failed to read {path:?}: {}",
+                    crate::sanitize_error_message(&err)
+                ))
+            })?;
         let rel = path
             .strip_prefix(root)
             .unwrap_or(&path)
@@ -195,11 +205,21 @@ fn read_config_files(root: &Path) -> Result<Vec<ConfigFile>> {
 
 fn collect_files(dir: &Path, out: &mut Vec<PathBuf>, pred: fn(&Path) -> bool) -> Result<()> {
     let entries = fs::read_dir(dir)
-        .map_err(|err| NovaLspError::Internal(format!("failed to read dir {dir:?}: {err}")))?;
+        .map_err(|err| {
+            NovaLspError::Internal(format!(
+                "failed to read dir {dir:?}: {}",
+                crate::sanitize_error_message(&err)
+            ))
+        })?;
 
     for entry in entries {
         let entry = entry
-            .map_err(|err| NovaLspError::Internal(format!("failed to read dir entry: {err}")))?;
+            .map_err(|err| {
+                NovaLspError::Internal(format!(
+                    "failed to read dir entry: {}",
+                    crate::sanitize_error_message(&err)
+                ))
+            })?;
         let path = entry.path();
         if path.is_dir() {
             // Ignore common noise directories.
