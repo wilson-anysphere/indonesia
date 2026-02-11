@@ -1894,6 +1894,14 @@ fn sanitize_json_error_message(message: &str) -> String {
 }
 
 fn sanitize_bugreport_log_line(line: &str) -> String {
+    // When `logging.json=true`, log lines are JSON objects. Preserve valid JSON by parsing and
+    // re-serializing instead of redacting quotes across the entire line.
+    if line.trim_start().starts_with('{')
+        && (log_line_contains_serde_json_error(line) || json_log_line_contains_toml_snippet(line))
+    {
+        return sanitize_json_log_line(line);
+    }
+
     if log_line_contains_serde_json_error(line) {
         sanitize_json_error_message(line)
     } else if log_line_looks_like_toml_snippet(line) {
@@ -2055,6 +2063,28 @@ mod bugreport_log_sanitization_tests {
 
         serde_json::from_str::<serde_json::Value>(&sanitized)
             .expect("expected sanitized log line to remain valid JSON");
+    }
+
+    #[test]
+    fn sanitize_bugreport_log_line_preserves_json_validity_for_json_log_lines() {
+        let secret_suffix = "nova-config-json-log-buffer-secret";
+        let secret = format!("prefix\"{secret_suffix}");
+        let err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type mismatch");
+        let raw_message = format!("boom: {err}");
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw serde_json error string to include the secret so this test catches leaks: {raw_message}"
+        );
+
+        let line = serde_json::json!({ "message": raw_message }).to_string();
+        let sanitized = sanitize_bugreport_log_line(&line);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected bugreport log sanitizer to omit string values in JSON log lines: {sanitized}"
+        );
+        serde_json::from_str::<serde_json::Value>(&sanitized)
+            .expect("expected sanitized bugreport log line to remain valid JSON");
     }
 }
 
