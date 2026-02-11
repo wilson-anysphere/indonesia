@@ -1251,11 +1251,27 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
     // catches segments such as `/my-secret-project/` where the middle identifier (`secret`) would
     // otherwise be included.
     {
-        let bounds = surrounding_token_bounds(text, start, end);
-            if !bounds.is_empty() {
-                let token = &text[bounds.clone()];
+        // Some path obfuscation strategies (notably HTML numeric entities) use `;` as an internal
+        // delimiter, and we treat semicolons as token boundaries elsewhere to avoid leaking stack
+        // trace/file-name suffixes. That means a percent-encoded HTML entity like
+        // `%&#x32;&#x36;sol%&#x33;&#x42;` (aka `%26sol%3B` aka `&sol;` aka `/`) can get split across
+        // multiple punctuation-delimited token fragments (`x32`, `x36`, `sol`, ...), allowing a
+        // path-only selection to generate a semantic-search query. Use a whitespace-delimited token
+        // window to detect percent-encoded path separators even when punctuation splits the
+        // encoding across identifiers.
+        let whitespace_bounds = surrounding_whitespace_token_bounds(text, start, end);
+        if !whitespace_bounds.is_empty() {
+            let token = &text[whitespace_bounds.clone()];
+            if token_contains_percent_encoded_path_separator(token) {
+                return true;
+            }
+        }
 
-                fn numeric_fragment_after_hash_value(fragment: &[u8]) -> Option<u32> {
+        let bounds = surrounding_token_bounds(text, start, end);
+        if !bounds.is_empty() {
+            let token = &text[bounds.clone()];
+
+            fn numeric_fragment_after_hash_value(fragment: &[u8]) -> Option<u32> {
                     fn hex_value(b: u8) -> Option<u8> {
                         match b {
                             b'0'..=b'9' => Some(b - b'0'),
@@ -6002,6 +6018,29 @@ fn surrounding_token_bounds(text: &str, start: usize, end: usize) -> Range<usize
     token_start..token_end
 }
 
+fn surrounding_whitespace_token_bounds(text: &str, start: usize, end: usize) -> Range<usize> {
+    fn is_boundary(b: u8) -> bool {
+        // Treat non-ASCII bytes as boundaries so we never slice on invalid UTF-8 boundaries.
+        if !b.is_ascii() {
+            return true;
+        }
+        b.is_ascii_whitespace()
+    }
+
+    let bytes = text.as_bytes();
+    let mut token_start = start.min(bytes.len());
+    let mut token_end = end.min(bytes.len()).max(token_start);
+
+    while token_start > 0 && !is_boundary(bytes[token_start - 1]) {
+        token_start -= 1;
+    }
+    while token_end < bytes.len() && !is_boundary(bytes[token_end]) {
+        token_end += 1;
+    }
+
+    token_start..token_end
+}
+
 fn looks_like_file_name(token: &str) -> bool {
     // Keep this conservative: only treat well-known source/doc extensions as file paths.
     // Trim common leading/trailing punctuation (e.g. `Foo.java.` at end of sentence) before
@@ -6767,34 +6806,37 @@ fn token_contains_percent_encoded_path_separator(tok: &str) -> bool {
     }
 
     // Avoid allocating unless the token actually contains at least one percent-escape fragment.
-    let has_escape = bytes.windows(3).any(|window| {
+    if !bytes.contains(&b'%') {
+        return false;
+    }
+
+    let has_ascii_escape = bytes.windows(3).any(|window| {
         window[0] == b'%' && hex_value(window[1]).is_some() && hex_value(window[2]).is_some()
     });
-    if !has_escape {
+    if !has_ascii_escape {
         // Some tokens obfuscate percent-escape hex digits via escape sequences (e.g.
-        // `%u0032u0046home` → `%2Fhome`). Treat these as path-like when we can still decode at
-        // least one percent-escape byte.
-        if !bytes.contains(&b'%') {
-            return false;
-        }
-
+        // `%u0032u0046home` → `%2Fhome`, `%&#50;&#70;home` → `%2Fhome`). Treat these as path-like
+        // when we can still decode at least one percent-escape byte.
+        let mut saw_escape = false;
         let mut i = 0usize;
         while i < bytes.len() {
-            if bytes[i] != b'%' {
-                i += 1;
-                continue;
-            }
-
-            if let Some((value, _)) = percent_encoded_byte_after_obfuscated_digits(bytes, i + 1) {
-                if percent_encoded_byte_is_path_like(value) || value == b'%' {
-                    return true;
+            if bytes[i] == b'%' {
+                if let Some((value, _)) = percent_encoded_byte_after_obfuscated_digits(bytes, i + 1) {
+                    saw_escape = true;
+                    // Fast-path: when the first decodable escape is already path-like (or encodes
+                    // a nested `%`), we can skip the full decode pass.
+                    if percent_encoded_byte_is_path_like(value) || value == b'%' {
+                        return true;
+                    }
+                    break;
                 }
             }
-
             i += 1;
         }
 
-        return false;
+        if !saw_escape {
+            return false;
+        }
     }
 
     // Handle nested percent-encoding of separators without needing to fully decode (e.g.
@@ -6834,13 +6876,15 @@ fn token_contains_percent_encoded_path_separator(tok: &str) -> bool {
         let mut i = 0usize;
         let mut changed = false;
         while i < current.len() {
-            if current[i] == b'%' && i + 2 < current.len() {
-                if let (Some(hi), Some(lo)) = (hex_value(current[i + 1]), hex_value(current[i + 2]))
-                {
-                    next.push((hi << 4) | lo);
-                    i += 3;
-                    changed = true;
-                    continue;
+            if current[i] == b'%' {
+                let digits_start = i + 1;
+                if let Some((hi, next_idx)) = parse_obfuscated_hex_digit(&current, digits_start) {
+                    if let Some((lo, next_idx)) = parse_obfuscated_hex_digit(&current, next_idx) {
+                        next.push((hi << 4) | lo);
+                        i = next_idx;
+                        changed = true;
+                        continue;
+                    }
                 }
             }
             next.push(current[i]);
