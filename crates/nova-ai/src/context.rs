@@ -1641,6 +1641,10 @@ fn looks_like_obvious_secret_token(tok: &str) -> bool {
         return true;
     }
 
+    if trimmed.starts_with("AIza") && trimmed.len() >= 20 {
+        return true;
+    }
+
     let lower = trimmed.to_ascii_lowercase();
     if lower.starts_with("ghp_") && trimmed.len() >= 20 {
         return true;
