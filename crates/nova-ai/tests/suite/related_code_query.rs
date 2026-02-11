@@ -595,8 +595,13 @@ fn related_code_query_avoids_html_entity_percent_encoded_path_segments() {
         "&#37;E2&#37;88&#37;95",         // %E2%88%95 (∕ division slash)
         "&#37;E2&#37;88&#37;96",         // %E2%88%96 (∖ set minus / backslash-like)
         "&percnt;E2&percnt;88&percnt;95", // %E2%88%95 via named entity
+        // Percent-encoded Unicode separators where the percent entities are themselves HTML-escaped.
+        "&amp;percnt;E2&amp;percnt;88&amp;percnt;95",
+        "&amp;#37;E2&amp;#37;88&amp;#37;95",
         // Percent-encoded HTML entities via HTML entity percent sign.
         "&#37;26sol&#37;3B", // %26sol%3B -> &sol;
+        "&amp;#37;26sol&amp;#37;3B",
+        "&amp;percnt;26sol&amp;percnt;3B",
     ] {
         let search = CapturingSearch::default();
         let focal_code = format!(
@@ -653,8 +658,12 @@ fn related_code_query_avoids_html_entity_percent_encoded_path_segments_without_s
         "&#37E2&#3788&#3795",       // %E2%88%95 (∕ division slash)
         "&#37E2&#3788&#3796",       // %E2%88%96 (∖ set minus / backslash-like)
         "&percntE2&percnt88&percnt95", // %E2%88%95 via named entity
+        "&amp;percntE2&amp;percnt88&amp;percnt95",
+        "&amp;#37E2&amp;#3788&amp;#3795",
         // Percent-encoded HTML entities via HTML entity percent sign.
         "&#3726sol&#373B", // %26sol%3B -> &sol;
+        "&amp;#3726sol&amp;#373B",
+        "&amp;percnt26sol&amp;percnt3B",
         // Backslash separator (`%5C`).
         "&#375C",
         "&#x255C",
@@ -2105,6 +2114,8 @@ fn related_code_query_skips_html_entity_percent_encoded_unicode_separator_path_o
         "&#37;E2&#37;88&#37;95",         // %E2%88%95 (∕ division slash)
         "&#37;E2&#37;88&#37;96",         // %E2%88%96 (∖ set minus / backslash-like)
         "&percnt;E2&percnt;88&percnt;95", // %E2%88%95 via named entity
+        "&amp;percnt;E2&amp;percnt;88&amp;percnt;95",
+        "&amp;#37;E2&amp;#37;88&amp;#37;95",
     ] {
         let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
         let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
@@ -2133,6 +2144,8 @@ fn related_code_query_skips_html_entity_percent_encoded_unicode_separator_path_o
         "&#37E2&#3788&#3795",       // %E2%88%95 (∕ division slash)
         "&#37E2&#3788&#3796",       // %E2%88%96 (∖ set minus / backslash-like)
         "&percntE2&percnt88&percnt95", // %E2%88%95 via named entity
+        "&amp;percntE2&amp;percnt88&amp;percnt95",
+        "&amp;#37E2&amp;#3788&amp;#3795",
     ] {
         let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
         let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
@@ -2157,8 +2170,12 @@ fn related_code_query_skips_html_entity_percent_encoded_html_entity_path_only_se
     for sep in [
         "&#37;26sol&#37;3B", // %26sol%3B -> &sol;
         "&percnt;26sol&percnt;3B",
+        "&amp;#37;26sol&amp;#37;3B",
+        "&amp;percnt;26sol&amp;percnt;3B",
         "&#3726sol&#373B", // %26sol%3B -> &sol; (no semicolons)
         "&percnt26sol&percnt3B",
+        "&amp;#3726sol&amp;#373B",
+        "&amp;percnt26sol&amp;percnt3B",
     ] {
         let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
         let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);

@@ -976,17 +976,26 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 false
             };
             let amp_percent_escape_before_token = if amp_escape_before_token {
+                let tail_starts_with_hex_byte = |mut tail: &[u8]| {
+                    if tail.first().is_some_and(|b| *b == b';') {
+                        tail = &tail[1..];
+                    }
+                    tail.get(..2).is_some_and(|prefix| {
+                        prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit()
+                    })
+                };
+
                 let token_bytes = token.as_bytes();
                 if token_bytes
                     .get(..6)
                     .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percnt"))
                 {
-                    percent_encoded_path_separator_len(&token_bytes[6..]).is_some()
+                    tail_starts_with_hex_byte(&token_bytes[6..])
                 } else if token_bytes
                     .get(..7)
                     .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percent"))
                 {
-                    percent_encoded_path_separator_len(&token_bytes[7..]).is_some()
+                    tail_starts_with_hex_byte(&token_bytes[7..])
                 } else if token_bytes.first().is_some_and(|b| *b == b'#') {
                     // Handles patterns like `&amp;#372Fhome` and `&amp;#x252Fhome` where the leading
                     // `&` of the numeric entity has been escaped away (`&amp;`) and the numeric
@@ -1034,7 +1043,7 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                                 break;
                             }
                         }
-                        matched && percent_encoded_path_separator_len(&token_bytes[j..]).is_some()
+                        matched && tail_starts_with_hex_byte(&token_bytes[j..])
                     }
                 } else {
                     false
@@ -1194,17 +1203,25 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                         .get(start..start + 6)
                         .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percnt"))
                     {
-                        return bytes
-                            .get(start + 6..)
-                            .is_some_and(|tail| percent_encoded_path_separator_len(tail).is_some());
+                        let mut tail = bytes.get(start + 6..).unwrap_or_default();
+                        if tail.first().is_some_and(|b| *b == b';') {
+                            tail = &tail[1..];
+                        }
+                        return tail.get(..2).is_some_and(|prefix| {
+                            prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit()
+                        });
                     }
                     if bytes
                         .get(start..start + 7)
                         .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percent"))
                     {
-                        return bytes
-                            .get(start + 7..)
-                            .is_some_and(|tail| percent_encoded_path_separator_len(tail).is_some());
+                        let mut tail = bytes.get(start + 7..).unwrap_or_default();
+                        if tail.first().is_some_and(|b| *b == b';') {
+                            tail = &tail[1..];
+                        }
+                        return tail.get(..2).is_some_and(|prefix| {
+                            prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit()
+                        });
                     }
                     if start >= bytes.len() || bytes[start] != b'#' {
                         return false;
@@ -1248,9 +1265,13 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                         significant += 1;
                         k += 1;
                         if value == 37 {
-                            return bytes
-                                .get(k..)
-                                .is_some_and(|tail| percent_encoded_path_separator_len(tail).is_some());
+                            let mut tail = bytes.get(k..).unwrap_or_default();
+                            if tail.first().is_some_and(|b| *b == b';') {
+                                tail = &tail[1..];
+                            }
+                            return tail.get(..2).is_some_and(|prefix| {
+                                prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit()
+                            });
                         }
                     }
                     false
@@ -1281,8 +1302,8 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                         }
                         if html_entity_is_percent(bytes, j)
                             && bytes
-                                .get(j + 1..)
-                                .is_some_and(|tail| percent_encoded_path_separator_len(tail).is_some())
+                                .get(j + 1..j + 3)
+                                .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
                         {
                             return true;
                         }
