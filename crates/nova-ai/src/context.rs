@@ -833,6 +833,12 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         if prev == b'/' || prev == b'\\' {
             return true;
         }
+        if prev == b';'
+            && html_entity_obfuscated_numeric_reference_value(bytes, start - 1)
+                .is_some_and(html_entity_codepoint_is_path_separator)
+        {
+            return true;
+        }
         // Unicode escape sequences like `\u{002F}` can encode path separators without embedding an
         // actual `/` or `\` byte adjacent to the identifier. Treat identifiers that immediately
         // follow such escapes as path-like so path segments (especially the final segment) do not
@@ -1560,13 +1566,18 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 // Allow a few nested escapes like `&amp;amp;#47;` by scanning for the *next* entity
                 // terminator and checking whether it encodes a path separator.
                 let scan_end = (j + 64).min(bytes.len());
-                while j < scan_end {
-                    if bytes[j] == b';' {
-                        if html_entity_is_path_separator(bytes, j) {
-                            return true;
-                        }
-                        if html_numeric_fragment_is_path_separator(bytes, j + 1) {
-                            return true;
+                    while j < scan_end {
+                        if bytes[j] == b';' {
+                            if html_entity_obfuscated_numeric_reference_value(bytes, j)
+                                .is_some_and(html_entity_codepoint_is_path_separator)
+                            {
+                                return true;
+                            }
+                            if html_entity_is_path_separator(bytes, j) {
+                                return true;
+                            }
+                            if html_numeric_fragment_is_path_separator(bytes, j + 1) {
+                                return true;
                         }
                         if html_named_fragment_is_path_separator(bytes, j + 1) {
                             return true;
@@ -1620,6 +1631,23 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                     .is_some_and(numeric_fragment_after_hash_is_percent_encoded)
                 {
                     return true;
+                }
+
+                // Numeric escapes can also encode the digits of a numeric entity via nested numeric
+                // entities (e.g. `&amp;&num;&#52;&#55;;home`, which decodes to `&#47;home` after a
+                // pass). Treat these as path-like so the `num`/`x23` artifacts do not leak into the
+                // semantic-search query.
+                let mut j = bounds.end + 1;
+                let scan_end = (j + 64).min(bytes.len());
+                while j < scan_end {
+                    if bytes[j] == b';' {
+                        if html_entity_obfuscated_numeric_reference_value(bytes, j)
+                            .is_some_and(html_entity_codepoint_is_path_separator)
+                        {
+                            return true;
+                        }
+                    }
+                    j += 1;
                 }
             }
 
@@ -1850,6 +1878,202 @@ fn html_entity_codepoint_is_path_separator(value: u32) -> bool {
             | 0x29F9  // ⧹ big reverse solidus
             | 0xFE68  // ﹨ small reverse solidus
     )
+}
+
+fn html_entity_obfuscated_numeric_reference_value(bytes: &[u8], end_semicolon: usize) -> Option<u32> {
+    fn hex_value(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    fn find_entity_start(bytes: &[u8], end_semicolon: usize) -> Option<usize> {
+        let mut i = end_semicolon;
+        let mut scanned = 0usize;
+        while i > 0 && scanned < 256 {
+            i -= 1;
+            scanned += 1;
+            if bytes[i] == b'&' {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    fn numeric_entity_codepoint(bytes: &[u8], end_semicolon: usize) -> Option<(usize, u32)> {
+        if end_semicolon >= bytes.len() || bytes[end_semicolon] != b';' {
+            return None;
+        }
+        let amp = find_entity_start(bytes, end_semicolon)?;
+        if amp + 2 >= end_semicolon {
+            return None;
+        }
+        if bytes[amp + 1] != b'#' {
+            return None;
+        }
+        let mut j = amp + 2;
+        let base = match bytes.get(j) {
+            Some(b'x') | Some(b'X') => {
+                j += 1;
+                16u32
+            }
+            _ => 10u32,
+        };
+        if j >= end_semicolon {
+            return None;
+        }
+
+        let digits = &bytes[j..end_semicolon];
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        for &b in digits.iter().take(32) {
+            let digit = if base == 16 {
+                hex_value(b)? as u32
+            } else if b.is_ascii_digit() {
+                (b - b'0') as u32
+            } else {
+                return None;
+            };
+            if significant == 0 && digit == 0 {
+                continue;
+            }
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+            significant += 1;
+            if significant > 8 {
+                return None;
+            }
+        }
+
+        if significant == 0 {
+            None
+        } else {
+            Some((amp, value))
+        }
+    }
+
+    fn numeric_entity_ascii_digit(bytes: &[u8], end_semicolon: usize) -> Option<(usize, u8)> {
+        let (amp, value) = numeric_entity_codepoint(bytes, end_semicolon)?;
+        match value {
+            48..=57 | 65..=70 | 97..=102 | 88 | 120 => Some((amp, value as u8)),
+            _ => None,
+        }
+    }
+
+    if end_semicolon >= bytes.len() || bytes[end_semicolon] != b';' {
+        return None;
+    }
+
+    // Parse digits that will appear in the *decoded* numeric reference by walking backwards over
+    // numeric entities that decode to ASCII digits/hex digits (e.g. `&#52;` → `4`).
+    let mut cursor = end_semicolon + 1;
+    let mut buf = [0u8; 32];
+    let mut len = 0usize;
+    let mut scanned = 0usize;
+    while cursor > 0 && scanned < 512 && len < buf.len() {
+        scanned += 1;
+        let b = bytes[cursor - 1];
+        if b == b';' {
+            if let Some((amp, ch)) = numeric_entity_ascii_digit(bytes, cursor - 1) {
+                buf[len] = ch;
+                len += 1;
+                cursor = amp;
+                continue;
+            }
+
+            // Stop digit parsing once we reach an entity that decodes to the number sign / ampersand.
+            if html_entity_is_number_sign(bytes, cursor - 1)
+                || html_entity_is_ampersand(bytes, cursor - 1)
+            {
+                break;
+            }
+
+            // Otherwise, treat this `;` as a literal numeric-reference terminator (e.g. the `;` in
+            // the decoded `&#47;`) and keep scanning.
+            cursor -= 1;
+            continue;
+        }
+
+        if b.is_ascii_hexdigit() || matches!(b, b'x' | b'X') {
+            buf[len] = b;
+            len += 1;
+            cursor -= 1;
+            continue;
+        }
+
+        break;
+    }
+
+    if len == 0 || cursor == 0 {
+        return None;
+    }
+
+    // Parse the reconstructed numeric value.
+    let mut value = 0u32;
+    let mut base = 10u32;
+    let mut significant = 0usize;
+    let mut started = false;
+    for idx in (0..len).rev() {
+        let b = buf[idx];
+        if !started {
+            started = true;
+            if matches!(b, b'x' | b'X') {
+                base = 16;
+                continue;
+            }
+        }
+
+        let digit = if base == 16 {
+            hex_value(b)? as u32
+        } else if b.is_ascii_digit() {
+            (b - b'0') as u32
+        } else {
+            return None;
+        };
+        if significant == 0 && digit == 0 {
+            continue;
+        }
+        value = value
+            .checked_mul(base)
+            .and_then(|v| v.checked_add(digit))
+            .unwrap_or(u32::MAX);
+        significant += 1;
+        if significant > 8 {
+            return None;
+        }
+    }
+
+    if significant == 0 {
+        return None;
+    }
+
+    // Match the `#` portion of the decoded numeric reference.
+    let mut cursor = cursor;
+    if bytes[cursor - 1] == b'#' {
+        cursor -= 1;
+    } else if bytes[cursor - 1] == b';' && html_entity_is_number_sign(bytes, cursor - 1) {
+        cursor = find_entity_start(bytes, cursor - 1)?;
+    } else {
+        return None;
+    }
+
+    if cursor == 0 {
+        return None;
+    }
+
+    // Match the `&` portion of the decoded numeric reference.
+    if bytes[cursor - 1] == b'&' {
+        Some(value)
+    } else if bytes[cursor - 1] == b';' && html_entity_is_ampersand(bytes, cursor - 1) {
+        Some(value)
+    } else {
+        None
+    }
 }
 
 fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
@@ -4452,6 +4676,12 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
     for (idx, b) in bytes.iter().enumerate() {
         if *b != b';' {
             continue;
+        }
+
+        if html_entity_obfuscated_numeric_reference_value(bytes, idx)
+            .is_some_and(html_entity_codepoint_is_path_separator)
+        {
+            return true;
         }
 
         if html_entity_is_path_separator(bytes, idx) {
