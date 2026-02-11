@@ -152,13 +152,25 @@ pub fn sanitize_toml_error_message(message: &str) -> String {
             return message.to_string();
         }
 
+        // `toml::de::Error` `Display` output often includes a multi-line source snippet block like:
+        //
+        // ```text
+        // TOML parse error at line 1, column 10
+        //   |
+        // 1 | api_key = "secret"
+        //   |          ^
+        // invalid type: string "secret", expected boolean
+        // ```
+        //
+        // Strip the snippet *lines* (which can contain raw config/manifest text) while preserving
+        // any non-snippet context lines after the snippet (the final diagnostic is often useful).
         let mut out = String::with_capacity(message.len());
         for chunk in message.split_inclusive('\n') {
             let line = chunk.strip_suffix('\n').unwrap_or(chunk);
             let line = line.trim_end_matches('\r');
             let trimmed = line.trim_start();
             if trimmed.starts_with("-->") || looks_like_snippet_line(line) {
-                break;
+                continue;
             }
             out.push_str(chunk);
         }
@@ -396,6 +408,36 @@ mod tests {
         assert!(
             !sanitized.contains("api_key ="),
             "expected TOML sanitizer to strip snippet lines entirely: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn sanitize_toml_error_message_preserves_trailing_diagnostics_after_snippet_blocks() {
+        let secret_suffix = "nova-core-toml-trailing-diagnostic-secret";
+        let message = format!(
+            "TOML parse error at line 1, column 10\n1 | api_key = \"{secret_suffix}\"\n  |          ^\ninvalid type: string \"{secret_suffix}\", expected boolean\n"
+        );
+        assert!(
+            message.contains(secret_suffix),
+            "expected raw TOML error display to include the secret so this test catches leaks: {message}"
+        );
+
+        let sanitized = sanitize_toml_error_message(&message);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected TOML sanitizer to omit snippet contents and scalar values: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains("api_key ="),
+            "expected TOML sanitizer to strip snippet source lines: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("invalid type:"),
+            "expected TOML sanitizer to preserve trailing diagnostics after snippet blocks: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected TOML sanitizer to include redaction marker: {sanitized}"
         );
     }
 
