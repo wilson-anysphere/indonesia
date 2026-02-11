@@ -886,6 +886,7 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 || looks_like_mac_address_token(token)
                 || looks_like_uuid_token(token)
                 || looks_like_jwt_token(token)
+                || token_contains_long_hex_run(token)
                 || looks_like_high_entropy_token(token)
                 || looks_like_user_at_host_token(token)
                 || token_contains_obvious_secret_fragment(token)
@@ -1478,6 +1479,21 @@ fn looks_like_high_entropy_token(tok: &str) -> bool {
 
     let digits = token.bytes().filter(|b| b.is_ascii_digit()).count();
     digits >= 8 && is_mostly_alnum_or_symbols(token)
+}
+
+fn token_contains_long_hex_run(tok: &str) -> bool {
+    let mut run = 0usize;
+    for b in tok.bytes() {
+        if b.is_ascii_hexdigit() {
+            run += 1;
+            if run >= 32 {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
 }
 
 fn looks_like_user_at_host_token(tok: &str) -> bool {
