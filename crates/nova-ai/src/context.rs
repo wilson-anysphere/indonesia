@@ -4819,6 +4819,159 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
         }
     }
 
+    // Handle percent markers whose leading `&` was encoded as a numeric HTML entity for ampersand,
+    // yielding patterns like `&#38;percnt2F...` / `&#x26;percntu0032u0046...` as well as semicolon-less
+    // variants (`&#38percnt2F...`).
+    {
+        fn semicolonless_numeric_entity_value(bytes: &[u8], end: usize) -> Option<u32> {
+            if end < 3 {
+                return None;
+            }
+
+            // Scan backwards for the start of a numeric entity (`&#...`) that ends at `end`
+            // without a semicolon. This mirrors the handling in `html_entity_is_percent` for
+            // semicolon-less nested escapes like `&#38percnt;` but is scoped to the ampersand
+            // codepoint.
+            let scan_start = end.saturating_sub(32);
+            let mut amp = None;
+            let mut i = end;
+            while i > scan_start {
+                i -= 1;
+                if bytes[i] == b'&' {
+                    amp = Some(i);
+                    break;
+                }
+            }
+
+            let amp = amp?;
+            if amp + 2 >= end || bytes.get(amp + 1) != Some(&b'#') {
+                return None;
+            }
+
+            let mut j = amp + 2;
+            let base = match bytes.get(j) {
+                Some(b'x') | Some(b'X') => {
+                    j += 1;
+                    16u32
+                }
+                _ => 10u32,
+            };
+            if j >= end {
+                return None;
+            }
+
+            let mut value = 0u32;
+            let mut significant = 0usize;
+            while j < end && significant < 8 {
+                let b = bytes[j];
+                let digit = if base == 16 {
+                    let Some(v) = hex_value(b) else {
+                        return None;
+                    };
+                    v as u32
+                } else if b.is_ascii_digit() {
+                    (b - b'0') as u32
+                } else {
+                    return None;
+                };
+                if significant == 0 && digit == 0 {
+                    j += 1;
+                    continue;
+                }
+                value = value
+                    .checked_mul(base)
+                    .and_then(|v| v.checked_add(digit))
+                    .unwrap_or(u32::MAX);
+                significant += 1;
+                j += 1;
+            }
+
+            if j != end {
+                // Fail closed: either too many significant digits or invalid trailing data.
+                return None;
+            }
+            if significant == 0 {
+                return None;
+            }
+            Some(value)
+        }
+
+        let mut has_amp_entity_prefix = false;
+        if idx > 0 && bytes[idx - 1] == b';' && html_entity_is_ampersand(bytes, idx - 1) {
+            has_amp_entity_prefix = true;
+        } else if semicolonless_numeric_entity_value(bytes, idx) == Some(38) {
+            has_amp_entity_prefix = true;
+        }
+
+        if has_amp_entity_prefix {
+            // Named percent entities following the encoded ampersand (`&#38;percnt...`).
+            if bytes
+                .get(idx..idx + 6)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percnt"))
+            {
+                let mut next = idx + 6;
+                if bytes.get(next).is_some_and(|b| *b == b';') {
+                    next += 1;
+                }
+                return Some(next);
+            }
+            if bytes
+                .get(idx..idx + 7)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percent"))
+            {
+                let mut next = idx + 7;
+                if bytes.get(next).is_some_and(|b| *b == b';') {
+                    next += 1;
+                }
+                return Some(next);
+            }
+
+            // Numeric percent entities with a missing leading `&` after one decode pass
+            // (`&#38;#37...`).
+            if bytes.get(idx) == Some(&b'#') {
+                let mut j = idx + 1;
+                let base = match bytes.get(j) {
+                    Some(b'x') | Some(b'X') => {
+                        j += 1;
+                        16u32
+                    }
+                    _ => 10u32,
+                };
+                let mut value = 0u32;
+                let mut significant = 0usize;
+                while j < bytes.len() && significant < 8 {
+                    let b = bytes[j];
+                    let digit = if base == 16 {
+                        let Some(v) = hex_value(b) else {
+                            break;
+                        };
+                        v as u32
+                    } else if b.is_ascii_digit() {
+                        (b - b'0') as u32
+                    } else {
+                        break;
+                    };
+                    if significant == 0 && digit == 0 {
+                        j += 1;
+                        continue;
+                    }
+                    value = value
+                        .checked_mul(base)
+                        .and_then(|v| v.checked_add(digit))
+                        .unwrap_or(u32::MAX);
+                    significant += 1;
+                    j += 1;
+                    if value == 37 {
+                        if bytes.get(j).is_some_and(|b| *b == b';') {
+                            j += 1;
+                        }
+                        return Some(j);
+                    }
+                }
+            }
+        }
+    }
+
     None
 }
 
@@ -6550,6 +6703,56 @@ fn token_contains_html_entity_percent_encoded_path_separator(tok: &str) -> bool 
         None
     }
 
+    fn html_numeric_fragment_is_ampersand(bytes: &[u8], start: usize) -> Option<usize> {
+        if start >= bytes.len() || bytes[start] != b'#' {
+            return None;
+        }
+
+        let mut j = start + 1;
+        let base = match bytes.get(j) {
+            Some(b'x') | Some(b'X') => {
+                j += 1;
+                16u32
+            }
+            _ => 10u32,
+        };
+        if j >= bytes.len() {
+            return None;
+        }
+
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        while j < bytes.len() && significant < 8 {
+            let b = bytes[j];
+            let digit = if base == 16 {
+                let Some(v) = hex_value(b) else {
+                    break;
+                };
+                v as u32
+            } else if b.is_ascii_digit() {
+                (b - b'0') as u32
+            } else {
+                break;
+            };
+            if significant == 0 && digit == 0 {
+                j += 1;
+                continue;
+            }
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+            significant += 1;
+            j += 1;
+        }
+
+        if significant > 0 && value == 38 {
+            Some(j)
+        } else {
+            None
+        }
+    }
+
     fn html_numeric_fragment_after_number_sign_is_percent(bytes: &[u8], start: usize) -> Option<usize> {
         if start >= bytes.len() {
             return None;
@@ -6720,6 +6923,17 @@ fn token_contains_html_entity_percent_encoded_path_separator(tok: &str) -> bool 
                     j += 1;
                 }
                 continue;
+            }
+            // Support nested escaping of the `&` itself using numeric entities (`&#38;` / `&#x26;`)
+            // so constructs like `&#38;percnt2F` decode to `&percnt2F` after one HTML pass.
+            if bytes.get(j) == Some(&b'#') {
+                if let Some(next) = html_numeric_fragment_is_ampersand(bytes, j) {
+                    j = next;
+                    if bytes.get(j).is_some_and(|b| *b == b';') {
+                        j += 1;
+                    }
+                    continue;
+                }
             }
             break;
         }

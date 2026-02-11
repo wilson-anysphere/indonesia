@@ -2850,6 +2850,17 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_wit
         "&amp#x25u0032u0046",   // %2F
         "&amppercntu0032u0046", // %2F (`&amp` + missing semicolon)
         "&amppercentu0032u0046",
+        // Ampersand escaped as a numeric entity (`&#38;`) so the percent entity appears without a
+        // leading `&` after one decode pass.
+        "&#38;percntu0032u0046",     // %2F
+        "&#38;percntu{0032}u{0046}", // %2F
+        "&#38;percntu0035u0043",     // %5C
+        "&#38;percntu{0035}u{0043}", // %5C
+        "&#x26;percntu0032u0046",    // %2F
+        "&#x26;percntu{0032}u{0046}", // %2F
+        // Missing semicolons on the numeric ampersand entity itself.
+        "&#38percntu0032u0046",
+        "&#x26percntu0032u0046",
     ] {
         let search = PanicSearch { sep };
         let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
