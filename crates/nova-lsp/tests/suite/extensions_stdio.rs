@@ -244,3 +244,68 @@ fn stdio_server_exposes_extensions_status_and_navigation_requests() {
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
+
+#[test]
+fn stdio_server_invalid_params_errors_do_not_echo_secret_string_values() {
+    let _lock = crate::support::stdio_server_lock();
+
+    let secret = "NOVA_SECRET_DO_NOT_LEAK_FROM_INVALID_PARAMS";
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    // Exercise a stateless `nova/*` endpoint implemented in the library crate (so the
+    // `NovaLspError::InvalidParams` path is used) with an invalid scalar payload.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": nova_lsp::TEST_DISCOVER_METHOD,
+            "params": secret,
+        }),
+    );
+
+    let resp = read_response_with_id(&mut stdout, 2);
+    let error = resp.get("error").cloned().expect("expected error response");
+    assert_eq!(error.get("code").and_then(|v| v.as_i64()), Some(-32602));
+    assert!(
+        !resp.to_string().contains(secret),
+        "expected JSON-RPC error to omit secret string values; got: {resp:?}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}

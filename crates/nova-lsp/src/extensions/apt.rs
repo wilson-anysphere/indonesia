@@ -163,7 +163,7 @@ pub fn handle_run_annotation_processing(
     cancel: CancellationToken,
 ) -> Result<serde_json::Value> {
     let params: NovaRunAnnotationProcessingParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
     let root = PathBuf::from(&params.project_root);
 
     let build = super::build_manager_for_root_with_cancel(
@@ -230,7 +230,8 @@ pub fn handle_run_annotation_processing(
 }
 
 fn parse_params(value: serde_json::Value) -> Result<NovaGeneratedSourcesParams> {
-    serde_json::from_value(value).map_err(|err| NovaLspError::InvalidParams(err.to_string()))
+    serde_json::from_value(value)
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))
 }
 
 fn load_project_with_workspace_config(

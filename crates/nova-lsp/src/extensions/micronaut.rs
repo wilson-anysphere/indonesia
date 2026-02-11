@@ -74,7 +74,7 @@ pub struct MicronautBeansResponse {
 
 pub fn handle_endpoints(params: serde_json::Value) -> Result<serde_json::Value> {
     let req: MicronautRequest = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
     let root = PathBuf::from(&req.project_root);
 
     let analysis = analyze_root(&root)?;
@@ -102,7 +102,7 @@ pub fn handle_endpoints(params: serde_json::Value) -> Result<serde_json::Value> 
 
 pub fn handle_beans(params: serde_json::Value) -> Result<serde_json::Value> {
     let req: MicronautRequest = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
     let root = PathBuf::from(&req.project_root);
 
     let analysis = analyze_root(&root)?;

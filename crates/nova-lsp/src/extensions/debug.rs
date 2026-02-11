@@ -24,7 +24,7 @@ pub struct DebugConfigurationsParams {
 
 pub fn handle_debug_configurations(params: serde_json::Value) -> Result<serde_json::Value> {
     let params: DebugConfigurationsParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
 
     let project = Project::load_from_dir(Path::new(&params.project_root))
         .map_err(|err| NovaLspError::Internal(err.to_string()))?;
@@ -45,7 +45,7 @@ pub struct HotSwapRequestParams {
 
 pub fn handle_hot_swap(params: serde_json::Value) -> Result<serde_json::Value> {
     let params: HotSwapRequestParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
 
     let project_root = PathBuf::from(&params.project_root);
     let project = nova_project::load_project_with_workspace_config(&project_root)

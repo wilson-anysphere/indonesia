@@ -57,7 +57,7 @@ pub fn handle_document_formatting(
     text: &str,
 ) -> Result<serde_json::Value> {
     let req: DocumentFormattingParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
     let _ = req.text_document.uri;
     let config = config_from_lsp(&req.options);
 
@@ -68,7 +68,7 @@ pub fn handle_document_formatting(
 
 pub fn handle_range_formatting(params: serde_json::Value, text: &str) -> Result<serde_json::Value> {
     let req: DocumentRangeFormattingParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
     let _ = req.text_document.uri;
     let config = config_from_lsp(&req.options);
     let range: Range = Range::new(
@@ -88,7 +88,7 @@ pub fn handle_on_type_formatting(
     text: &str,
 ) -> Result<serde_json::Value> {
     let req: DocumentOnTypeFormattingParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
     let _ = req.text_document_position.text_document.uri;
     let config = config_from_lsp(&req.options);
     let position = Position::new(

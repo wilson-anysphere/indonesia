@@ -375,7 +375,7 @@ pub fn handle_bug_report(params: serde_json::Value) -> Result<serde_json::Value>
         BugReportParams::default()
     } else {
         serde_json::from_value(params)
-            .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?
+            .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?
     };
 
     let options = BugReportOptions {

@@ -112,6 +112,34 @@ pub enum NovaLspError {
 
 pub type Result<T> = std::result::Result<T, NovaLspError>;
 
+pub(crate) fn sanitize_serde_json_error(err: &serde_json::Error) -> String {
+    sanitize_json_error_message(&err.to_string())
+}
+
+fn sanitize_json_error_message(message: &str) -> String {
+    // `serde_json::Error` display strings can include user-provided scalar values (for example:
+    // `invalid type: string "..."`). Conservatively redact all double-quoted substrings so secrets
+    // are not echoed back through JSON-RPC error messages.
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let Some(end) = rest.find('"') else {
+            // Unterminated quote: append the remainder and stop.
+            out.push_str(rest);
+            return out;
+        };
+
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 pub const TEST_DISCOVER_METHOD: &str = "nova/test/discover";
 pub const TEST_RUN_METHOD: &str = "nova/test/run";
 pub const TEST_DEBUG_CONFIGURATION_METHOD: &str = "nova/test/debugConfiguration";
@@ -412,7 +440,7 @@ pub fn handle_custom_request_with_state<B: BuildSystem, J: JdwpRedefiner>(
             .map_err(|err| NovaLspError::Internal(err.to_string())),
         DEBUG_HOT_SWAP_METHOD => {
             let params: HotSwapParams = serde_json::from_value(params)
-                .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+                .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
             let hot_swap = hot_swap.ok_or_else(|| {
                 NovaLspError::InvalidParams("hot-swap service is not available".into())
             })?;
@@ -677,6 +705,23 @@ mod tests {
         assert_eq!(
             json.get("typeHierarchyProvider"),
             Some(&serde_json::Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn sanitize_serde_json_error_does_not_echo_string_values() {
+        let secret = "nova-lsp-secret-token";
+        let err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+
+        let message = crate::sanitize_serde_json_error(&err);
+        assert!(
+            !message.contains(secret),
+            "expected sanitized serde_json error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized serde_json error message to include redaction marker: {message}"
         );
     }
 }

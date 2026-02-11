@@ -26,7 +26,7 @@ pub struct JavaSourcePathsResponse {
 
 pub fn handle_source_paths(params: serde_json::Value) -> Result<serde_json::Value> {
     let params: JavaSourcePathsParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
 
     if params.project_root.trim().is_empty() {
         return Err(NovaLspError::InvalidParams(
@@ -86,7 +86,7 @@ pub struct ResolveMainClassResponse {
 
 pub fn handle_resolve_main_class(params: serde_json::Value) -> Result<serde_json::Value> {
     let params: ResolveMainClassParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
 
     let classes = if let Some(root) = params
         .project_root

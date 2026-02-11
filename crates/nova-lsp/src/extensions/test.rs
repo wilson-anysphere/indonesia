@@ -5,14 +5,14 @@ use super::build::BuildStatusGuard;
 
 pub fn handle_discover(params: serde_json::Value) -> Result<serde_json::Value> {
     let req: TestDiscoverRequest = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
     let resp = nova_testing::discover_tests(&req).map_err(map_testing_error)?;
     serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
 }
 
 pub fn handle_run(params: serde_json::Value) -> Result<serde_json::Value> {
     let req: TestRunRequest = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
     if req.project_root.trim().is_empty() {
         return Err(NovaLspError::InvalidParams(
             "`projectRoot` must not be empty".to_string(),
@@ -37,7 +37,7 @@ pub fn handle_run(params: serde_json::Value) -> Result<serde_json::Value> {
 
 pub fn handle_debug_configuration(params: serde_json::Value) -> Result<serde_json::Value> {
     let req: TestDebugRequest = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
     let resp =
         nova_testing::debug::debug_configuration_for_request(&req).map_err(map_testing_error)?;
     serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))

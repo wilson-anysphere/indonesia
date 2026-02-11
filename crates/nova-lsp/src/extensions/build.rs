@@ -580,7 +580,8 @@ pub fn handle_reload_project(params: serde_json::Value) -> Result<serde_json::Va
 }
 
 fn parse_params(value: serde_json::Value) -> Result<NovaProjectParams> {
-    serde_json::from_value(value).map_err(|err| NovaLspError::InvalidParams(err.to_string()))
+    serde_json::from_value(value)
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))
 }
 
 fn run_classpath(build: &BuildManager, params: &NovaProjectParams) -> Result<Classpath> {
@@ -895,7 +896,7 @@ pub struct TargetClasspathResult {
 
 pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::Value> {
     let req: TargetClasspathParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
 
     if req.project_root.trim().is_empty() {
         return Err(NovaLspError::InvalidParams(
@@ -1153,7 +1154,7 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
 
 pub fn handle_file_classpath(params: serde_json::Value) -> Result<serde_json::Value> {
     let req: FileClasspathParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
 
     if req.project_root.trim().is_empty() {
         return Err(NovaLspError::InvalidParams(
@@ -1304,7 +1305,7 @@ pub enum ProjectModelUnit {
 
 pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Value> {
     let req: ProjectModelParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
 
     if req.project_root.trim().is_empty() {
         return Err(NovaLspError::InvalidParams(
@@ -1928,7 +1929,7 @@ pub struct BuildStatusResult {
 
 pub fn handle_build_status(params: serde_json::Value) -> Result<serde_json::Value> {
     let req: BuildStatusParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
 
     if req.project_root.trim().is_empty() {
         return Err(NovaLspError::InvalidParams(
@@ -2028,7 +2029,7 @@ pub struct BuildDiagnosticsResult {
 
 pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json::Value> {
     let req: BuildDiagnosticsParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
 
     if req.project_root.trim().is_empty() {
         return Err(NovaLspError::InvalidParams(

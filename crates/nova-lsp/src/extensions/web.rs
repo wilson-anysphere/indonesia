@@ -27,7 +27,7 @@ pub struct WebEndpointsResponse {
 
 pub fn handle_endpoints(params: serde_json::Value) -> Result<serde_json::Value> {
     let req: WebEndpointsRequest = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
 
     let endpoints = nova_framework_web::extract_http_endpoints_in_dir(Path::new(&req.project_root))
         .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;

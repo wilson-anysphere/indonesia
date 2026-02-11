@@ -167,7 +167,7 @@ pub struct ProjectConfigurationResponse {
 
 pub fn handle_project_configuration(params: serde_json::Value) -> Result<serde_json::Value> {
     let params: ProjectConfigurationParams = serde_json::from_value(params)
-        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+        .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
 
     if params.project_root.trim().is_empty() {
         return Err(NovaLspError::InvalidParams(
