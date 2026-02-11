@@ -479,24 +479,45 @@ fn sanitize_toml_error_message(message: &str) -> String {
         while let Some(start) = rest.find(quote) {
             out.push_str(&rest[..start]);
             let quote_len = quote.len_utf8();
-            let Some(after_open) = rest.get(start + quote_len..) else {
-                out.push_str(&rest[start..]);
-                return out;
-            };
-
-            let Some(end_rel) = after_open.find(quote) else {
-                out.push_str(&rest[start..]);
-                return out;
-            };
-
-            let Some(after_close) = after_open.get(end_rel + quote_len..) else {
-                out.push_str(&rest[start..]);
-                return out;
-            };
-
             out.push(quote);
+            let Some(after_open) = rest.get(start + quote_len..) else {
+                // Unterminated quote: redact the remainder and stop.
+                out.push_str(REDACTED);
+                return out;
+            };
+
+            let quote_byte = quote as u8;
+            let bytes = after_open.as_bytes();
+            let mut end = None;
+            for (idx, &b) in bytes.iter().enumerate() {
+                if b != quote_byte {
+                    continue;
+                }
+
+                // Treat quotes preceded by an odd number of backslashes as escaped.
+                let mut backslashes = 0usize;
+                let mut k = idx;
+                while k > 0 && bytes[k - 1] == b'\\' {
+                    backslashes += 1;
+                    k -= 1;
+                }
+                if backslashes % 2 == 0 {
+                    end = Some(idx);
+                    break;
+                }
+            }
+
+            let Some(end) = end else {
+                // Unterminated quote: redact the remainder and stop.
+                out.push_str(REDACTED);
+                return out;
+            };
+
             out.push_str(REDACTED);
             out.push(quote);
+            let Some(after_close) = after_open.get(end + quote_len..) else {
+                return out;
+            };
             rest = after_close;
         }
         out.push_str(rest);
@@ -666,6 +687,38 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, [0u8; 1]).unwrap();
+    }
+
+    #[test]
+    fn toml_error_sanitization_does_not_echo_string_values_with_escaped_quotes() {
+        #[derive(serde::Deserialize)]
+        struct Dummy {
+            #[allow(dead_code)]
+            enabled: bool,
+        }
+
+        let secret_suffix = "nova-ext-toml-secret-token";
+        let text = format!(r#"enabled = "prefix\"{secret_suffix}""#);
+
+        let raw_err = match toml::from_str::<Dummy>(&text) {
+            Ok(_) => panic!("expected type mismatch"),
+            Err(err) => err,
+        };
+        let raw_message = raw_err.message();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw toml error message to include the string value so this test would catch leaks: {raw_message}"
+        );
+
+        let message = sanitize_toml_error_message(raw_message);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized toml error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized toml error message to include redaction marker: {message}"
+        );
     }
 
     #[test]

@@ -4,3 +4,4 @@ mod jdk_config;
 mod sizes;
 mod schema_rules;
 mod schema_snapshot;
+mod toml_error_sanitization;

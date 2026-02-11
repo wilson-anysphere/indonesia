@@ -1540,8 +1540,13 @@ fn sanitize_toml_error_message(message: &str) -> String {
     // when no snippet is included.
     static QUOTED_STRING_RE: OnceLock<regex::Regex> = OnceLock::new();
 
-    let re = QUOTED_STRING_RE
-        .get_or_init(|| regex::Regex::new(r#""[^"]*""#).expect("quoted-string regex should compile"));
+    // Handle escaped quotes (e.g. `\"`) inside the quoted substring. `toml::de::Error::message()`
+    // includes string values using a debug-like escaping style, so an embedded quote will appear as
+    // `\"`. A naive `"[^"]*"` pattern would stop at the escaped quote and leak the remainder.
+    let re = QUOTED_STRING_RE.get_or_init(|| {
+        regex::Regex::new(r#""(?:\\.|[^"\\])*""#)
+            .expect("quoted-string regex should compile")
+    });
 
     let mut out = re.replace_all(message, r#""<redacted>""#).into_owned();
 
