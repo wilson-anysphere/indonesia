@@ -6,6 +6,44 @@ use std::io::{self, BufRead, Write};
 // `nova_dap::dap::codec::MAX_*` paths continue to compile.
 pub use super::{MAX_DAP_HEADER_LINE_BYTES, MAX_DAP_MESSAGE_BYTES};
 
+fn sanitize_json_error_message(message: &str) -> String {
+    // `serde_json::Error` display strings can include user-provided scalar values (for example:
+    // `invalid type: string "..."` or `unknown field `...``). Avoid echoing those values in error
+    // messages because DAP payloads can include secrets (launch args/env, evaluated expressions,
+    // etc).
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let Some(end) = rest.find('"') else {
+            // Unterminated quote: append the remainder and stop.
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+
+    // `serde` wraps unknown fields/variants in backticks:
+    // `unknown field `secret`, expected ...`
+    //
+    // Redact only the first backticked segment so we keep the expected value list actionable.
+    if let Some(start) = out.find('`') {
+        if let Some(end_rel) = out[start.saturating_add(1)..].find('`') {
+            let end = start.saturating_add(1).saturating_add(end_rel);
+            if start + 1 <= end && end <= out.len() {
+                out.replace_range(start + 1..end, "<redacted>");
+            }
+        }
+    }
+
+    out
+}
+
 fn read_line_limited<R: BufRead>(reader: &mut R, max_len: usize) -> io::Result<Option<String>> {
     let mut buf = Vec::<u8>::new();
     loop {
@@ -53,15 +91,23 @@ pub fn read_json_message<R: BufRead, T: DeserializeOwned>(reader: &mut R) -> io:
         None => return Ok(None),
     };
 
-    let parsed = serde_json::from_slice(&bytes)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    let parsed = serde_json::from_slice(&bytes).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            sanitize_json_error_message(&err.to_string()),
+        )
+    })?;
     Ok(Some(parsed))
 }
 
 /// Write a single DAP-framed JSON message to `writer`.
 pub fn write_json_message<W: Write, T: Serialize>(writer: &mut W, message: &T) -> io::Result<()> {
-    let bytes = serde_json::to_vec(message)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    let bytes = serde_json::to_vec(message).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            sanitize_json_error_message(&err.to_string()),
+        )
+    })?;
     write_raw_message(writer, &bytes)?;
     Ok(())
 }
@@ -214,5 +260,54 @@ mod tests {
         let err = read_raw_message(&mut cursor).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
         assert!(err.to_string().contains("EOF while reading DAP headers"));
+    }
+
+    #[test]
+    fn dap_codec_json_errors_do_not_echo_string_values() {
+        #[derive(Debug, serde::Deserialize)]
+        struct Dummy {
+            seq: i64,
+        }
+
+        let secret = "dap-codec-super-secret-token";
+        let payload = format!(r#"{{"seq":"{secret}"}}"#);
+        let framed = format!("Content-Length: {}\r\n\r\n{}", payload.len(), payload);
+
+        let mut cursor = Cursor::new(framed.into_bytes());
+        let err = read_json_message::<_, Dummy>(&mut cursor).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            !message.contains(secret),
+            "expected DAP codec JSON error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected DAP codec JSON error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn dap_codec_json_errors_do_not_echo_backticked_values() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OnlyFoo {
+            foo: u32,
+        }
+
+        let secret = "dap-codec-backticked-secret";
+        let payload = format!(r#"{{"{secret}": 1}}"#);
+        let framed = format!("Content-Length: {}\r\n\r\n{}", payload.len(), payload);
+
+        let mut cursor = Cursor::new(framed.into_bytes());
+        let err = read_json_message::<_, OnlyFoo>(&mut cursor).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            !message.contains(secret),
+            "expected DAP codec JSON error message to omit backticked values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected DAP codec JSON error message to include redaction marker: {message}"
+        );
     }
 }
