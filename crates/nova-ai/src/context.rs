@@ -836,6 +836,12 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         if next == b'/' || next == b'\\' {
             return true;
         }
+        // `user@host` (and similar) tokens can leak usernames and hostnames when the selection is a
+        // log/config snippet rather than Java code. Skip identifiers immediately followed by `@`
+        // (e.g. `alice` in `alice@localhost`).
+        if next == b'@' {
+            return true;
+        }
     }
 
     // IPv6 addresses contain hex-like "identifiers" separated by `:` characters. Avoid leaking
@@ -1550,6 +1556,11 @@ fn looks_like_user_at_host_token(tok: &str) -> bool {
     let left_user = left.split_once(':').map(|(user, _pass)| user).unwrap_or(left);
     if left_user.is_empty() || !token_ok(left_user) {
         return false;
+    }
+
+    if right.starts_with('[') && right.contains(']') {
+        // Bracketed hosts are typically IPv6 literals in URL authorities.
+        return true;
     }
 
     let host = right.split_once(':').map(|(host, _rest)| host).unwrap_or(right);

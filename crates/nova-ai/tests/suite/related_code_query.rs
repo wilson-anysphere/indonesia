@@ -720,6 +720,25 @@ fn related_code_query_skips_user_at_host_port_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_user_at_bracketed_ipv6_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for user@[ipv6] related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = "alice@[2001:db8::1]:22";
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for user@[ipv6]-only focal code"
+    );
+}
+
+#[test]
 fn related_code_query_skips_ipv6_only_selections() {
     struct PanicSearch;
 
