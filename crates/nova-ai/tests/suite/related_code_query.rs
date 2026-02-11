@@ -371,6 +371,59 @@ fn related_code_query_avoids_escaped_percent_encoded_path_segments() {
 }
 
 #[test]
+fn related_code_query_avoids_escaped_percent_encoded_unicode_separator_path_segments() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+    for sep in [
+        // Percent-encoded unicode separators where the `%` is itself escaped.
+        "u0025E2u002588u002595", // %E2%88%95 (∕ division slash)
+        "u0025E2u002588u002596", // %E2%88%96 (∖ set minus / backslash-like)
+        "u{0025}E2u{0025}88u{0025}95",
+        "x25E2x2588x2595",
+        "x{25}E2x{25}88x{25}95",
+        // Octal / backslash-hex escapes for `%`.
+        r"\045E2\04588\04595",
+        r"\25E2\2588\2595",
+        // Percent-encoded HTML entities where `%` is escaped.
+        "u002526solu00253B", // %26sol%3B -> &sol;
+        "x2526solx253B",
+    ] {
+        let search = CapturingSearch::default();
+        let focal_code = format!(
+            "{sep}home{sep}user{sep}my-{private_segment}-project{sep}src{sep}main{sep}java\nreturn foo.bar();\n"
+        );
+
+        let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+        let query = search
+            .last_query
+            .lock()
+            .expect("lock poisoned")
+            .clone()
+            .expect("query captured");
+
+        assert!(
+            !query.contains(private_segment),
+            "query should not include percent-encoded unicode path fragments hidden behind escapes: {query}"
+        );
+        assert!(
+            query.contains("foo") || query.contains("bar"),
+            "expected query to retain non-path identifiers, got: {query}"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_avoids_percent_encoded_unicode_separator_path_segments() {
     #[derive(Default)]
     struct CapturingSearch {
@@ -1820,6 +1873,37 @@ fn related_code_query_skips_escaped_percent_encoded_path_only_selections() {
         assert!(
             req.related_code.is_empty(),
             "expected no related code for escaped percent-encoded path-only focal code"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_escaped_percent_encoded_unicode_separator_path_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for escaped percent-encoded unicode path selections");
+        }
+    }
+
+    let search = PanicSearch;
+    for sep in [
+        "u0025E2u002588u002595",
+        "u0025E2u002588u002596",
+        "u{0025}E2u{0025}88u{0025}95",
+        "x25E2x2588x2595",
+        "x{25}E2x{25}88x{25}95",
+        r"\045E2\04588\04595",
+        r"\25E2\2588\2595",
+        "u002526solu00253B",
+        "x2526solx253B",
+    ] {
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for escaped percent-encoded unicode separator path-only focal code"
         );
     }
 }

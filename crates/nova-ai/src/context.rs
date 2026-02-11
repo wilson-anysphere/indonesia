@@ -1429,8 +1429,8 @@ fn braced_unicode_escape_is_path_separator(bytes: &[u8], end_brace: usize) -> bo
     html_entity_codepoint_is_path_separator(value)
         || (value == 37
             && bytes
-                .get(end_brace + 1..)
-                .is_some_and(|tail| percent_encoded_path_separator_len(tail).is_some()))
+                .get(end_brace + 1..end_brace + 3)
+                .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit()))
 }
 
 fn unicode_path_separator_before(bytes: &[u8], idx: usize) -> bool {
@@ -2818,8 +2818,8 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
                 // semantic-search queries.
                 if value == 37
                     && bytes
-                        .get(k + 1..)
-                        .is_some_and(|tail| percent_encoded_path_separator_len(tail).is_some())
+                        .get(k + 1..k + 3)
+                        .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
                 {
                     return true;
                 }
@@ -2843,8 +2843,8 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
                     }
                     if value == 37
                         && bytes
-                            .get(j + 4..)
-                            .is_some_and(|tail| percent_encoded_path_separator_len(tail).is_some())
+                            .get(j + 4..j + 6)
+                            .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
                     {
                         return true;
                     }
@@ -2869,8 +2869,8 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
                 }
                 if value == 37
                     && bytes
-                        .get(i + 9..)
-                        .is_some_and(|tail| percent_encoded_path_separator_len(tail).is_some())
+                        .get(i + 9..i + 11)
+                        .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
                 {
                     return true;
                 }
@@ -2937,8 +2937,8 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
                 }
                 if value == 37
                     && bytes
-                        .get(j + 1..)
-                        .is_some_and(|tail| percent_encoded_path_separator_len(tail).is_some())
+                        .get(j + 1..j + 3)
+                        .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
                 {
                     return true;
                 }
@@ -2961,7 +2961,11 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
                 if html_entity_codepoint_is_path_separator(value) {
                     return true;
                 }
-                if value == 37 && percent_encoded_path_separator_len(&bytes[j..]).is_some() {
+                if value == 37
+                    && bytes
+                        .get(j..j + 2)
+                        .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
+                {
                     return true;
                 }
             }
@@ -3000,7 +3004,11 @@ fn token_contains_octal_escaped_path_separator(tok: &str) -> bool {
             if matches!(value, 47 | 92) {
                 return true;
             }
-            if value == 37 && percent_encoded_path_separator_len(&bytes[j..]).is_some() {
+            if value == 37
+                && bytes
+                    .get(j..j + 2)
+                    .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
+            {
                 return true;
             }
         }
@@ -3046,7 +3054,11 @@ fn token_contains_backslash_hex_escaped_path_separator(tok: &str) -> bool {
             if html_entity_codepoint_is_path_separator(value) {
                 return true;
             }
-            if value == 37 && percent_encoded_path_separator_len(&bytes[j..]).is_some() {
+            if value == 37
+                && bytes
+                    .get(j..j + 2)
+                    .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
+            {
                 return true;
             }
         }
