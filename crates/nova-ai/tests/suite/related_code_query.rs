@@ -503,6 +503,61 @@ fn related_code_query_avoids_unicode_escaped_path_segments() {
 }
 
 #[test]
+fn related_code_query_avoids_unicode_escaped_unicode_separator_path_segments() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+    for sep in [
+        // `\uXXXX` escapes for unicode slash/backslash lookalikes.
+        r"\u2215", // ∕ division slash
+        r"\u2044", // ⁄ fraction slash
+        r"\uFF0F", // ／ fullwidth solidus
+        r"\u29F8", // ⧸ big solidus
+        r"\u2216", // ∖ set minus / backslash-like
+        r"\uFF3C", // ＼ fullwidth reverse solidus
+        r"\u29F9", // ⧹ big reverse solidus
+        r"\uFE68", // ﹨ small reverse solidus
+        // 8-digit `\UXXXXXXXX` escape.
+        r"\U00002215", // ∕ division slash
+        // Braced unicode escapes.
+        r"\u{2215}",
+        r"\u{2216}",
+    ] {
+        let search = CapturingSearch::default();
+        let focal_code = format!(
+            "{sep}home{sep}user{sep}my-{private_segment}-project{sep}src{sep}main{sep}java\nreturn foo.bar();\n"
+        );
+
+        let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+        let query = search
+            .last_query
+            .lock()
+            .expect("lock poisoned")
+            .clone()
+            .expect("query captured");
+
+        assert!(
+            !query.contains(private_segment),
+            "query should not include unicode-escaped unicode path fragments: {query}"
+        );
+        assert!(
+            query.contains("foo") || query.contains("bar"),
+            "expected query to retain non-path identifiers, got: {query}"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_avoids_hex_escaped_path_segments() {
     #[derive(Default)]
     struct CapturingSearch {
@@ -1334,6 +1389,38 @@ fn related_code_query_skips_unicode_escaped_path_only_selections() {
         assert!(
             req.related_code.is_empty(),
             "expected no related code for unicode-escaped path-only focal code"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_unicode_escaped_unicode_separator_path_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for unicode-escaped unicode path selections");
+        }
+    }
+
+    let search = PanicSearch;
+    for focal_code in [
+        r"\u2215home\u2215user\u2215secret\u2215credentials",
+        r"\u2044home\u2044user\u2044secret\u2044credentials",
+        r"\uFF0Fhome\uFF0Fuser\uFF0Fsecret\uFF0Fcredentials",
+        r"\u29F8home\u29F8user\u29F8secret\u29F8credentials",
+        r"\u2216home\u2216user\u2216secret\u2216credentials",
+        r"\uFF3Chome\uFF3Cuser\uFF3Csecret\uFF3Ccredentials",
+        r"\u29F9home\u29F9user\u29F9secret\u29F9credentials",
+        r"\uFE68home\uFE68user\uFE68secret\uFE68credentials",
+        r"\U00002215home\U00002215user\U00002215secret\U00002215credentials",
+        r"\u{2215}home\u{2215}user\u{2215}secret\u{2215}credentials",
+        r"\u{2216}home\u{2216}user\u{2216}secret\u{2216}credentials",
+    ] {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for unicode-escaped unicode path-only focal code"
         );
     }
 }

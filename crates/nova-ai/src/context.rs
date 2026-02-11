@@ -1359,7 +1359,7 @@ fn braced_unicode_escape_is_path_separator(bytes: &[u8], end_brace: usize) -> bo
         value = (value << 4) | hex as u32;
     }
 
-    matches!(value, 0x2F | 0x5C)
+    html_entity_codepoint_is_path_separator(value)
 }
 
 fn unicode_path_separator_before(bytes: &[u8], idx: usize) -> bool {
@@ -2646,27 +2646,45 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
                 j += 1;
             }
 
-            if digits > 0 && j < bytes.len() && bytes[j] == b'}' && matches!(value, 0x2F | 0x5C)
+            if digits > 0
+                && j < bytes.len()
+                && bytes[j] == b'}'
+                && html_entity_codepoint_is_path_separator(value)
             {
                 return true;
             }
         }
 
-        if bytes[i + 1] == b'0' && bytes[i + 2] == b'0' {
-            match (bytes[i + 3], bytes[i + 4]) {
-                (b'2', b'f' | b'F') | (b'5', b'c' | b'C') => return true,
-                _ => {}
+        if b == b'u' {
+            if i + 4 < bytes.len() {
+                let mut value = 0u32;
+                let mut ok = true;
+                for &b in &bytes[i + 1..i + 5] {
+                    let Some(hex) = hex_value(b) else {
+                        ok = false;
+                        break;
+                    };
+                    value = (value << 4) | hex as u32;
+                }
+                if ok && html_entity_codepoint_is_path_separator(value) {
+                    return true;
+                }
             }
         }
 
         // 8-digit escapes like `\U0000002F` (common in some languages) also decode to separators.
-        if bytes[i] == b'U'
-            && i + 8 < bytes.len()
-            && bytes[i + 1..i + 7].iter().all(|b| *b == b'0')
-        {
-            match (bytes[i + 7], bytes[i + 8]) {
-                (b'2', b'f' | b'F') | (b'5', b'c' | b'C') => return true,
-                _ => {}
+        if b == b'U' && i + 8 < bytes.len() {
+            let mut value = 0u32;
+            let mut ok = true;
+            for &b in &bytes[i + 1..i + 9] {
+                let Some(hex) = hex_value(b) else {
+                    ok = false;
+                    break;
+                };
+                value = (value << 4) | hex as u32;
+            }
+            if ok && html_entity_codepoint_is_path_separator(value) {
+                return true;
             }
         }
 
@@ -2720,7 +2738,10 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
                 j += 1;
             }
 
-            if digits > 0 && j < bytes.len() && bytes[j] == b'}' && matches!(value, 0x2F | 0x5C)
+            if digits > 0
+                && j < bytes.len()
+                && bytes[j] == b'}'
+                && html_entity_codepoint_is_path_separator(value)
             {
                 return true;
             }
