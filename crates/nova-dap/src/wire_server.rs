@@ -559,7 +559,8 @@ async fn handle_request_inner(
                     send_response(out_tx, seq, request, true, Some(snapshot), None).await
                 }
                 Err(err) => {
-                    send_response(out_tx, seq, request, false, None, Some(err.to_string())).await
+                    let message = sanitize_serde_json_error(err);
+                    send_response(out_tx, seq, request, false, None, Some(message)).await
                 }
             }
         }
