@@ -295,28 +295,37 @@ fn related_code_query_avoids_unicode_escaped_path_segments() {
         }
     }
 
-    let search = CapturingSearch::default();
-    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
-    let focal_code = format!(
-        "\\u002Fhome\\u002Fuser\\u002Fmy-{private_segment}-project\\u002Fsrc\\u002Fmain\\u002Fjava\nreturn foo.bar();\n"
-    );
+    for prefix in [
+        r"\u002Fhome\u002Fuser\u002Fmy-",
+        r"\u{002F}home\u{002F}user\u{002F}my-",
+    ] {
+        let search = CapturingSearch::default();
+        let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+        let focal_code = [
+            prefix,
+            private_segment,
+            r"-project\u002Fsrc\u002Fmain\u002Fjava",
+            "\nreturn foo.bar();\n",
+        ]
+        .concat();
 
-    let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
-    let query = search
-        .last_query
-        .lock()
-        .expect("lock poisoned")
-        .clone()
-        .expect("query captured");
+        let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+        let query = search
+            .last_query
+            .lock()
+            .expect("lock poisoned")
+            .clone()
+            .expect("query captured");
 
-    assert!(
-        !query.contains(private_segment),
-        "query should not include unicode-escaped path fragments: {query}"
-    );
-    assert!(
-        query.contains("foo") || query.contains("bar"),
-        "expected query to retain non-path identifiers, got: {query}"
-    );
+        assert!(
+            !query.contains(private_segment),
+            "query should not include unicode-escaped path fragments: {query}"
+        );
+        assert!(
+            query.contains("foo") || query.contains("bar"),
+            "expected query to retain non-path identifiers, got: {query}"
+        );
+    }
 }
 
 #[test]
@@ -657,6 +666,8 @@ fn related_code_query_skips_unicode_escaped_path_only_selections() {
     for focal_code in [
         r"\u002Fhome\u002Fuser\u002Fsecret\u002Fcredentials",
         r"\u005Chome\u005Cuser\u005Csecret\u005Ccredentials",
+        r"\u{002F}home\u{002F}user\u{002F}secret\u{002F}credentials",
+        r"\u{005C}home\u{005C}user\u{005C}secret\u{005C}credentials",
         r"\U0000002Fhome\U0000002Fuser\U0000002Fsecret\U0000002Fcredentials",
         r"\U0000005Chome\U0000005Cuser\U0000005Csecret\U0000005Ccredentials",
     ] {

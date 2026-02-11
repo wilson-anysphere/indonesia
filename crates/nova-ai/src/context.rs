@@ -830,6 +830,13 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         if prev == b'/' || prev == b'\\' {
             return true;
         }
+        // Unicode escape sequences like `\u{002F}` can encode path separators without embedding an
+        // actual `/` or `\` byte adjacent to the identifier. Treat identifiers that immediately
+        // follow such escapes as path-like so path segments (especially the final segment) do not
+        // leak into semantic-search queries.
+        if prev == b'}' && braced_unicode_escape_is_path_separator(bytes, start - 1) {
+            return true;
+        }
     }
     if end < bytes.len() {
         let next = bytes[end];
@@ -947,6 +954,60 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
     }
 
     false
+}
+
+fn braced_unicode_escape_is_path_separator(bytes: &[u8], end_brace: usize) -> bool {
+    fn hex_value(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    if end_brace >= bytes.len() || bytes[end_brace] != b'}' {
+        return false;
+    }
+
+    // Look for a matching `{` close enough to form an escape like `u{002F}`.
+    let mut open_brace = None;
+    let mut i = end_brace;
+    let mut scanned = 0usize;
+    while i > 0 && scanned < 16 {
+        i -= 1;
+        scanned += 1;
+        if bytes[i] == b'{' {
+            open_brace = Some(i);
+            break;
+        }
+    }
+    let Some(open_brace) = open_brace else {
+        return false;
+    };
+    if open_brace == 0 {
+        return false;
+    }
+
+    let u = bytes[open_brace - 1];
+    if u != b'u' && u != b'U' {
+        return false;
+    }
+
+    let digits = &bytes[open_brace + 1..end_brace];
+    if digits.is_empty() || digits.len() > 8 {
+        return false;
+    }
+
+    let mut value = 0u32;
+    for &b in digits {
+        let Some(hex) = hex_value(b) else {
+            return false;
+        };
+        value = (value << 4) | hex as u32;
+    }
+
+    matches!(value, 0x2F | 0x5C)
 }
 
 fn identifier_looks_like_ipv6_segment(text: &str, start: usize, end: usize, tok: &str) -> bool {
@@ -1754,6 +1815,15 @@ fn token_contains_percent_encoded_path_separator(tok: &str) -> bool {
 }
 
 fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
+    fn hex_value(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+
     let bytes = tok.as_bytes();
     if bytes.len() < 5 {
         return false;
@@ -1770,6 +1840,28 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
         if i > 0 && bytes[i - 1].is_ascii_alphanumeric() {
             i += 1;
             continue;
+        }
+
+        if bytes.get(i + 1).is_some_and(|b| *b == b'{') {
+            let mut value = 0u32;
+            let mut digits = 0usize;
+            let mut j = i + 2;
+            while j < bytes.len() && digits < 8 {
+                if bytes[j] == b'}' {
+                    break;
+                }
+                let Some(hex) = hex_value(bytes[j]) else {
+                    break;
+                };
+                value = (value << 4) | hex as u32;
+                digits += 1;
+                j += 1;
+            }
+
+            if digits > 0 && j < bytes.len() && bytes[j] == b'}' && matches!(value, 0x2F | 0x5C)
+            {
+                return true;
+            }
         }
 
         if bytes[i + 1] == b'0' && bytes[i + 2] == b'0' {
