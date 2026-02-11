@@ -44,6 +44,15 @@ async fn wire_server_does_not_echo_backticked_numeric_values_in_launch_argument_
 
     let secret_number = 9_876_543_210u64;
     let secret_text = secret_number.to_string();
+    // Ensure this test would actually catch leaks if sanitization regressed.
+    let raw_err =
+        serde_json::from_value::<u16>(json!(secret_number)).expect_err("expected invalid value");
+    let raw_message = raw_err.to_string();
+    assert!(
+        raw_message.contains(&secret_text),
+        "expected raw serde_json error string to include the backticked numeric value so this test catches leaks: {raw_message}"
+    );
+
     // `launch.port` expects a number (`u16`). Passing an out-of-range integer triggers:
     // `invalid value: integer `...`, expected u16`.
     let resp = client

@@ -12,6 +12,27 @@ fn stdio_custom_request_invalid_params_does_not_echo_backticked_values() {
     let secret_suffix = "NOVA_LSP_BACKTICK_SECRET_DO_NOT_LEAK";
     let secret = format!("prefix`, expected {secret_suffix}");
 
+    // Ensure this test would actually catch leaks if sanitization regressed.
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct TestSerdeJsonArgs {
+        #[allow(dead_code)]
+        foo: u32,
+        #[allow(dead_code)]
+        flag: bool,
+    }
+    let raw_err = serde_json::from_value::<TestSerdeJsonArgs>(json!({
+        "foo": 1,
+        "flag": true,
+        secret.clone(): 1,
+    }))
+    .expect_err("expected unknown field error");
+    let raw_message = raw_err.to_string();
+    assert!(
+        raw_message.contains(secret_suffix),
+        "expected raw serde_json error string to include the backticked value so this test catches leaks: {raw_message}"
+    );
+
     let temp = TempDir::new().expect("tempdir");
     let config_path = temp.path().join("nova.toml");
     std::fs::write(&config_path, "[ai]\nenabled = false\n").expect("write config");
@@ -57,6 +78,8 @@ fn stdio_custom_request_invalid_params_does_not_echo_backticked_values() {
     );
 
     let mut params = serde_json::Map::new();
+    params.insert("foo".to_string(), json!(1));
+    params.insert("flag".to_string(), json!(true));
     params.insert(secret, json!(1));
 
     write_jsonrpc_message(
@@ -99,6 +122,26 @@ fn stdio_custom_request_invalid_params_does_not_echo_backticked_numeric_values()
 
     let secret_number = 9_876_543_210u64;
     let secret_text = secret_number.to_string();
+
+    // Ensure this test would actually catch leaks if sanitization regressed.
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct TestSerdeJsonArgs {
+        #[allow(dead_code)]
+        foo: u32,
+        #[allow(dead_code)]
+        flag: bool,
+    }
+    let raw_err = serde_json::from_value::<TestSerdeJsonArgs>(json!({
+        "foo": 1,
+        "flag": secret_number,
+    }))
+    .expect_err("expected invalid type error");
+    let raw_message = raw_err.to_string();
+    assert!(
+        raw_message.contains(&secret_text),
+        "expected raw serde_json error string to include the backticked numeric value so this test catches leaks: {raw_message}"
+    );
 
     let temp = TempDir::new().expect("tempdir");
     let config_path = temp.path().join("nova.toml");
