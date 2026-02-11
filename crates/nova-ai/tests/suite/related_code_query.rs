@@ -2151,6 +2151,46 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_with_missing_amp_semicolons(
+) {
+    struct PanicSearch<'a> {
+        sep: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for HTML entity percent-encoded path selections missing ampersand semicolons (sep={}); got query={query}",
+                self.sep
+            );
+        }
+    }
+
+    for sep in [
+        "&amp#37;2F",
+        "&amp#x25;2F",
+        "&amp#37;5C",
+        "&amp#x25;5C",
+        "&amp#372F",
+        "&amp#x252F",
+        "&amp#375C",
+        "&amp#x255C",
+        "&amppercnt;2F",
+        "&amppercent;2F",
+        "&amppercnt2F",
+        "&amppercent2F",
+    ] {
+        let search = PanicSearch { sep };
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for HTML entity percent-encoded path-only focal code missing ampersand semicolons"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_without_semicolons() {
     struct PanicSearch;
 

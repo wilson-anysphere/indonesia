@@ -2313,6 +2313,16 @@ fn html_entity_is_percent(bytes: &[u8], end_semicolon: usize) -> bool {
                 }
                 continue;
             }
+            if fragment.len() > 3 && fragment[..3].eq_ignore_ascii_case(b"amp") {
+                fragment = &fragment[3..];
+                if fragment.first().is_some_and(|b| *b == b';') {
+                    fragment = &fragment[1..];
+                }
+                if fragment.is_empty() {
+                    return false;
+                }
+                continue;
+            }
             break;
         }
 
@@ -2344,75 +2354,7 @@ fn html_entity_is_percent(bytes: &[u8], end_semicolon: usize) -> bool {
 
     if bytes[amp + 1] != b'#' {
         let name = &bytes[amp + 1..end_semicolon];
-        if name.eq_ignore_ascii_case(b"percnt") || name.eq_ignore_ascii_case(b"percent") {
-            return true;
-        }
-
-        // Handle nested escapes like `&amp;#37;` or `&amp;percnt;` by stripping `amp;` prefixes.
-        let mut rest = name;
-        let mut stripped = false;
-        for _ in 0..8 {
-            if rest.len() >= 4 && rest[..3].eq_ignore_ascii_case(b"amp") && rest[3] == b';' {
-                rest = &rest[4..];
-                stripped = true;
-                continue;
-            }
-            break;
-        }
-
-        if stripped && !rest.is_empty() {
-            if rest.eq_ignore_ascii_case(b"percnt") || rest.eq_ignore_ascii_case(b"percent") {
-                return true;
-            }
-            if rest[0] == b'#' {
-                let mut j = 1usize;
-                let base = match rest.get(j) {
-                    Some(b'x') | Some(b'X') => {
-                        j += 1;
-                        16u32
-                    }
-                    _ => 10u32,
-                };
-                if j >= rest.len() {
-                    return false;
-                }
-
-                let mut digits = &rest[j..];
-                while digits.first().is_some_and(|b| *b == b'0') {
-                    digits = &digits[1..];
-                }
-                if digits.is_empty() {
-                    return false;
-                }
-                if digits.len() > 8 {
-                    return false;
-                }
-
-                let mut value = 0u32;
-                for &b in digits {
-                    let digit = if base == 16 {
-                        let Some(v) = hex_value(b) else {
-                            return false;
-                        };
-                        v as u32
-                    } else if b.is_ascii_digit() {
-                        (b - b'0') as u32
-                    } else {
-                        return false;
-                    };
-                    value = value
-                        .checked_mul(base)
-                        .and_then(|v| v.checked_add(digit))
-                        .unwrap_or(u32::MAX);
-                }
-
-                if value == 37 {
-                    return true;
-                }
-            }
-        }
-
-        return false;
+        return fragment_is_percent(name);
     }
 
     let mut j = amp + 2;
@@ -2470,6 +2412,65 @@ fn html_entity_is_percent(bytes: &[u8], end_semicolon: usize) -> bool {
         }
 
         return fragment_is_percent(fragment);
+    }
+
+    // Handle cases where the numeric `&` entity omits its own `;` terminator, e.g. `&#38percnt;` or
+    // `&#x26#37;`. HTML parsers will treat the numeric prefix (`38`/`0x26`) as an `&` and the
+    // remaining bytes as a nested percent entity fragment.
+    {
+        // For hex entities, missing semicolons are ambiguous when the fragment begins with a hex
+        // digit. Fail closed: treat leading `26` (0x26 == '&') as an ampersand when the remainder
+        // decodes to a percent sign.
+        if base == 16 {
+            let mut digits = digits_full;
+            while digits.first().is_some_and(|b| *b == b'0') {
+                digits = &digits[1..];
+            }
+            if digits.len() > 2 && digits[0] == b'2' && digits[1] == b'6' {
+                let fragment = &digits[2..];
+                if fragment_is_percent(fragment) {
+                    return true;
+                }
+            }
+        }
+
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        let mut k = 0usize;
+        while k < digits_full.len() && significant < 8 {
+            let b = digits_full[k];
+            let digit = if base == 16 {
+                let Some(v) = hex_value(b) else {
+                    break;
+                };
+                v as u32
+            } else if b.is_ascii_digit() {
+                (b - b'0') as u32
+            } else {
+                break;
+            };
+            if significant == 0 && digit == 0 {
+                k += 1;
+                continue;
+            }
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+            significant += 1;
+            k += 1;
+        }
+
+        if significant > 0 && k < digits_full.len() {
+            let fragment = &digits_full[k..];
+            if value == 37 {
+                return true;
+            }
+            if value == 38 {
+                return fragment_is_percent(fragment);
+            }
+            return false;
+        }
     }
 
     let mut digits = digits_full;
@@ -3981,11 +3982,11 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
 
         let mut j = i + 1;
         for _ in 0..8 {
-            if j + 3 < bytes.len()
-                && bytes[j..j + 3].eq_ignore_ascii_case(b"amp")
-                && bytes[j + 3] == b';'
-            {
-                j += 4;
+            if j + 2 < bytes.len() && bytes[j..j + 3].eq_ignore_ascii_case(b"amp") {
+                j += 3;
+                if bytes.get(j).is_some_and(|b| *b == b';') {
+                    j += 1;
+                }
                 continue;
             }
             break;
@@ -4138,11 +4139,11 @@ fn token_contains_html_entity_percent_encoded_path_separator(tok: &str) -> bool 
 
         let mut j = i + 1;
         for _ in 0..8 {
-            if j + 3 < bytes.len()
-                && bytes[j..j + 3].eq_ignore_ascii_case(b"amp")
-                && bytes[j + 3] == b';'
-            {
-                j += 4;
+            if j + 2 < bytes.len() && bytes[j..j + 3].eq_ignore_ascii_case(b"amp") {
+                j += 3;
+                if bytes.get(j).is_some_and(|b| *b == b';') {
+                    j += 1;
+                }
                 continue;
             }
             break;
@@ -6072,6 +6073,23 @@ class Foo {
         let built1 = builder.build(req.clone());
         let built2 = builder.build(req);
         assert_eq!(built1.text, built2.text);
+    }
+
+    #[test]
+    fn html_entity_percent_encoded_path_detection_handles_missing_amp_semicolons() {
+        for tok in [
+            "&amp#37;2Fhome",
+            "&amp#x25;2Fhome",
+            "&amp#372Fhome",
+            "&amp#x252Fhome",
+            "&amppercnt;2Fhome",
+            "&amppercent2Fhome",
+        ] {
+            assert!(
+                token_contains_html_entity_percent_encoded_path_separator(tok),
+                "expected token to be treated as percent-encoded path separator: {tok}"
+            );
+        }
     }
 
     #[test]
