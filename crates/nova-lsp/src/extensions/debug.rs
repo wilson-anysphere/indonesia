@@ -29,7 +29,8 @@ pub fn handle_debug_configurations(params: serde_json::Value) -> Result<serde_js
     let project = Project::load_from_dir(Path::new(&params.project_root))
         .map_err(|err| NovaLspError::Internal(err.to_string()))?;
     let configs = project.discover_debug_configurations();
-    serde_json::to_value(configs).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(configs)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,7 +76,8 @@ pub fn handle_hot_swap(params: serde_json::Value) -> Result<serde_json::Value> {
 
     let mut engine = HotSwapEngine::new(build, jdwp);
     let result = engine.hot_swap(&changed_files);
-    serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(result)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }
 
 struct ProjectHotSwapBuild {

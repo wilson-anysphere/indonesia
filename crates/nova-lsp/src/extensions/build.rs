@@ -407,7 +407,8 @@ pub fn handle_build_project(params: serde_json::Value) -> Result<serde_json::Val
                 .map(NovaDiagnostic::from)
                 .collect(),
         };
-        return serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()));
+        return serde_json::to_value(resp)
+            .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)));
     }
 
     let kind = match detect_kind(&project_root, params.build_tool) {
@@ -450,7 +451,8 @@ pub fn handle_build_project(params: serde_json::Value) -> Result<serde_json::Val
             .map(NovaDiagnostic::from)
             .collect(),
     };
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(resp)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }
 
 pub fn handle_java_classpath(params: serde_json::Value) -> Result<serde_json::Value> {
@@ -545,7 +547,8 @@ pub fn handle_java_classpath(params: serde_json::Value) -> Result<serde_json::Va
         language_level,
         output_dirs,
     };
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(resp)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }
 
 pub fn handle_reload_project(params: serde_json::Value) -> Result<serde_json::Value> {
@@ -936,7 +939,8 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
                 output_dir: info.output_dir,
                 enable_preview: info.preview,
             };
-            serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+            serde_json::to_value(result)
+                .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
         })();
         status_guard.finish_from_result(&value_result);
         value_result
@@ -1144,7 +1148,8 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
                 output_dir,
                 enable_preview,
             };
-            serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+            serde_json::to_value(result)
+                .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
         })();
 
         status_guard.finish_from_result(&value_result);
@@ -1220,7 +1225,8 @@ pub fn handle_file_classpath(params: serde_json::Value) -> Result<serde_json::Va
             output_dir: info.output_dir,
             enable_preview: info.preview,
         };
-        serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+        serde_json::to_value(result)
+            .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
     })();
     status_guard.finish_from_result(&value_result);
     value_result
@@ -1350,7 +1356,8 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                 project_root: workspace_root.to_string_lossy().to_string(),
                 units,
             };
-            serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+            serde_json::to_value(result)
+                .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
         })();
 
         status_guard.finish_from_result(&value_result);
@@ -1604,7 +1611,9 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                     project_root: project_root.to_string_lossy().to_string(),
                     units,
                 };
-                serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+                serde_json::to_value(result).map_err(|err| {
+                    NovaLspError::Internal(crate::sanitize_serde_json_error(&err))
+                })
             })();
 
             status_guard.finish_from_result(&value_result);
@@ -1640,7 +1649,8 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                 project_root: project_root.to_string_lossy().to_string(),
                 units,
             };
-            serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+            serde_json::to_value(result)
+                .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
         }
         nova_project::BuildSystem::Bazel => Err(NovaLspError::InvalidParams(
             "Bazel workspace was not detected at the requested root".to_string(),
@@ -2059,7 +2069,8 @@ pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json:
             source: None,
             error,
         };
-        return serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()));
+        return serde_json::to_value(resp)
+            .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)));
     }
 
     if let Some(workspace_root) = nova_project::bazel_workspace_root(&requested_root) {
@@ -2092,7 +2103,8 @@ pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json:
             },
         };
 
-        return serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()));
+        return serde_json::to_value(resp)
+            .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)));
     }
     let resp = BuildDiagnosticsResult {
         schema_version: BUILD_DIAGNOSTICS_SCHEMA_VERSION,
@@ -2104,7 +2116,8 @@ pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json:
         error: None,
     };
 
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(resp)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }
 
 #[cfg(test)]

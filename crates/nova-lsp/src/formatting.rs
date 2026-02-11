@@ -63,7 +63,8 @@ pub fn handle_document_formatting(
 
     let edits = edits_for_document_formatting(text, &config);
     let lsp_edits = to_lsp_edits(text, edits);
-    serde_json::to_value(lsp_edits).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(lsp_edits)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }
 
 pub fn handle_range_formatting(params: serde_json::Value, text: &str) -> Result<serde_json::Value> {
@@ -80,7 +81,8 @@ pub fn handle_range_formatting(params: serde_json::Value, text: &str) -> Result<
     let edits = edits_for_range_formatting(&tree, text, range, &config)
         .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
     let lsp_edits = to_lsp_edits(text, edits);
-    serde_json::to_value(lsp_edits).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(lsp_edits)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }
 
 pub fn handle_on_type_formatting(
@@ -105,5 +107,6 @@ pub fn handle_on_type_formatting(
     let edits = edits_for_on_type_formatting(&tree, text, position, ch, &config)
         .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
     let lsp_edits = to_lsp_edits(text, edits);
-    serde_json::to_value(lsp_edits).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(lsp_edits)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }

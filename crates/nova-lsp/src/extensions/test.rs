@@ -7,7 +7,8 @@ pub fn handle_discover(params: serde_json::Value) -> Result<serde_json::Value> {
     let req: TestDiscoverRequest = serde_json::from_value(params)
         .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
     let resp = nova_testing::discover_tests(&req).map_err(map_testing_error)?;
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(resp)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }
 
 pub fn handle_run(params: serde_json::Value) -> Result<serde_json::Value> {
@@ -32,7 +33,8 @@ pub fn handle_run(params: serde_json::Value) -> Result<serde_json::Value> {
     }
 
     let resp = resp_result.map_err(map_testing_error)?;
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(resp)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }
 
 pub fn handle_debug_configuration(params: serde_json::Value) -> Result<serde_json::Value> {
@@ -40,7 +42,8 @@ pub fn handle_debug_configuration(params: serde_json::Value) -> Result<serde_jso
         .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
     let resp =
         nova_testing::debug::debug_configuration_for_request(&req).map_err(map_testing_error)?;
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(resp)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }
 
 fn map_testing_error(err: nova_testing::NovaTestingError) -> NovaLspError {

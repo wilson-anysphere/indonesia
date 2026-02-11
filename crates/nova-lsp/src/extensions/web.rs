@@ -47,5 +47,6 @@ pub fn handle_endpoints(params: serde_json::Value) -> Result<serde_json::Value> 
             .collect(),
     };
 
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(resp)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }

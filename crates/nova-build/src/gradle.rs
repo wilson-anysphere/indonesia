@@ -1782,6 +1782,30 @@ BUILD SUCCESSFUL
     }
 
     #[test]
+    fn gradle_json_parse_errors_do_not_echo_string_values() {
+        let secret = "nova-gradle-secret-token";
+        let out = format!(
+            r#"
+> Task :printNovaProjects
+NOVA_PROJECTS_BEGIN
+{{"projects":"{secret}"}}
+NOVA_PROJECTS_END
+"#
+        );
+
+        let err = parse_gradle_projects_output(&out).expect_err("expected json parse error");
+        let message = err.to_string();
+        assert!(
+            !message.contains(secret),
+            "expected BuildError::Parse to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected BuildError::Parse to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
     fn union_classpath_preserves_order_and_dedupes() {
         let union = JavaCompileConfig::union([
             JavaCompileConfig {
@@ -2131,12 +2155,53 @@ pub fn parse_gradle_classpath_output(output: &str) -> Vec<PathBuf> {
     entries
 }
 
+fn sanitize_serde_json_error(err: &serde_json::Error) -> String {
+    sanitize_json_error_message(&err.to_string())
+}
+
+fn sanitize_json_error_message(message: &str) -> String {
+    // `serde_json::Error` display strings can include user-provided scalar values (for example:
+    // `invalid type: string "..."`). Gradle output can include environment-derived values; avoid
+    // echoing those values in errors.
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let Some(end) = rest.find('"') else {
+            // Unterminated quote: append the remainder and stop.
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+
+    // `serde` wraps unknown fields/variants in backticks:
+    // `unknown field `secret`, expected ...`
+    //
+    // Redact only the first backticked segment so we keep the expected value list actionable.
+    if let Some(start) = out.find('`') {
+        if let Some(end_rel) = out[start.saturating_add(1)..].find('`') {
+            let end = start.saturating_add(1).saturating_add(end_rel);
+            if start + 1 <= end && end <= out.len() {
+                out.replace_range(start + 1..end, "<redacted>");
+            }
+        }
+    }
+
+    out
+}
+
 pub fn parse_gradle_projects_output(output: &str) -> Result<Vec<GradleProjectInfo>> {
     let json = extract_sentinel_block(output, NOVA_PROJECTS_BEGIN, NOVA_PROJECTS_END)
         .ok_or_else(|| BuildError::Parse("failed to locate Gradle project JSON block".into()))?;
 
     let parsed: GradleProjectsJson =
-        serde_json::from_str(json.trim()).map_err(|e| BuildError::Parse(e.to_string()))?;
+        serde_json::from_str(json.trim()).map_err(|e| BuildError::Parse(sanitize_serde_json_error(&e)))?;
 
     let mut projects: Vec<GradleProjectInfo> = parsed
         .projects
@@ -2162,7 +2227,8 @@ fn parse_gradle_all_java_compile_configs_output(
         },
     )?;
 
-    serde_json::from_str(json.trim()).map_err(|e| BuildError::Parse(e.to_string()))
+    serde_json::from_str(json.trim())
+        .map_err(|e| BuildError::Parse(sanitize_serde_json_error(&e)))
 }
 
 fn parse_gradle_annotation_processing_json(output: &str) -> Result<GradleAnnotationProcessingJson> {
@@ -2172,7 +2238,8 @@ fn parse_gradle_annotation_processing_json(output: &str) -> Result<GradleAnnotat
             BuildError::Parse("failed to locate Gradle annotation processing JSON".into())
         })?;
 
-    serde_json::from_str(json.trim()).map_err(|e| BuildError::Parse(e.to_string()))
+    serde_json::from_str(json.trim())
+        .map_err(|e| BuildError::Parse(sanitize_serde_json_error(&e)))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -2367,7 +2434,8 @@ struct GradleJavaCompileConfigJson {
 
 fn parse_gradle_java_compile_config_json(output: &str) -> Result<GradleJavaCompileConfigJson> {
     let json = extract_nova_json_block(output)?;
-    serde_json::from_str(json.trim()).map_err(|e| BuildError::Parse(e.to_string()))
+    serde_json::from_str(json.trim())
+        .map_err(|e| BuildError::Parse(sanitize_serde_json_error(&e)))
 }
 
 fn normalize_gradle_java_compile_config(

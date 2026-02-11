@@ -97,7 +97,8 @@ pub fn handle_endpoints(params: serde_json::Value) -> Result<serde_json::Value> 
         schema_version: SCHEMA_VERSION,
         endpoints,
     };
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(resp)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }
 
 pub fn handle_beans(params: serde_json::Value) -> Result<serde_json::Value> {
@@ -134,7 +135,8 @@ pub fn handle_beans(params: serde_json::Value) -> Result<serde_json::Value> {
         schema_version: SCHEMA_VERSION,
         beans,
     };
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(resp)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }
 
 fn analyze_root(root: &Path) -> Result<nova_framework_micronaut::AnalysisResult> {

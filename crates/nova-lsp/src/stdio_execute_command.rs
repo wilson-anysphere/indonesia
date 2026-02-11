@@ -199,7 +199,7 @@ pub(super) fn handle_execute_command(
             })?;
             let edit =
                 nova_lsp::extract_method::execute(&source, args).map_err(|e| (-32603, e, None))?;
-            serde_json::to_value(edit).map_err(|e| (-32603, e.to_string(), None))
+            serde_json::to_value(edit).map_err(|e| (-32603, sanitize_serde_json_error(&e), None))
         }
         nova_ide::COMMAND_EXPLAIN_ERROR => {
             nova_lsp::hardening::record_request();
@@ -299,7 +299,8 @@ pub(super) fn handle_execute_command(
                             )
                             .map_err(|e| (-32603, e.to_string(), None))?;
                     }
-                    serde_json::to_value(result).map_err(|e| (-32603, e.to_string(), None))
+                    serde_json::to_value(result)
+                        .map_err(|e| (-32603, sanitize_serde_json_error(&e), None))
                 }
                 Err(err) => {
                     let (code, message) = match err {

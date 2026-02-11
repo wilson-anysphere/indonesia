@@ -155,7 +155,8 @@ pub fn handle_generated_sources(
     }
 
     let resp = convert_status(status);
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(resp)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }
 
 pub fn handle_run_annotation_processing(
@@ -226,7 +227,8 @@ pub fn handle_run_annotation_processing(
         error: run_result.error,
     };
 
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(resp)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }
 
 fn parse_params(value: serde_json::Value) -> Result<NovaGeneratedSourcesParams> {

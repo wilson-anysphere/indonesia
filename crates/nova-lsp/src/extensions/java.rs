@@ -52,7 +52,8 @@ pub fn handle_source_paths(params: serde_json::Value) -> Result<serde_json::Valu
         schema_version: SCHEMA_VERSION,
         roots,
     };
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(resp)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,5 +143,6 @@ pub fn handle_resolve_main_class(params: serde_json::Value) -> Result<serde_json
         classes,
     };
 
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(resp)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }

@@ -242,5 +242,6 @@ pub fn handle_project_configuration(params: serde_json::Value) -> Result<serde_j
             .collect(),
     };
 
-    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+    serde_json::to_value(resp)
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }

@@ -269,6 +269,48 @@ fn provider_error_from_wasm_call_error(err: WasmCallError) -> ProviderError {
     ProviderError::new(kind, err.to_string())
 }
 
+fn sanitize_serde_json_error(err: &serde_json::Error) -> String {
+    sanitize_json_error_message(&err.to_string())
+}
+
+fn sanitize_json_error_message(message: &str) -> String {
+    // `serde_json::Error` display strings can include user-provided scalar values (for example:
+    // `invalid type: string "..."`). WASM extension request/response payloads can include source
+    // text, diagnostics, etc. Conservatively redact quoted substrings to avoid leaking those values
+    // through provider errors.
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let Some(end) = rest.find('"') else {
+            // Unterminated quote: append the remainder and stop.
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+
+    // `serde` wraps unknown fields/variants in backticks:
+    // `unknown field `secret`, expected ...`
+    //
+    // Redact only the first backticked segment so we keep the expected value list actionable.
+    if let Some(start) = out.find('`') {
+        if let Some(end_rel) = out[start.saturating_add(1)..].find('`') {
+            let end = start.saturating_add(1).saturating_add(end_rel);
+            if start + 1 <= end && end <= out.len() {
+                out.replace_range(start + 1..end, "<redacted>");
+            }
+        }
+    }
+
+    out
+}
+
 #[derive(Clone)]
 pub struct WasmPlugin {
     id: String,
@@ -389,7 +431,7 @@ impl WasmPlugin {
         Out: for<'de> serde::Deserialize<'de>,
     {
         let req_bytes =
-            serde_json::to_vec(request).map_err(|e| WasmCallError::Json(e.to_string()))?;
+            serde_json::to_vec(request).map_err(|e| WasmCallError::Json(sanitize_serde_json_error(&e)))?;
         if req_bytes.len() > config.max_request_bytes {
             return Err(WasmCallError::RequestTooLarge {
                 len: req_bytes.len(),
@@ -471,7 +513,8 @@ impl WasmPlugin {
         // Free response memory according to the ABI contract.
         let _ = free.call(&mut store, (resp_ptr as i32, resp_len as i32));
 
-        serde_json::from_slice::<Vec<Out>>(&bytes).map_err(|e| WasmCallError::Json(e.to_string()))
+        serde_json::from_slice::<Vec<Out>>(&bytes)
+            .map_err(|e| WasmCallError::Json(sanitize_serde_json_error(&e)))
     }
 
     fn call_diagnostics_v1(
@@ -883,5 +926,52 @@ where
                 label: hint.label,
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wasm_call_error_json_does_not_echo_string_values() {
+        let secret = "nova-wasm-secret-token";
+        let err =
+            serde_json::from_value::<bool>(serde_json::json!(secret)).expect_err("expected type error");
+
+        let message = sanitize_serde_json_error(&err);
+        assert!(
+            !message.contains(secret),
+            "expected sanitized serde_json error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized serde_json error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn wasm_call_error_json_does_not_echo_backticked_values() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OnlyFoo {
+            #[allow(dead_code)]
+            foo: u32,
+        }
+
+        let secret = "nova-wasm-backticked-secret";
+        let json = format!(r#"{{"{secret}": 1}}"#);
+        let err =
+            serde_json::from_str::<OnlyFoo>(&json).expect_err("expected unknown field error");
+
+        let message = sanitize_serde_json_error(&err);
+        assert!(
+            !message.contains(secret),
+            "expected sanitized serde_json error message to omit backticked values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized serde_json error message to include redaction marker: {message}"
+        );
     }
 }
