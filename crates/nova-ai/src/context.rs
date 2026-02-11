@@ -894,6 +894,12 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         let bounds = surrounding_token_bounds(text, start, end);
         if !bounds.is_empty() {
             let token = &text[bounds.clone()];
+            // Avoid emitting HTML-entity artifacts like `amp` into semantic-search queries when the
+            // focal selection is HTML-escaped content (e.g. `&amp;#47;home...`). This keeps
+            // path-only selections from producing a low-signal query like `amp`.
+            if token.eq_ignore_ascii_case("&amp") {
+                return true;
+            }
             if looks_like_email_address(token)
                 || looks_like_ipv4_address(token)
                 || looks_like_mac_address_token(token)
@@ -1056,6 +1062,73 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
             || name.eq_ignore_ascii_case(b"backslash")
         {
             return true;
+        }
+
+        // In HTML-escaped logs, a numeric entity can itself be escaped as `&amp;#47;`, leaving a
+        // delimiter run like `amp;#47`. Treat these double-escaped separators as path separators so
+        // we don't leak path segments into semantic-search queries.
+        //
+        // We also support multiple layers (e.g. `&amp;amp;#47;`) by stripping a few `amp;` prefixes.
+        let mut rest = name;
+        let mut stripped = false;
+        for _ in 0..3 {
+            if rest.len() >= 4
+                && rest[..3].eq_ignore_ascii_case(b"amp")
+                && rest[3] == b';'
+            {
+                rest = &rest[4..];
+                stripped = true;
+                continue;
+            }
+            break;
+        }
+        if stripped && !rest.is_empty() {
+            if rest.eq_ignore_ascii_case(b"sol")
+                || rest.eq_ignore_ascii_case(b"bsol")
+                || rest.eq_ignore_ascii_case(b"backslash")
+            {
+                return true;
+            }
+
+            if rest[0] == b'#' {
+                let mut j = 1usize;
+                let base = match rest.get(j) {
+                    Some(b'x') | Some(b'X') => {
+                        j += 1;
+                        16u32
+                    }
+                    _ => 10u32,
+                };
+                if j >= rest.len() {
+                    return false;
+                }
+                let digits = &rest[j..];
+                if digits.len() > 8 {
+                    return false;
+                }
+
+                let mut value = 0u32;
+                for &b in digits {
+                    let digit = if base == 16 {
+                        let Some(v) = hex_value(b) else {
+                            return false;
+                        };
+                        v as u32
+                    } else if b.is_ascii_digit() {
+                        (b - b'0') as u32
+                    } else {
+                        return false;
+                    };
+                    value = value
+                        .checked_mul(base)
+                        .and_then(|v| v.checked_add(digit))
+                        .unwrap_or(u32::MAX);
+                }
+
+                if matches!(value, 47 | 92) {
+                    return true;
+                }
+            }
         }
         return false;
     }

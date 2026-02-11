@@ -453,6 +453,54 @@ fn related_code_query_avoids_named_html_entity_path_segments() {
 }
 
 #[test]
+fn related_code_query_avoids_double_escaped_html_entity_path_segments() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+    for sep in [
+        "&amp;#47;",
+        "&amp;#x2F;",
+        "&amp;#92;",
+        "&amp;#x5C;",
+        "&amp;sol;",
+        "&amp;bsol;",
+        "&amp;Backslash;",
+    ] {
+        let search = CapturingSearch::default();
+        let focal_code = format!(
+            "{sep}home{sep}user{sep}my-{private_segment}-project{sep}src{sep}main{sep}java\nreturn foo.bar();\n"
+        );
+
+        let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+        let query = search
+            .last_query
+            .lock()
+            .expect("lock poisoned")
+            .clone()
+            .expect("query captured");
+
+        assert!(
+            !query.contains(private_segment),
+            "query should not include double-escaped HTML entity path fragments: {query}"
+        );
+        assert!(
+            query.contains("foo") || query.contains("bar"),
+            "expected query to retain non-path identifiers, got: {query}"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_does_not_drop_identifiers_due_to_inline_string_paths() {
     #[derive(Default)]
     struct CapturingSearch {
@@ -835,6 +883,34 @@ fn related_code_query_skips_named_html_entity_path_only_selections() {
         assert!(
             req.related_code.is_empty(),
             "expected no related code for named HTML entity path-only focal code"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_double_escaped_html_entity_path_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for double-escaped HTML entity path selections");
+        }
+    }
+
+    let search = PanicSearch;
+    for focal_code in [
+        "&amp;#47;home&amp;#47;user&amp;#47;secret&amp;#47;credentials",
+        "&amp;#x2F;home&amp;#x2F;user&amp;#x2F;secret&amp;#x2F;credentials",
+        "&amp;#92;home&amp;#92;user&amp;#92;secret&amp;#92;credentials",
+        "&amp;#x5C;home&amp;#x5C;user&amp;#x5C;secret&amp;#x5C;credentials",
+        "&amp;sol;home&amp;sol;user&amp;sol;secret&amp;sol;credentials",
+        "&amp;bsol;home&amp;bsol;user&amp;bsol;secret&amp;bsol;credentials",
+        "&amp;Backslash;home&amp;Backslash;user&amp;Backslash;secret&amp;Backslash;credentials",
+    ] {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for double-escaped HTML entity path-only focal code"
         );
     }
 }
