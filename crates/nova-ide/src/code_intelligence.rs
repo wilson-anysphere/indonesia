@@ -9723,6 +9723,90 @@ fn ensure_minimal_completion_jdk(types: &mut TypeStore) {
             merge_method_defs(&mut class_def.methods, methods);
         }
     }
+
+    // `java.lang.Class` is the receiver type for class literals (`String.class`) and `Object#getClass`.
+    // Nova's minimal JDK model defines the type but does not include any members. Seed a handful of
+    // high-signal methods so member completions and AI context building remain useful when JDK
+    // indexing is disabled.
+    let class_name = "java.lang.Class";
+    let class_id = types.intern_class_id(class_name);
+    if types
+        .class(class_id)
+        .is_some_and(|class_def| class_def.methods.is_empty())
+    {
+        let string_ty = Type::class(types.well_known().string, vec![]);
+        let class_ty = Type::class(class_id, vec![]);
+
+        let methods = vec![
+            MethodDef {
+                name: "getName".to_string(),
+                type_params: vec![],
+                params: vec![],
+                return_type: string_ty.clone(),
+                is_static: false,
+                is_varargs: false,
+                is_abstract: false,
+            },
+            MethodDef {
+                name: "getSimpleName".to_string(),
+                type_params: vec![],
+                params: vec![],
+                return_type: string_ty.clone(),
+                is_static: false,
+                is_varargs: false,
+                is_abstract: false,
+            },
+            MethodDef {
+                name: "getPackageName".to_string(),
+                type_params: vec![],
+                params: vec![],
+                return_type: string_ty,
+                is_static: false,
+                is_varargs: false,
+                is_abstract: false,
+            },
+            MethodDef {
+                name: "getSuperclass".to_string(),
+                type_params: vec![],
+                params: vec![],
+                return_type: class_ty,
+                is_static: false,
+                is_varargs: false,
+                is_abstract: false,
+            },
+            MethodDef {
+                name: "isInterface".to_string(),
+                type_params: vec![],
+                params: vec![],
+                return_type: Type::Primitive(PrimitiveType::Boolean),
+                is_static: false,
+                is_varargs: false,
+                is_abstract: false,
+            },
+            MethodDef {
+                name: "isEnum".to_string(),
+                type_params: vec![],
+                params: vec![],
+                return_type: Type::Primitive(PrimitiveType::Boolean),
+                is_static: false,
+                is_varargs: false,
+                is_abstract: false,
+            },
+            MethodDef {
+                name: "isPrimitive".to_string(),
+                type_params: vec![],
+                params: vec![],
+                return_type: Type::Primitive(PrimitiveType::Boolean),
+                is_static: false,
+                is_varargs: false,
+                is_abstract: false,
+            },
+        ];
+
+        if let Some(class_def) = types.class_mut(class_id) {
+            merge_method_defs(&mut class_def.methods, methods);
+        }
+    }
 }
 
 fn completion_type_store(
@@ -19181,6 +19265,8 @@ fn receiver_is_value_receiver(analysis: &Analysis, receiver: &str, offset: usize
         || receiver.contains(".this.")
         || receiver.ends_with(".super")
         || receiver.contains(".super.")
+        || receiver.ends_with(".class")
+        || receiver.contains(".class.")
     {
         return true;
     }
@@ -19502,6 +19588,22 @@ fn infer_receiver(
                     .unwrap_or_else(|| Type::Named("java.lang.Object".to_string())),
                 CallKind::Instance,
             );
+        }
+    }
+
+    // Class literals: `Foo.class` is an expression of type `java.lang.Class<Foo>`.
+    if let Some(qual) = receiver.strip_suffix(".class") {
+        let qual = qual.trim();
+        if !qual.is_empty() {
+            let class_id = types
+                .class_id("java.lang.Class")
+                .unwrap_or_else(|| types.intern_class_id("java.lang.Class"));
+            let arg = parse_source_type_in_context(types, file_ctx, qual);
+            let args = match arg {
+                Type::Unknown | Type::Error => vec![],
+                other => vec![other],
+            };
+            return (Type::class(class_id, args), CallKind::Instance);
         }
     }
 

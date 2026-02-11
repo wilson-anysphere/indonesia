@@ -362,6 +362,26 @@ class B extends A {
 }
 
 #[test]
+fn completion_includes_class_literal_members() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    String.class.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"getName"),
+        "expected completion list to contain Class.getName for class-literal receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_includes_qualified_this_members() {
     let (db, file, pos) = fixture(
         r#"
