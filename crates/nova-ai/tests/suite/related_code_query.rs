@@ -394,6 +394,9 @@ fn related_code_query_avoids_percent_encoded_html_entity_path_segments() {
         "%26%2347%3B",        // &#47;
         "%26%23x2F%3B",       // &#x2F;
         "%26%2347",           // &#47 (no semicolon)
+        // Inject an invalid UTF-8 byte (0xFF) via percent-decoding to ensure we still treat the
+        // token as path-like when the remaining decoded bytes are valid HTML separators.
+        "%26sol%3B%FF", // &sol; plus invalid byte
     ] {
         let mut encoded = sep.to_string();
         for _ in 0..3 {
@@ -1577,6 +1580,7 @@ fn related_code_query_skips_percent_encoded_html_entity_path_only_selections() {
         "%26%2347%3B",
         "%26%23x2F%3B",
         "%26%2347",
+        "%26sol%3B%FF",
     ] {
         let mut encoded = sep.to_string();
         for _ in 0..3 {
