@@ -2623,48 +2623,49 @@ fn token_contains_percent_encoded_path_separator(tok: &str) -> bool {
         return false;
     }
 
-    let mut i = 0usize;
-    while i + 2 < bytes.len() {
-        if bytes[i] != b'%' {
-            i += 1;
-            continue;
-        }
+    // Avoid allocating unless the token actually contains at least one percent-escape fragment.
+    let has_escape = bytes.windows(3).any(|window| {
+        window[0] == b'%' && hex_value(window[1]).is_some() && hex_value(window[2]).is_some()
+    });
+    if !has_escape {
+        return false;
+    }
 
-        let Some(hi) = hex_value(bytes[i + 1]) else {
-            i += 1;
-            continue;
-        };
-        let Some(lo) = hex_value(bytes[i + 2]) else {
-            i += 1;
-            continue;
-        };
-        let decoded = (hi << 4) | lo;
+    fn bytes_contain_path_separator(bytes: &[u8]) -> bool {
+        bytes.iter().any(|b| *b == b'/' || *b == b'\\') || bytes_contain_unicode_path_separator(bytes)
+    }
 
-        if decoded == b'/' || decoded == b'\\' {
-            return true;
-        }
-
-        // Double-encoded (or more) separators like `%252f` or `%25252f` decode to `%2f`.
-        if decoded == b'%' {
-            let mut j = i + 3;
-            // Each time a `%` is percent-encoded, it becomes `%25`, leaving a suffix like:
-            // - `%252f`   (encoded `%2f` once)
-            // - `%25252f` (encoded twice)
-            // - `%2525252f` (encoded three times)
-            //
-            // Treat any run of `25` pairs followed by a separator code as a path separator.
-            while j + 1 < bytes.len() && bytes[j] == b'2' && bytes[j + 1] == b'5' {
-                j += 2;
-            }
-            if j + 1 < bytes.len() {
-                match (bytes[j], bytes[j + 1]) {
-                    (b'2', b'f' | b'F') | (b'5', b'c' | b'C') => return true,
-                    _ => {}
+    // Percent-encoded tokens can hide both ASCII separators (`%2F`) and Unicode lookalikes
+    // (`%E2%88%95`, etc). Additionally, logs sometimes double-encode percent escapes (`%252F`,
+    // `%25E2%2588%2595`), so we decode a few rounds until we either see a separator or the token
+    // stops changing.
+    let mut current: Vec<u8> = bytes.to_vec();
+    let mut next: Vec<u8> = Vec::with_capacity(current.len());
+    for _ in 0..4 {
+        next.clear();
+        let mut i = 0usize;
+        let mut changed = false;
+        while i < current.len() {
+            if current[i] == b'%' && i + 2 < current.len() {
+                if let (Some(hi), Some(lo)) = (hex_value(current[i + 1]), hex_value(current[i + 2]))
+                {
+                    next.push((hi << 4) | lo);
+                    i += 3;
+                    changed = true;
+                    continue;
                 }
             }
+            next.push(current[i]);
+            i += 1;
         }
 
-        i += 1;
+        if !changed {
+            break;
+        }
+        if bytes_contain_path_separator(&next) {
+            return true;
+        }
+        std::mem::swap(&mut current, &mut next);
     }
 
     false
@@ -3234,8 +3235,7 @@ fn token_contains_html_entity_percent_encoded_path_separator(tok: &str) -> bool 
     false
 }
 
-fn token_contains_unicode_path_separator(tok: &str) -> bool {
-    let bytes = tok.as_bytes();
+fn bytes_contain_unicode_path_separator(bytes: &[u8]) -> bool {
     bytes.windows(3).any(|window| {
         matches!(
             window,
@@ -3256,6 +3256,10 @@ fn token_contains_unicode_path_separator(tok: &str) -> bool {
                 | [0xEF, 0xB9, 0xA8] // U+FE68 (small reverse solidus)
         )
     })
+}
+
+fn token_contains_unicode_path_separator(tok: &str) -> bool {
+    bytes_contain_unicode_path_separator(tok.as_bytes())
 }
 
 fn token_contains_long_hex_run(tok: &str) -> bool {

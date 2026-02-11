@@ -297,6 +297,69 @@ fn related_code_query_avoids_percent_encoded_path_segments() {
 }
 
 #[test]
+fn related_code_query_avoids_percent_encoded_unicode_separator_path_segments() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    fn double_encode_percent(input: &str) -> String {
+        input.replace('%', "%25")
+    }
+
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+    for sep in [
+        "%E2%88%95", // ∕ division slash (U+2215)
+        "%E2%81%84", // ⁄ fraction slash (U+2044)
+        "%EF%BC%8F", // ／ fullwidth solidus (U+FF0F)
+        "%E2%95%B1", // ╱ box drawings light diagonal (U+2571)
+        "%E2%A7%B6", // ⧶ solidus with overbar (U+29F6)
+        "%E2%A7%B8", // ⧸ big solidus (U+29F8)
+        "%E2%88%96", // ∖ set minus / backslash-like (U+2216)
+        "%EF%BC%BC", // ＼ fullwidth reverse solidus (U+FF3C)
+        "%E2%95%B2", // ╲ box drawings light diagonal (U+2572)
+        "%E2%A7%B5", // ⧵ reverse solidus operator (U+29F5)
+        "%E2%A7%B7", // ⧷ reverse solidus with horizontal stroke (U+29F7)
+        "%E2%A7%B9", // ⧹ big reverse solidus (U+29F9)
+        "%EF%B9%A8", // ﹨ small reverse solidus (U+FE68)
+    ] {
+        let mut encoded = sep.to_string();
+        for _ in 0..3 {
+            let search = CapturingSearch::default();
+            let focal_code = format!(
+                "{encoded}home{encoded}user{encoded}my-{private_segment}-project{encoded}src{encoded}main{encoded}java\nreturn foo.bar();\n"
+            );
+
+            let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+            let query = search
+                .last_query
+                .lock()
+                .expect("lock poisoned")
+                .clone()
+                .expect("query captured");
+
+            assert!(
+                !query.contains(private_segment),
+                "query should not include percent-encoded unicode path fragments: {query}"
+            );
+            assert!(
+                query.contains("foo") || query.contains("bar"),
+                "expected query to retain non-path identifiers, got: {query}"
+            );
+
+            encoded = double_encode_percent(&encoded);
+        }
+    }
+}
+
+#[test]
 fn related_code_query_avoids_html_entity_percent_encoded_path_segments() {
     #[derive(Default)]
     struct CapturingSearch {
@@ -1379,6 +1442,46 @@ fn related_code_query_skips_percent_encoded_path_only_selections() {
             req.related_code.is_empty(),
             "expected no related code for percent-encoded path-only focal code"
         );
+    }
+}
+
+#[test]
+fn related_code_query_skips_percent_encoded_unicode_separator_path_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for percent-encoded unicode path selections");
+        }
+    }
+
+    fn double_encode_percent(input: &str) -> String {
+        input.replace('%', "%25")
+    }
+
+    let search = PanicSearch;
+    for sep in [
+        "%E2%88%95", // ∕ division slash (U+2215)
+        "%E2%81%84", // ⁄ fraction slash (U+2044)
+        "%EF%BC%8F", // ／ fullwidth solidus (U+FF0F)
+        "%E2%A7%B6", // ⧶ solidus with overbar (U+29F6)
+        "%E2%88%96", // ∖ set minus / backslash-like (U+2216)
+        "%EF%BC%BC", // ＼ fullwidth reverse solidus (U+FF3C)
+        "%E2%A7%B5", // ⧵ reverse solidus operator (U+29F5)
+        "%E2%A7%B7", // ⧷ reverse solidus with horizontal stroke (U+29F7)
+        "%EF%B9%A8", // ﹨ small reverse solidus (U+FE68)
+    ] {
+        let mut encoded = sep.to_string();
+        for _ in 0..3 {
+            let focal_code = format!("{encoded}home{encoded}user{encoded}secret{encoded}credentials");
+            let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+            assert!(
+                req.related_code.is_empty(),
+                "expected no related code for percent-encoded unicode path-only focal code"
+            );
+
+            encoded = double_encode_percent(&encoded);
+        }
     }
 }
 
