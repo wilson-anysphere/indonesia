@@ -894,12 +894,13 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
             let b = bytes[i];
             let maybe_marker = match b {
                 b'%' | b'&' | b'\\' => true,
-                b'u' | b'U' => bytes
-                    .get(i + 1)
-                    .is_some_and(|next| *next == b'{' || *next == b'u' || next.is_ascii_hexdigit()),
-                b'x' | b'X' => bytes
-                    .get(i + 1)
-                    .is_some_and(|next| *next == b'{' || next.is_ascii_hexdigit()),
+                b'u' | b'U' => bytes.get(i + 1).is_some_and(|next| {
+                    matches!(*next, b'{' | b'u' | b'U' | b'x' | b'X' | b'&' | b'\\')
+                        || next.is_ascii_hexdigit()
+                }),
+                b'x' | b'X' => bytes.get(i + 1).is_some_and(|next| {
+                    matches!(*next, b'{' | b'u' | b'U' | b'&' | b'\\') || next.is_ascii_hexdigit()
+                }),
                 b'p' | b'P' => bytes
                     .get(i..i + 6)
                     .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percnt"))

@@ -2248,6 +2248,35 @@ fn related_code_query_skips_hex_escape_percent_marker_with_obfuscated_digits_sho
 }
 
 #[test]
+fn related_code_query_skips_internal_obfuscated_percent_marker_short_paths() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for internal obfuscated percent markers in short path selections; got query={query}"
+            );
+        }
+    }
+
+    let search = PanicSearch;
+    for focal_code in [
+        // `x25` where the `25` digits are unicode escapes, embedded inside an identifier token.
+        "homexu0032u0035u0032u0046user", // home%2Fuser
+        "homexu0032u0035u0035u0043user", // home%5Cuser
+        // `u0025` where the `0025` digits are hex escapes, embedded inside an identifier token.
+        "homeux30x30x32x35u0032u0046user", // home%2Fuser
+        "homeux30x30x32x35u0035u0043user", // home%5Cuser
+    ] {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for short path-only focal code with internal obfuscated percent markers"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_escaped_percent_encoded_path_only_selections_with_mixed_hex_digit_encodings()
 {
     struct PanicSearch<'a> {
