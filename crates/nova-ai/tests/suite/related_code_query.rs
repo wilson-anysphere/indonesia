@@ -2248,6 +2248,42 @@ fn related_code_query_skips_escaped_percent_encoded_path_only_selections_with_br
 }
 
 #[test]
+fn related_code_query_skips_escaped_percent_encoded_path_only_selections_with_hex_escaped_percent_markers_and_braced_hex_digit_encodings(
+) {
+    struct PanicSearch<'a> {
+        sep: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for escaped percent-encoded path selections with hex-escaped percent markers and braced hex digit encodings (sep={}); got query={query}",
+                self.sep
+            );
+        }
+    }
+
+    for sep in [
+        // Percent marker encoded as `x25` with braced unicode digit escapes.
+        "x25u{0032}u{0046}", // %2F
+        "x25u{0035}u{0043}", // %5C
+        // Mixed braced/unbraced digit escapes after a hex-escaped percent marker.
+        "x25u0032u{0046}", // %2F
+        "x25u0035u{0043}", // %5C
+        "x25u{0032}u0046", // %2F
+        "x25u{0035}u0043", // %5C
+    ] {
+        let search = PanicSearch { sep };
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for escaped percent-encoded path-only focal code with hex-escaped percent markers and braced hex digit encodings"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_unicode_escaped_path_only_selections_without_backslashes() {
     struct PanicSearch<'a> {
         focal_code: &'a str,

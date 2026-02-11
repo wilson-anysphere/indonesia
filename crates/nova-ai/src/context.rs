@@ -825,6 +825,19 @@ fn sensitive_assignment_line_ranges(text: &str) -> Vec<Range<usize>> {
 
 fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, tok: &str) -> bool {
     let bytes = text.as_bytes();
+
+    // If the identifier token begins with an escaped percent marker (e.g. `x25...`, `u0025...`,
+    // `&percnt;...`) and the following two hex digits decode to a path-like byte, treat the entire
+    // identifier as path-like. This catches obfuscated percent-encoded separators that are split
+    // across identifier boundaries (notably when braced escapes introduce `{`/`}` boundaries), such
+    // as `x25u{0032}u{0046}home` == `%2Fhome`.
+    if percent_marker_end(bytes, start)
+        .and_then(|digits_start| percent_encoded_byte_after_obfuscated_digits(bytes, digits_start))
+        .is_some_and(|(value, _)| percent_encoded_byte_is_path_like(value))
+    {
+        return true;
+    }
+
     if start > 0 {
         if unicode_path_separator_before(bytes, start) {
             return true;
