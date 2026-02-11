@@ -586,7 +586,7 @@ fn main() {
             let exit_code = match run_lsp_launcher(args, cli.config.as_deref()) {
                 Ok(code) => code,
                 Err(err) => {
-                    eprintln!("{:#}", err);
+                    eprintln!("{}", sanitize_anyhow_error_message(&err));
                     2
                 }
             };
@@ -596,7 +596,7 @@ fn main() {
             let exit_code = match run_dap_launcher(args, cli.config.as_deref()) {
                 Ok(code) => code,
                 Err(err) => {
-                    eprintln!("{:#}", err);
+                    eprintln!("{}", sanitize_anyhow_error_message(&err));
                     2
                 }
             };
@@ -619,7 +619,7 @@ fn main() {
     let exit_code = match run(cli, &config) {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("{:#}", err);
+            eprintln!("{}", sanitize_anyhow_error_message(&err));
             2
         }
     };
@@ -636,7 +636,7 @@ fn load_config_from_cli(cli: &Cli) -> NovaConfig {
         {
             Ok(config) => config,
             Err(err) => {
-                eprintln!("{:#}", err);
+                eprintln!("{}", sanitize_anyhow_error_message(&err));
                 std::process::exit(2);
             }
         }
@@ -652,7 +652,7 @@ fn load_config_from_cli(cli: &Cli) -> NovaConfig {
                 config
             }
             Err(err) => {
-                eprintln!("{:#}", err);
+                eprintln!("{}", sanitize_anyhow_error_message(&err));
                 std::process::exit(2);
             }
         }
@@ -894,7 +894,10 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
                 match workspace_symbols_distributed(&args) {
                     Ok(symbols) => symbols,
                     Err(err) => {
-                        eprintln!("nova symbols: distributed mode failed; falling back: {err:#}");
+                        eprintln!(
+                            "nova symbols: distributed mode failed; falling back: {}",
+                            sanitize_anyhow_error_message(&err)
+                        );
                         let ws = Workspace::open_with_config(&args.path, config)?;
                         ws.workspace_symbols(&args.query)?
                     }
@@ -3450,6 +3453,17 @@ fn sanitize_serde_json_error(err: &serde_json::Error) -> String {
     sanitize_json_error_message(&err.to_string())
 }
 
+fn sanitize_anyhow_error_message(err: &anyhow::Error) -> String {
+    // Many Nova subsystems use `anyhow` and error chains. If a `serde_json::Error` appears anywhere
+    // in the chain, sanitize the formatted output before printing it to stderr so user-controlled
+    // scalar values don't leak into logs.
+    if err.chain().any(|source| source.is::<serde_json::Error>()) {
+        sanitize_json_error_message(&format!("{err:#}"))
+    } else {
+        format!("{err:#}")
+    }
+}
+
 fn sanitize_json_error_message(message: &str) -> String {
     // `serde_json::Error` display strings can include user-provided scalar values (for example:
     // `invalid type: string "..."`). Avoid echoing those values in CLI error messages because
@@ -3562,4 +3576,28 @@ mod json_error_sanitization_tests {
             "expected sanitized serde_json error message to include redaction marker: {message}"
         );
     }
-}
+
+    #[test]
+    fn sanitize_anyhow_error_message_does_not_echo_string_values() {
+        use anyhow::Context as _;
+
+        let secret_suffix = "nova-cli-anyhow-super-secret";
+        let secret = format!("prefix\"{secret_suffix}");
+        let serde_err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+
+        let err = Err::<(), _>(serde_err)
+            .context("failed to parse JSON input")
+            .expect_err("expected anyhow error");
+
+        let message = sanitize_anyhow_error_message(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized anyhow error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized anyhow error message to include redaction marker: {message}"
+        );
+    }
+} 
