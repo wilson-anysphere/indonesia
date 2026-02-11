@@ -97,13 +97,31 @@ impl WorkspaceJavaIndexCache {
         };
         files.sort_by(|(a, _), (b, _)| a.cmp(b));
 
-        // Fingerprint sources (cheap pointer/len hashing, like `completion_cache`).
+        // Fingerprint sources (fast pointer/len hashing, plus a small content sample).
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for (path, file_id) in &files {
             path.hash(&mut hasher);
             let text = db.file_content(*file_id);
             text.len().hash(&mut hasher);
             text.as_ptr().hash(&mut hasher);
+
+            // Pointer/len hashing is fast, but can collide when short-lived buffers reuse the same
+            // allocations (e.g. in tests) or when text is mutated in place. Mix in a small,
+            // content-dependent sample to make invalidation deterministic without hashing full
+            // contents for large files.
+            let bytes = text.as_bytes();
+            const SAMPLE: usize = 64;
+            const FULL_HASH_MAX: usize = 3 * SAMPLE;
+            if bytes.len() <= FULL_HASH_MAX {
+                bytes.hash(&mut hasher);
+            } else {
+                bytes[..SAMPLE].hash(&mut hasher);
+                let mid = bytes.len() / 2;
+                let mid_start = mid.saturating_sub(SAMPLE / 2);
+                let mid_end = (mid_start + SAMPLE).min(bytes.len());
+                bytes[mid_start..mid_end].hash(&mut hasher);
+                bytes[bytes.len() - SAMPLE..].hash(&mut hasher);
+            }
         }
         let fingerprint = hasher.finish();
 
@@ -231,6 +249,7 @@ mod tests {
     use std::sync::Arc;
 
     use nova_db::InMemoryFileStore;
+    use tempfile::TempDir;
 
     #[test]
     fn workspace_index_cache_hits_and_invalidates_on_java_edit() {
@@ -255,5 +274,88 @@ mod tests {
         assert!(!Arc::ptr_eq(&first, &third));
         assert!(third.contains_fqn("com.foo.B2"));
         assert!(!third.contains_fqn("com.foo.B"));
+    }
+
+    #[test]
+    fn workspace_index_cache_invalidates_when_file_text_changes_in_place_with_same_ptr_and_len() {
+        struct MutableDb {
+            file_id: FileId,
+            path: PathBuf,
+            text: String,
+        }
+
+        impl Database for MutableDb {
+            fn file_content(&self, file_id: FileId) -> &str {
+                if file_id == self.file_id {
+                    self.text.as_str()
+                } else {
+                    ""
+                }
+            }
+
+            fn file_path(&self, file_id: FileId) -> Option<&Path> {
+                (file_id == self.file_id).then_some(self.path.as_path())
+            }
+
+            fn all_file_ids(&self) -> Vec<FileId> {
+                vec![self.file_id]
+            }
+        }
+
+        let tmp = TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        let src_dir = root.join("src/main/java/p");
+        std::fs::create_dir_all(&src_dir).expect("create dirs");
+        let file_path = src_dir.join("Main.java");
+        // Create a real file so `nova_project::workspace_root` prefers this tempdir instead of
+        // walking up to unrelated ancestors like `/tmp`.
+        std::fs::write(&file_path, "").expect("write file");
+
+        let file_id = FileId::from_raw(0);
+        let prefix = "package p;\n";
+        let decl = "public class A {}\n";
+        let filler_a = format!("/*{}*/\n", "a".repeat(1024));
+        let filler_b = format!("/*{}*/\n", "b".repeat(1024));
+        let text = format!("{prefix}{filler_a}{decl}{filler_b}");
+
+        let a_idx = text
+            .find("class A")
+            .map(|idx| idx + "class ".len())
+            .expect("expected class name in fixture");
+        const SAMPLE: usize = 64;
+        let mid = text.len() / 2;
+        let mid_start = mid.saturating_sub(SAMPLE / 2);
+        let mid_end = (mid_start + SAMPLE).min(text.len());
+        assert!(
+            a_idx >= mid_start && a_idx < mid_end,
+            "expected class name byte to fall within the middle hash sample region"
+        );
+
+        let mut db = MutableDb {
+            file_id,
+            path: file_path,
+            text,
+        };
+
+        let first = workspace_index_for_file(&db, file_id);
+        let second = workspace_index_for_file(&db, file_id);
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(first.contains_fqn("p.A"));
+
+        // Mutate the file content in place, preserving allocation + length.
+        let ptr_before = db.text.as_ptr();
+        let len_before = db.text.len();
+        unsafe {
+            let bytes = db.text.as_mut_vec();
+            assert_eq!(bytes[a_idx], b'A');
+            bytes[a_idx] = b'B';
+        }
+        assert_eq!(ptr_before, db.text.as_ptr());
+        assert_eq!(len_before, db.text.len());
+
+        let third = workspace_index_for_file(&db, file_id);
+        assert!(!Arc::ptr_eq(&first, &third));
+        assert!(third.contains_fqn("p.B"));
+        assert!(!third.contains_fqn("p.A"));
     }
 }
