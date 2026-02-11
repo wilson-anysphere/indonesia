@@ -1244,6 +1244,17 @@ fn parsing_failure_fails_closed_with_single_sentinel_line_and_preserves_newline_
 }
 
 #[test]
+fn malformed_quoted_token_without_whitespace_delimiter_fails_closed() {
+    // A well-formed quoted token must be followed by whitespace or end-of-string.
+    // If not, treat the header as invalid and fail closed.
+    let diff = "diff --git \"a/src/Ok.java\"b/src/Ok.java\nold mode 100644\nnew mode 100755\n";
+
+    let filtered = filter_diff_for_excluded_paths_for_tests(diff, |_| false);
+    assert_eq!(filtered, sentinel_line("\n"));
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+}
+
+#[test]
 fn malformed_quoted_diff_git_header_fails_closed_even_if_section_contains_paths() {
     // Malformed quoted header (unterminated quote) should fail closed even if the section contains
     // rename metadata that could otherwise provide paths.

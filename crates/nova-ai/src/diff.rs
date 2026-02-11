@@ -1120,6 +1120,12 @@ pub(crate) fn parse_diff_token(input: &str) -> Option<(String, &str)> {
         let out = String::from_utf8(bytes).ok()?;
         let remaining = &rest[consumed..];
         let remaining = remaining.strip_prefix('"')?;
+        if !remaining.is_empty() {
+            let next = remaining.chars().next()?;
+            if !next.is_whitespace() {
+                return None;
+            }
+        }
         return Some((out, remaining));
     }
 
