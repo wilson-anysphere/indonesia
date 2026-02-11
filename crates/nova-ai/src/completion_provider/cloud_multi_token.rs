@@ -213,7 +213,11 @@ fn anonymize_prompt_context(
 
         if line.starts_with("Receiver type: ") {
             let value = line.trim_start_matches("Receiver type: ");
-            let sanitized = anonymizer.anonymize(value);
+            let sanitized = if value.trim() == "<unknown>" {
+                "<unknown>".to_string()
+            } else {
+                anonymizer.anonymize(value)
+            };
             out.push_str("Receiver type: ");
             out.push_str(&sanitized);
             out.push('\n');
@@ -222,7 +226,11 @@ fn anonymize_prompt_context(
 
         if line.starts_with("Expected type: ") {
             let value = line.trim_start_matches("Expected type: ");
-            let sanitized = anonymizer.anonymize(value);
+            let sanitized = if value.trim() == "<unknown>" {
+                "<unknown>".to_string()
+            } else {
+                anonymizer.anonymize(value)
+            };
             out.push_str("Expected type: ");
             out.push_str(&sanitized);
             out.push('\n');

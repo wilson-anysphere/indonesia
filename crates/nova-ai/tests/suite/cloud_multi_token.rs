@@ -261,6 +261,72 @@ async fn cloud_multi_token_round_trips_identifier_anonymization_and_deanonymizat
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn cloud_multi_token_anonymization_preserves_unknown_type_sentinel() {
+    let llm = Arc::new(CapturingLlm::default());
+    let provider =
+        CloudMultiTokenCompletionProvider::new(llm.clone()).with_privacy_mode(PrivacyMode {
+            anonymize_identifiers: true,
+            include_file_paths: false,
+            ..PrivacyMode::default()
+        });
+
+    let ctx = MultiTokenCompletionContext {
+        receiver_type: None,
+        expected_type: None,
+        surrounding_code: "SecretTokenProvider.".into(),
+        available_methods: vec!["getSecretToken".into()],
+        importable_paths: vec!["com.example.SecretTokenProvider".into()],
+    };
+    let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx, 1);
+
+    let out = provider
+        .complete_multi_token(MultiTokenCompletionRequest {
+            prompt,
+            max_items: 1,
+            timeout: Duration::from_secs(1),
+            cancel: CancellationToken::new(),
+        })
+        .await
+        .expect("provider call succeeds");
+    assert_eq!(out.len(), 1);
+
+    let captured = llm
+        .prompt
+        .lock()
+        .expect("prompt mutex")
+        .clone()
+        .expect("captured prompt");
+
+    assert_eq!(
+        extract_prefixed_value(&captured, "Receiver type: "),
+        "<unknown>",
+        "expected <unknown> sentinel to remain readable\n{captured}"
+    );
+    assert_eq!(
+        extract_prefixed_value(&captured, "Expected type: "),
+        "<unknown>",
+        "expected <unknown> sentinel to remain readable\n{captured}"
+    );
+
+    assert!(
+        !captured.contains("SecretTokenProvider"),
+        "expected surrounding code identifier to be anonymized\n{captured}"
+    );
+    assert!(
+        !captured.contains("getSecretToken"),
+        "expected available method identifier to be anonymized\n{captured}"
+    );
+    assert!(
+        !captured.contains("com.example.SecretTokenProvider"),
+        "expected import path identifier to be anonymized\n{captured}"
+    );
+    assert!(
+        captured.contains("id_"),
+        "expected anonymized placeholders in prompt\n{captured}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn cloud_multi_token_clamps_after_deanonymization() {
     let llm = Arc::new(AnonymizationRoundTripLlm::default());
     let provider = CloudMultiTokenCompletionProvider::new(llm)
