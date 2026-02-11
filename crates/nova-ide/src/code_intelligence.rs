@@ -11684,19 +11684,7 @@ fn scan_call_expr_ending_at(
             // Keep this heuristic narrow: only treat `Foo<...>(...)` as a call when it is preceded
             // by `new`, so we don't misinterpret comparisons like `a < b > (c)` as a constructor
             // call.
-            let mut start_idx = candidate_name_idx;
-            while start_idx >= 2
-                && analysis.tokens[start_idx - 1].kind == TokenKind::Symbol('.')
-                && analysis.tokens[start_idx - 2].kind == TokenKind::Ident
-            {
-                start_idx -= 2;
-            }
-            let new_idx = start_idx.checked_sub(1)?;
-            if analysis
-                .tokens
-                .get(new_idx)
-                .is_none_or(|t| t.kind != TokenKind::Ident || t.text != "new")
-            {
+            if constructor_type_name_for_token_idx(&analysis.tokens, candidate_name_idx).is_none() {
                 return None;
             }
 
@@ -11843,6 +11831,15 @@ fn infer_call_return_type(
         .map(|start| infer_expr_type_at(&mut types, analysis, &file_ctx, *start))
         .collect::<Vec<_>>();
 
+    // Arrays have a special-case `clone()` return type in Java: `T[]#clone()` returns `T[]`.
+    if call.name == "clone"
+        && call_kind == CallKind::Instance
+        && args.is_empty()
+        && matches!(receiver_ty, Type::Array(_))
+    {
+        return Some(format_type_fully_qualified(&types, &receiver_ty));
+    }
+
     let call = MethodCall {
         receiver: receiver_ty,
         call_kind,
@@ -11875,44 +11872,82 @@ fn fallback_receiver_type_for_call(name: &str) -> Option<String> {
 }
 
 fn is_constructor_call(analysis: &Analysis, call: &CallExpr) -> bool {
-    constructor_call_type_token_range(analysis, call).is_some()
+    constructor_type_name_for_call(analysis, call).is_some()
 }
 
-fn constructor_call_type_token_range(analysis: &Analysis, call: &CallExpr) -> Option<(usize, usize)> {
+fn constructor_type_name_for_call(analysis: &Analysis, call: &CallExpr) -> Option<String> {
     let name_idx = analysis
         .tokens
         .iter()
         .position(|t| t.span == call.name_span)?;
-
-    // Walk backwards over dotted qualifiers (`com.example.Foo` / `Outer.Inner`) to find the start
-    // of the type name.
-    let mut start_idx = name_idx;
-    while start_idx >= 2
-        && analysis.tokens[start_idx - 1].kind == TokenKind::Symbol('.')
-        && analysis.tokens[start_idx - 2].kind == TokenKind::Ident
-    {
-        start_idx -= 2;
-    }
-    let new_idx = start_idx.checked_sub(1)?;
-    let new_tok = analysis.tokens.get(new_idx)?;
-    (new_tok.kind == TokenKind::Ident && new_tok.text == "new").then_some((start_idx, name_idx))
+    constructor_type_name_for_token_idx(&analysis.tokens, name_idx)
 }
 
-fn constructor_type_name_for_call(analysis: &Analysis, call: &CallExpr) -> Option<String> {
-    let (start_idx, end_idx) = constructor_call_type_token_range(analysis, call)?;
-    let mut out = String::new();
-    let mut first = true;
-    for tok in analysis.tokens.get(start_idx..=end_idx)?.iter() {
-        if tok.kind != TokenKind::Ident {
-            continue;
-        }
-        if !first {
-            out.push('.');
-        }
-        first = false;
-        out.push_str(tok.text.as_str());
+fn constructor_type_name_for_token_idx(tokens: &[Token], name_idx: usize) -> Option<String> {
+    if tokens.get(name_idx)?.kind != TokenKind::Ident {
+        return None;
     }
-    (!first).then_some(out)
+
+    fn find_matching_open_angle(tokens: &[Token], close_angle_idx: usize) -> Option<usize> {
+        let mut depth = 0i32;
+        let mut i = close_angle_idx + 1;
+        while i > 0 {
+            i -= 1;
+            match tokens.get(i)?.kind {
+                TokenKind::Symbol('>') => depth += 1,
+                TokenKind::Symbol('<') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn type_segment_ident_before_dot(tokens: &[Token], dot_idx: usize) -> Option<usize> {
+        let prev = dot_idx.checked_sub(1)?;
+        match tokens.get(prev)?.kind {
+            TokenKind::Ident => Some(prev),
+            TokenKind::Symbol('>') => {
+                let open = find_matching_open_angle(tokens, prev)?;
+                let ident_idx = open.checked_sub(1)?;
+                tokens
+                    .get(ident_idx)
+                    .is_some_and(|t| t.kind == TokenKind::Ident)
+                    .then_some(ident_idx)
+            }
+            _ => None,
+        }
+    }
+
+    let mut segments_rev = Vec::new();
+    segments_rev.push(tokens[name_idx].text.clone());
+
+    let mut cur_idx = name_idx;
+    loop {
+        let dot_idx = match cur_idx.checked_sub(1) {
+            Some(idx) if tokens.get(idx)?.kind == TokenKind::Symbol('.') => idx,
+            _ => break,
+        };
+
+        let prev_ident_idx = type_segment_ident_before_dot(tokens, dot_idx)?;
+        segments_rev.push(tokens[prev_ident_idx].text.clone());
+        cur_idx = prev_ident_idx;
+    }
+
+    let new_idx = cur_idx.checked_sub(1)?;
+    if tokens
+        .get(new_idx)
+        .is_some_and(|t| t.kind == TokenKind::Ident && t.text == "new")
+    {
+        segments_rev.reverse();
+        return Some(segments_rev.join("."));
+    }
+
+    None
 }
 
 fn infer_call_receiver_lexical(
@@ -12354,6 +12389,15 @@ fn infer_call_return_type_in_store(
         .iter()
         .map(|start| infer_expr_type_at(types, analysis, file_ctx, *start))
         .collect::<Vec<_>>();
+
+    // Arrays have a special-case `clone()` return type in Java: `T[]#clone()` returns `T[]`.
+    if call.name == "clone"
+        && call_kind == CallKind::Instance
+        && args.is_empty()
+        && matches!(receiver_ty, Type::Array(_))
+    {
+        return Some(receiver_ty);
+    }
 
     let method_call = MethodCall {
         receiver: receiver_ty,
@@ -22493,6 +22537,29 @@ class A {
     }
 
     #[test]
+    fn infer_receiver_type_before_dot_infers_array_clone_call_chain_type() {
+        let java = r#"
+class A {
+  void m() {
+    new int[0].clone().
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("clone().")
+            .expect("expected `clone().` in fixture")
+            + "clone()".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert_eq!(ty.as_deref(), Some("int[]"));
+    }
+
+    #[test]
     fn infer_receiver_type_before_dot_infers_new_array_initializer_type() {
         let java = r#"
 class A {
@@ -22567,6 +22634,36 @@ class A {
             .find("new Outer.Inner().")
             .expect("expected `new Outer.Inner().` in fixture")
             + "new Outer.Inner()".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert!(
+            ty.as_deref().unwrap_or_default().contains("Outer.Inner"),
+            "expected receiver type to contain `Outer.Inner`, got {ty:?}"
+        );
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_parameterized_nested_constructor_call_type() {
+        let java = r#"
+class Outer<T> {
+  static class Inner<U> {}
+}
+
+class A {
+  void m() {
+    new Outer<String>.Inner<Integer>().
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("new Outer<String>.Inner<Integer>().")
+            .expect("expected `new Outer<String>.Inner<Integer>().` in fixture")
+            + "new Outer<String>.Inner<Integer>()".len();
 
         let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
         assert!(

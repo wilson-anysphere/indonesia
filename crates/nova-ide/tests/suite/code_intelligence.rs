@@ -1222,6 +1222,26 @@ class A {
 }
 
 #[test]
+fn completion_resolves_array_clone_call_chain_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    new int[0].clone().<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain array.length after clone(); got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_resolves_new_array_initializer_receiver() {
     let (db, file, pos) = fixture(
         r#"
@@ -1312,6 +1332,32 @@ class A {
     assert!(
         labels.contains(&"baz"),
         "expected completion list to contain Outer.Inner.baz for nested constructor receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_parameterized_nested_constructor_call_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class Outer<T> {
+  static class Inner<U> {
+    void baz() {}
+  }
+}
+
+class A {
+  void m() {
+    new Outer<String>.Inner<Integer>().<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"baz"),
+        "expected completion list to contain Outer.Inner.baz for parameterized nested constructor receiver; got {labels:?}"
     );
 }
 

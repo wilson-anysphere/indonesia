@@ -1007,6 +1007,30 @@ class A {
     }
 
     #[test]
+    fn array_clone_call_chain_receiver_type_and_methods_are_semantic() {
+        let ctx = ctx_for(
+            r#"
+class A {
+  void m() {
+    new int[0].clone().<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.replace(' ', "").contains("int[]"),
+            "expected receiver type to contain `int[]`, got {receiver_ty:?}"
+        );
+        assert!(
+            ctx.available_methods.iter().any(|m| m == "clone"),
+            "expected array clone() call chain receiver to include clone(), got {:?}",
+            ctx.available_methods
+        );
+    }
+
+    #[test]
     fn new_array_initializer_receiver_type_and_methods_are_semantic() {
         let ctx = ctx_for(
             r#"
@@ -1087,6 +1111,32 @@ class Outer {
 class A {
   void m() {
     new Outer.Inner().<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Inner"),
+            "expected receiver type to contain `Inner`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "baz"));
+    }
+
+    #[test]
+    fn parameterized_nested_constructor_call_receiver_type_and_methods_are_semantic() {
+        let ctx = ctx_for(
+            r#"
+class Outer<T> {
+  static class Inner<U> {
+    void baz() {}
+  }
+}
+
+class A {
+  void m() {
+    new Outer<String>.Inner<Integer>().<cursor>
   }
 }
 "#,
