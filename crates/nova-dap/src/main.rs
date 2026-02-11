@@ -207,6 +207,43 @@ mod json_error_sanitization_tests {
     }
 
     #[test]
+    fn sanitize_anyhow_error_message_does_not_echo_backticked_values() {
+        use anyhow::Context as _;
+
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OnlyFoo {
+            #[allow(dead_code)]
+            foo: u32,
+        }
+
+        let secret_suffix = "nova-dap-anyhow-backticked-secret";
+        let secret = format!("prefix`, expected {secret_suffix}");
+        let json = format!(r#"{{"{secret}": 1}}"#);
+        let serde_err =
+            serde_json::from_str::<OnlyFoo>(&json).expect_err("expected unknown field error");
+        let raw_message = serde_err.to_string();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw serde_json error string to include the backticked value so this test catches leaks: {raw_message}"
+        );
+
+        let err = Err::<(), _>(serde_err)
+            .context("failed to parse JSON")
+            .expect_err("expected anyhow error");
+
+        let message = sanitize_anyhow_error_message(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized anyhow error message to omit backticked values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized anyhow error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
     fn sanitize_anyhow_error_message_does_not_echo_string_values_when_wrapped_in_io_error() {
         use anyhow::Context as _;
 
@@ -224,6 +261,39 @@ mod json_error_sanitization_tests {
         assert!(
             !message.contains(secret_suffix),
             "expected sanitized anyhow error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized anyhow error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn sanitize_anyhow_error_message_does_not_echo_backticked_values_when_wrapped_in_io_error() {
+        use anyhow::Context as _;
+
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OnlyFoo {
+            #[allow(dead_code)]
+            foo: u32,
+        }
+
+        let secret_suffix = "nova-dap-anyhow-io-backticked-secret";
+        let secret = format!("prefix`, expected {secret_suffix}");
+        let json = format!(r#"{{"{secret}": 1}}"#);
+        let serde_err =
+            serde_json::from_str::<OnlyFoo>(&json).expect_err("expected unknown field error");
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, serde_err);
+
+        let err = Err::<(), _>(io_err)
+            .context("failed to parse JSON")
+            .expect_err("expected anyhow error");
+
+        let message = sanitize_anyhow_error_message(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized anyhow error message to omit backticked values: {message}"
         );
         assert!(
             message.contains("<redacted>"),
@@ -250,6 +320,40 @@ mod json_error_sanitization_tests {
         assert!(
             !message.contains(secret_suffix),
             "expected sanitized anyhow error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized anyhow error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn sanitize_anyhow_error_message_does_not_echo_backticked_values_when_wrapped_in_build_error() {
+        use anyhow::Context as _;
+
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OnlyFoo {
+            #[allow(dead_code)]
+            foo: u32,
+        }
+
+        let secret_suffix = "nova-dap-anyhow-build-backticked-secret";
+        let secret = format!("prefix`, expected {secret_suffix}");
+        let json = format!(r#"{{"{secret}": 1}}"#);
+        let serde_err =
+            serde_json::from_str::<OnlyFoo>(&json).expect_err("expected unknown field error");
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, serde_err);
+        let build_err: nova_build::BuildError = io_err.into();
+
+        let err = Err::<(), _>(build_err)
+            .context("failed to parse JSON")
+            .expect_err("expected anyhow error");
+
+        let message = sanitize_anyhow_error_message(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized anyhow error message to omit backticked values: {message}"
         );
         assert!(
             message.contains("<redacted>"),

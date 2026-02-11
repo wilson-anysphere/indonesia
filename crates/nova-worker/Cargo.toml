@@ -41,6 +41,7 @@ tempfile.workspace = true
 tokio.workspace = true
 rcgen = "0.13.2"
 tracing-subscriber.workspace = true
+serde.workspace = true
 
 nova-lsp = { path = "../nova-lsp" }
 nova-router = { path = "../nova-router" }

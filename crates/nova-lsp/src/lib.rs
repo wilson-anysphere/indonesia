@@ -848,6 +848,39 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_anyhow_error_message_does_not_echo_backticked_values() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OnlyFoo {
+            #[allow(dead_code)]
+            foo: u32,
+        }
+
+        let secret_suffix = "nova-lsp-anyhow-backticked-secret";
+        let secret = format!("prefix`, expected {secret_suffix}");
+        let json = format!(r#"{{"{secret}": 1}}"#);
+        let serde_err =
+            serde_json::from_str::<OnlyFoo>(&json).expect_err("expected unknown field error");
+        let raw_message = serde_err.to_string();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw serde_json unknown-field error string to include the backticked value so this test catches leaks: {raw_message}"
+        );
+
+        let err: anyhow::Error = serde_err.into();
+
+        let message = crate::sanitize_anyhow_error_message(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized anyhow error message to omit backticked values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized anyhow error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
     fn sanitize_anyhow_error_message_does_not_echo_string_values_when_wrapped_in_io_error() {
         let secret_suffix = "nova-lsp-anyhow-io-secret-token";
         let secret = format!("prefix\"{secret_suffix}");
@@ -860,6 +893,34 @@ mod tests {
         assert!(
             !message.contains(secret_suffix),
             "expected sanitized anyhow error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized anyhow error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn sanitize_anyhow_error_message_does_not_echo_backticked_values_when_wrapped_in_io_error() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OnlyFoo {
+            #[allow(dead_code)]
+            foo: u32,
+        }
+
+        let secret_suffix = "nova-lsp-anyhow-io-backticked-secret";
+        let secret = format!("prefix`, expected {secret_suffix}");
+        let json = format!(r#"{{"{secret}": 1}}"#);
+        let serde_err =
+            serde_json::from_str::<OnlyFoo>(&json).expect_err("expected unknown field error");
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, serde_err);
+        let err: anyhow::Error = io_err.into();
+
+        let message = crate::sanitize_anyhow_error_message(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized anyhow error message to omit backticked values: {message}"
         );
         assert!(
             message.contains("<redacted>"),
@@ -892,6 +953,38 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_error_message_does_not_echo_backticked_values_when_wrapped_in_io_error() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OnlyFoo {
+            #[allow(dead_code)]
+            foo: u32,
+        }
+
+        let secret_suffix = "nova-lsp-error-message-io-backticked-secret";
+        let secret = format!("prefix`, expected {secret_suffix}");
+        let json = format!(r#"{{"{secret}": 1}}"#);
+        let serde_err =
+            serde_json::from_str::<OnlyFoo>(&json).expect_err("expected unknown field error");
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, serde_err);
+        let raw_message = io_err.to_string();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw io error message to include the backticked value so this test catches leaks: {raw_message}"
+        );
+
+        let message = crate::sanitize_error_message(&io_err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized error message to omit backticked values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
     fn sanitize_error_message_does_not_echo_string_values_when_wrapped_in_build_error() {
         let secret_suffix = "nova-lsp-error-message-build-secret-token";
         let secret = format!("prefix\"{secret_suffix}");
@@ -910,6 +1003,40 @@ mod tests {
         assert!(
             !message.contains(secret_suffix),
             "expected sanitized BuildError message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized BuildError message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_message_does_not_echo_backticked_values_when_wrapped_in_build_error() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OnlyFoo {
+            #[allow(dead_code)]
+            foo: u32,
+        }
+
+        let secret_suffix = "nova-lsp-error-message-build-backticked-secret";
+        let secret = format!("prefix`, expected {secret_suffix}");
+        let json = format!(r#"{{"{secret}": 1}}"#);
+        let serde_err =
+            serde_json::from_str::<OnlyFoo>(&json).expect_err("expected unknown field error");
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, serde_err);
+        let build_err: nova_build::BuildError = io_err.into();
+
+        let raw_message = build_err.to_string();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw BuildError message to include the backticked value so this test catches leaks: {raw_message}"
+        );
+
+        let message = crate::sanitize_error_message(&build_err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized BuildError message to omit backticked values: {message}"
         );
         assert!(
             message.contains("<redacted>"),
