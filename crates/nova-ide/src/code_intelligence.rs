@@ -9802,34 +9802,90 @@ fn member_completions(
     let (mut types, env) = completion_type_store(db, file);
     let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens).with_env(env);
 
-    // Explicitly handle `this.` / `super.` member access.
+    // Best-effort recovery for call-chain field receivers like `foo().bar.<cursor>` /
+    // `foo().bar.baz.<cursor>`.
     //
-    // These receivers are not regular identifiers/locals, so the lexical receiver inference path
-    // (`infer_receiver`) would otherwise fail to resolve a type.
-    let (receiver_ty, call_kind) = match receiver {
-        "this" => {
-            let Some(class) = enclosing_class(&analysis, receiver_offset) else {
-                return Vec::new();
-            };
-            (
-                parse_source_type_in_context(&mut types, &file_ctx, &class.name),
-                CallKind::Instance,
-            )
+    // `receiver_before_dot` only captures the identifier chain segment after the call (`bar.baz`),
+    // so by the time we get here the `receiver` string may be incomplete. When we see the pattern
+    // `... ). <ident_chain> . <cursor>`, try to infer the call's return type and then resolve the
+    // field chain semantically.
+    let (mut receiver_ty, mut call_kind) =
+        if let Some(ty) = infer_call_chain_field_access_receiver_type_in_store(
+            &mut types,
+            &analysis,
+            &file_ctx,
+            text,
+            receiver_offset,
+            6,
+        ) {
+            (ty, CallKind::Instance)
+        } else {
+            // Explicitly handle `this.` / `super.` member access.
+            //
+            // These receivers are not regular identifiers/locals, so the lexical receiver
+            // inference path (`infer_receiver`) would otherwise fail to resolve a type.
+            match receiver {
+                "this" => {
+                    let Some(class) = enclosing_class(&analysis, receiver_offset) else {
+                        return Vec::new();
+                    };
+                    (
+                        parse_source_type_in_context(&mut types, &file_ctx, &class.name),
+                        CallKind::Instance,
+                    )
+                }
+                "super" => {
+                    let Some(class) = enclosing_class(&analysis, receiver_offset) else {
+                        return Vec::new();
+                    };
+                    let Some(super_name) = class.extends.as_deref() else {
+                        return Vec::new();
+                    };
+                    (
+                        parse_source_type_in_context(&mut types, &file_ctx, super_name),
+                        CallKind::Instance,
+                    )
+                }
+                _ => infer_receiver(&mut types, &analysis, &file_ctx, receiver, receiver_offset),
+            }
+        };
+
+    receiver_ty = ensure_local_class_receiver(&mut types, &analysis, receiver_ty);
+
+    // Best-effort support for dotted field chains like `this.foo.bar` / `obj.field` which
+    // `infer_receiver` treats as a type reference.
+    if receiver.contains('.')
+        && receiver
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.')
+        && class_id_of_type(&mut types, &receiver_ty).is_none()
+    {
+        let parts: Vec<&str> = receiver.split('.').filter(|p| !p.is_empty()).collect();
+        if parts.len() >= 2 {
+            let (mut ty, mut kind) =
+                infer_receiver(&mut types, &analysis, &file_ctx, parts[0], receiver_offset);
+            ty = ensure_local_class_receiver(&mut types, &analysis, ty);
+            if !matches!(ty, Type::Unknown | Type::Error) {
+                let mut ok = true;
+                for part in parts.into_iter().skip(1) {
+                    let Some(field_ty) =
+                        resolve_field_type_in_store(&mut types, &ty, part, kind)
+                    else {
+                        ok = false;
+                        break;
+                    };
+                    ty = ensure_local_class_receiver(&mut types, &analysis, field_ty);
+                    kind = CallKind::Instance;
+                }
+
+                if ok && !matches!(ty, Type::Unknown | Type::Error) {
+                    receiver_ty = ty;
+                    call_kind = CallKind::Instance;
+                }
+            }
         }
-        "super" => {
-            let Some(class) = enclosing_class(&analysis, receiver_offset) else {
-                return Vec::new();
-            };
-            let Some(super_name) = class.extends.as_deref() else {
-                return Vec::new();
-            };
-            (
-                parse_source_type_in_context(&mut types, &file_ctx, super_name),
-                CallKind::Instance,
-            )
-        }
-        _ => infer_receiver(&mut types, &analysis, &file_ctx, receiver, receiver_offset),
-    };
+    }
+
     if matches!(receiver_ty, Type::Unknown | Type::Error) {
         if call_kind == CallKind::Static {
             return static_member_completions(&types, text, receiver, prefix);
@@ -9916,6 +9972,201 @@ fn member_completions(
     rank_completions(prefix, &mut items, &ctx);
     items.truncate(400);
     items
+}
+
+fn resolve_field_type_in_store(
+    types: &mut TypeStore,
+    receiver_ty: &Type,
+    field_name: &str,
+    call_kind: CallKind,
+) -> Option<Type> {
+    // Java arrays have a pseudo-field `length`.
+    if field_name == "length" && matches!(receiver_ty, Type::Array(_)) {
+        return Some(Type::Primitive(PrimitiveType::Int));
+    }
+
+    let class_id = class_id_of_type(types, receiver_ty)?;
+
+    // Traverse the class hierarchy, using the nearest field declaration (Java field hiding rules)
+    // and collecting interfaces so we can search for inherited interface constants.
+    let mut interfaces = Vec::<Type>::new();
+    let mut current = Some(class_id);
+    let mut seen = HashSet::<ClassId>::new();
+    while let Some(class_id) = current.take() {
+        if !seen.insert(class_id) {
+            break;
+        }
+
+        let class_ty = Type::class(class_id, vec![]);
+        ensure_type_fields_loaded(types, &class_ty);
+
+        let (field_ty, super_ty, ifaces) = {
+            let class_def = types.class(class_id)?;
+            (
+                class_def
+                    .fields
+                    .iter()
+                    .find(|field| field.name == field_name)
+                    .map(|field| (field.ty.clone(), field.is_static)),
+                class_def.super_class.clone(),
+                class_def.interfaces.clone(),
+            )
+        };
+
+        if let Some(field_ty) = field_ty {
+            // Field hiding applies even across static/instance boundaries: a non-static field
+            // declared in a subclass hides a static field of the same name in a superclass. When
+            // the receiver is a type (`CallKind::Static`), stop at the nearest declaration and
+            // only accept it if it is static.
+            if call_kind == CallKind::Static && !field_ty.1 {
+                return None;
+            }
+            return Some(field_ty.0);
+        }
+
+        interfaces.extend(ifaces);
+        current = super_ty
+            .as_ref()
+            .and_then(|ty| class_id_of_type(types, ty));
+    }
+
+    // Interface fields (constants) are inherited. Search implemented interfaces (and their
+    // super-interfaces) for static fields.
+    let mut queue: VecDeque<Type> = interfaces.into();
+    let mut seen_ifaces = HashSet::<ClassId>::new();
+    while let Some(iface_ty) = queue.pop_front() {
+        let Some(iface_id) = class_id_of_type(types, &iface_ty) else {
+            continue;
+        };
+        if !seen_ifaces.insert(iface_id) {
+            continue;
+        }
+
+        let iface_class_ty = Type::class(iface_id, vec![]);
+        ensure_type_fields_loaded(types, &iface_class_ty);
+
+        let (field_ty, ifaces) = {
+            let iface_def = types.class(iface_id)?;
+            (
+                iface_def
+                    .fields
+                    .iter()
+                    .find(|field| field.name == field_name)
+                    .map(|field| (field.ty.clone(), field.is_static)),
+                iface_def.interfaces.clone(),
+            )
+        };
+
+        if let Some(field_ty) = field_ty {
+            if call_kind == CallKind::Static && !field_ty.1 {
+                return None;
+            }
+            return Some(field_ty.0);
+        }
+
+        for super_iface in ifaces {
+            queue.push_back(super_iface);
+        }
+    }
+
+    None
+}
+
+fn infer_call_chain_field_access_receiver_type_in_store(
+    types: &mut TypeStore,
+    analysis: &Analysis,
+    file_ctx: &CompletionResolveCtx,
+    text: &str,
+    dot_offset: usize,
+    budget: u8,
+) -> Option<Type> {
+    const MAX_SEGMENTS: usize = 8;
+
+    fn is_valid_identifier_token(ident: &str) -> bool {
+        let mut chars = ident.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+
+        if !is_ident_start(first) {
+            return false;
+        }
+
+        chars.all(is_ident_continue)
+    }
+
+    let receiver_end = skip_whitespace_backwards(text, dot_offset);
+    if receiver_end == 0 {
+        return None;
+    }
+
+    // Parse a dotted identifier chain ending at `receiver_end` (e.g. `bar` or `bar.baz` in
+    // `foo().bar.baz.<cursor>`). Stop when we hit a non-identifier segment so we can recover
+    // chains that start after a call expression.
+    let bytes = text.as_bytes();
+    let mut cursor_end = receiver_end;
+    let mut chain_start = receiver_end;
+    let mut segments_rev = Vec::<String>::new();
+    loop {
+        if segments_rev.len() >= MAX_SEGMENTS {
+            break;
+        }
+
+        let (seg_start, segment) = identifier_prefix(text, cursor_end);
+        if segment.is_empty() || !is_valid_identifier_token(segment.as_str()) {
+            if segments_rev.is_empty() {
+                return None;
+            }
+            break;
+        }
+
+        segments_rev.push(segment);
+        chain_start = seg_start;
+
+        let before_seg = skip_whitespace_backwards(text, seg_start);
+        if before_seg == 0 || bytes.get(before_seg - 1) != Some(&b'.') {
+            break;
+        }
+        let dot = before_seg - 1;
+        cursor_end = skip_whitespace_backwards(text, dot);
+        if cursor_end == 0 {
+            break;
+        }
+    }
+
+    let segments: Vec<String> = segments_rev.into_iter().rev().collect();
+    if segments.is_empty() {
+        return None;
+    }
+
+    // Find the dot immediately before the start of the chain and ensure the segment before it ends
+    // with `)`, i.e. `<call>().<field_chain>.<cursor>`.
+    let before_chain = skip_whitespace_backwards(text, chain_start);
+    let dot_before_chain = before_chain
+        .checked_sub(1)
+        .filter(|idx| bytes.get(*idx) == Some(&b'.'))?;
+    let prev_end = skip_whitespace_backwards(text, dot_before_chain);
+    if prev_end == 0 || bytes.get(prev_end - 1) != Some(&b')') {
+        return None;
+    }
+
+    let mut receiver_ty = infer_receiver_type_of_expr_ending_at(
+        types,
+        analysis,
+        file_ctx,
+        text,
+        dot_before_chain,
+        budget,
+    )?;
+    receiver_ty = ensure_local_class_receiver(types, analysis, receiver_ty);
+
+    for segment in segments {
+        let field_ty =
+            resolve_field_type_in_store(types, &receiver_ty, segment.as_str(), CallKind::Instance)?;
+        receiver_ty = ensure_local_class_receiver(types, analysis, field_ty);
+    }
+
+    Some(receiver_ty)
 }
 
 fn method_reference_completions(
@@ -10836,104 +11087,6 @@ pub(crate) fn infer_receiver_type_for_member_access(
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.')
         && class_id_of_type(&mut types, &receiver_ty).is_none()
     {
-        fn resolve_field_type_in_store(
-            types: &mut TypeStore,
-            receiver_ty: &Type,
-            field_name: &str,
-            call_kind: CallKind,
-        ) -> Option<Type> {
-            // Java arrays have a pseudo-field `length`.
-            if field_name == "length" && matches!(receiver_ty, Type::Array(_)) {
-                return Some(Type::Primitive(PrimitiveType::Int));
-            }
-
-            let class_id = class_id_of_type(types, receiver_ty)?;
-
-            // Traverse the class hierarchy, using the nearest field declaration (Java field hiding
-            // rules) and collecting interfaces so we can search for inherited interface constants.
-            let mut interfaces = Vec::<Type>::new();
-            let mut current = Some(class_id);
-            let mut seen = HashSet::<ClassId>::new();
-            while let Some(class_id) = current.take() {
-                if !seen.insert(class_id) {
-                    break;
-                }
-
-                let class_ty = Type::class(class_id, vec![]);
-                ensure_type_fields_loaded(types, &class_ty);
-
-                let (field_ty, super_ty, ifaces) = {
-                    let class_def = types.class(class_id)?;
-                    (
-                        class_def
-                            .fields
-                            .iter()
-                            .find(|field| field.name == field_name)
-                            .map(|field| (field.ty.clone(), field.is_static)),
-                        class_def.super_class.clone(),
-                        class_def.interfaces.clone(),
-                    )
-                };
-
-                if let Some(field_ty) = field_ty {
-                    // Field hiding applies even across static/instance boundaries: a non-static
-                    // field declared in a subclass hides a static field of the same name in a
-                    // superclass. When the receiver is a type (`CallKind::Static`), stop at the
-                    // nearest declaration and only accept it if it is static.
-                    if call_kind == CallKind::Static && !field_ty.1 {
-                        return None;
-                    }
-                    return Some(field_ty.0);
-                }
-
-                interfaces.extend(ifaces);
-                current = super_ty
-                    .as_ref()
-                    .and_then(|ty| class_id_of_type(types, ty));
-            }
-
-            // Interface fields (constants) are inherited. Search implemented interfaces (and their
-            // super-interfaces) for static fields.
-            let mut queue: VecDeque<Type> = interfaces.into();
-            let mut seen_ifaces = HashSet::<ClassId>::new();
-            while let Some(iface_ty) = queue.pop_front() {
-                let Some(iface_id) = class_id_of_type(types, &iface_ty) else {
-                    continue;
-                };
-                if !seen_ifaces.insert(iface_id) {
-                    continue;
-                }
-
-                let iface_class_ty = Type::class(iface_id, vec![]);
-                ensure_type_fields_loaded(types, &iface_class_ty);
-
-                let (field_ty, ifaces) = {
-                    let iface_def = types.class(iface_id)?;
-                    (
-                        iface_def
-                            .fields
-                            .iter()
-                            .find(|field| field.name == field_name)
-                            .map(|field| (field.ty.clone(), field.is_static)),
-                        iface_def.interfaces.clone(),
-                    )
-                };
-
-                if let Some(field_ty) = field_ty {
-                    if call_kind == CallKind::Static && !field_ty.1 {
-                        return None;
-                    }
-                    return Some(field_ty.0);
-                }
-
-                for super_iface in ifaces {
-                    queue.push_back(super_iface);
-                }
-            }
-
-            None
-        }
-
         let parts: Vec<&str> = receiver.split('.').filter(|p| !p.is_empty()).collect();
         if parts.len() >= 2 {
             let (mut ty, mut kind) =
@@ -18294,6 +18447,15 @@ fn receiver_is_value_receiver(analysis: &Analysis, receiver: &str, offset: usize
     let receiver = receiver.trim();
     if receiver.is_empty() {
         return false;
+    }
+
+    // Dotted receiver chain rooted in a value receiver (e.g. `this.foo.bar`, `obj.field`).
+    //
+    // The dot-completion pipeline uses this to decide whether to treat a dotted prefix as a
+    // qualified type name (`Map.En`) or a value receiver chain (`foo.bar`). Prefer checking the
+    // root segment so common member-access chains aren't misclassified as type completions.
+    if let Some((root, _rest)) = receiver.split_once('.') {
+        return receiver_is_value_receiver(analysis, root, offset);
     }
 
     // Trivial literals and keywords.
