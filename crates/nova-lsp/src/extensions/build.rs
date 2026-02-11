@@ -2491,7 +2491,12 @@ mod tests {
             ) -> anyhow::Result<BspCompileOutcome> {
                 let err = serde_json::from_value::<bool>(serde_json::json!(self.secret.clone()))
                     .expect_err("expected type mismatch");
-                Err(anyhow::Error::new(err))
+                // Simulate a common pattern where serde-json failures are wrapped inside
+                // `std::io::Error` (e.g. via `io::Error::new(kind, err)`). On Rust 1.92, that inner
+                // error is *not* exposed via `Error::source()`, so sanitizers must consult
+                // `io::Error::get_ref()` to avoid leaking string values.
+                let io_err = std::io::Error::new(std::io::ErrorKind::Other, err);
+                Err(anyhow::Error::new(io_err))
             }
         }
 
