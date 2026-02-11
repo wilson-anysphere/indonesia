@@ -529,6 +529,44 @@ fn related_code_query_skips_secret_values_embedded_in_json_tokens() {
 }
 
 #[test]
+fn related_code_query_skips_unquoted_secret_value_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for unquoted secret-only selections");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = "sk-verysecretstringthatislong";
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for unquoted secret-like focal code"
+    );
+}
+
+#[test]
+fn related_code_query_skips_password_assignment_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for password assignment selections");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = "password=hunter2";
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for password assignment focal code"
+    );
+}
+
+#[test]
 fn related_code_query_skips_email_address_only_selections() {
     struct PanicSearch;
 

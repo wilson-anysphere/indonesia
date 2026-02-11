@@ -672,7 +672,11 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         let bounds = surrounding_token_bounds(text, start, end);
         if !bounds.is_empty() {
             let token = &text[bounds.clone()];
-            if looks_like_email_address(token) || looks_like_ipv4_address(token) {
+            if looks_like_email_address(token)
+                || looks_like_ipv4_address(token)
+                || token_contains_obvious_secret_fragment(token)
+                || token_contains_sensitive_assignment(token)
+            {
                 return true;
             }
 
@@ -908,6 +912,35 @@ fn clean_query_word(tok: &str) -> &str {
     tok.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
 }
 
+fn token_contains_sensitive_assignment(tok: &str) -> bool {
+    if !tok.contains('=') {
+        return false;
+    }
+
+    let lower = tok.to_ascii_lowercase();
+    lower.contains("password")
+        || lower.contains("passwd")
+        || lower.contains("secret")
+        || lower.contains("token")
+        || lower.contains("api_key")
+        || lower.contains("apikey")
+}
+
+fn token_contains_obvious_secret_fragment(tok: &str) -> bool {
+    fn is_token_char(c: char) -> bool {
+        // Keep this conservative: split on `=`/`:` so key-value patterns are broken into fragments.
+        c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '+' | '@')
+    }
+
+    if tok.is_empty() {
+        return false;
+    }
+
+    tok.split(|c: char| !is_token_char(c))
+        .filter(|segment| !segment.is_empty())
+        .any(looks_like_obvious_secret_token)
+}
+
 fn token_contains_secret_fragment(tok: &str) -> bool {
     fn is_token_char(c: char) -> bool {
         c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '=' | '+' | '/' | '.' | '@')
@@ -920,6 +953,39 @@ fn token_contains_secret_fragment(tok: &str) -> bool {
     tok.split(|c: char| !is_token_char(c))
         .filter(|segment| !segment.is_empty())
         .any(looks_like_secret_token)
+}
+
+fn looks_like_obvious_secret_token(tok: &str) -> bool {
+    let trimmed = tok.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    if looks_like_email_address(trimmed) {
+        return true;
+    }
+    if looks_like_ipv4_address(trimmed) {
+        return true;
+    }
+
+    if trimmed.starts_with("sk-") && trimmed.len() >= 20 {
+        return true;
+    }
+
+    if trimmed.starts_with("AKIA") && trimmed.len() >= 16 {
+        return true;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("ghp_") && trimmed.len() >= 20 {
+        return true;
+    }
+
+    if trimmed.contains("-----BEGIN") {
+        return true;
+    }
+
+    false
 }
 
 fn looks_like_secret_token(tok: &str) -> bool {
