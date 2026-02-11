@@ -49,7 +49,9 @@ fn sanitize_text(text: &str) -> String {
     static LONG_BASE64ISH_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"[A-Za-z0-9+/=_-]{32,}").expect("valid regex"));
 
-    let mut out = text.to_string();
+    // Normalize URLs first so we don't accidentally leak credentials embedded in query strings or
+    // fragments (e.g. pre-signed URLs, OAuth tokens).
+    let mut out = sanitize_urls_for_tracing(text);
 
     out = URL_USERINFO_RE
         .replace_all(&out, |caps: &regex::Captures<'_>| {
@@ -107,7 +109,8 @@ fn sanitize_text(text: &str) -> String {
 /// - Strips URL query + fragments (drops *all* query params, not just known keys).
 /// - Redacts common secret/token patterns via the same rules as audit log sanitization.
 pub(crate) fn sanitize_error_for_tracing(error: &str) -> String {
-    sanitize_text(&sanitize_urls_for_tracing(error))
+    // `sanitize_text` already strips URL userinfo, query params, and fragments.
+    sanitize_text(error)
 }
 
 fn sanitize_urls_for_tracing(text: &str) -> String {
@@ -315,6 +318,27 @@ sk-proj-012345678901234567890123456789"#;
         assert!(!out.contains("sh0rt3"));
         assert!(!out.contains("abcdefghijklmnop"));
         assert!(!out.contains("sk-proj-012345678901234567890123456789"));
+    }
+
+    #[test]
+    fn sanitize_text_strips_url_query_params_and_fragments_for_unknown_keys() {
+        let secret = "super-secret-query-value";
+        let fragment = "super-secret-fragment";
+        let input = format!(
+            "GET https://example.com/path?foo={secret}&bar=baz#access_token={fragment}"
+        );
+
+        let out = sanitize_prompt_for_audit(&input);
+        assert!(!out.contains(secret), "output leaked query value: {out}");
+        assert!(
+            !out.contains(fragment),
+            "output leaked fragment value: {out}"
+        );
+        assert!(
+            !out.contains("?foo=") && !out.contains("#access_token="),
+            "output should not retain query/fragment: {out}"
+        );
+        assert!(out.contains("https://example.com/path"), "{out}");
     }
 
     #[test]
