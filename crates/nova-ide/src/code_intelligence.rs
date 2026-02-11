@@ -9888,6 +9888,22 @@ fn member_completions(
     prefix: &str,
     receiver_offset: usize,
 ) -> Vec<CompletionItem> {
+    // `receiver_before_dot` / `simple_receiver_before_dot` can preserve whitespace for expressions
+    // like `this . foo` / `super . foo`. Normalize that trivia so receiver inference can treat the
+    // dotted chain semantically (instead of misclassifying it as a type reference).
+    let receiver = receiver.trim();
+    let receiver = if receiver.chars().any(|ch| ch.is_ascii_whitespace()) {
+        Cow::Owned(
+            receiver
+                .chars()
+                .filter(|ch| !ch.is_ascii_whitespace())
+                .collect::<String>(),
+        )
+    } else {
+        Cow::Borrowed(receiver)
+    };
+    let receiver = receiver.as_ref();
+
     let text = db.file_content(file);
     let analysis = analyze(text);
     let (mut types, env) = completion_type_store(db, file);
@@ -11085,7 +11101,13 @@ pub(crate) fn infer_receiver_type_before_dot(
 
     // Otherwise, treat as a parenthesized expression like `(foo).<cursor>`.
     let open_paren = find_matching_open_paren(bytes, end - 1)?;
-    let (start, end) = unwrap_paren_expr(bytes, open_paren, end - 1)?;
+    let (start, mut end) = unwrap_paren_expr(bytes, open_paren, end - 1)?;
+    // `unwrap_paren_expr` strips whitespace but not comments. Skip trailing trivia inside the
+    // parentheses so receivers like `(b()/*comment*/).<cursor>` still infer the call return type.
+    end = skip_trivia_backwards(text, end);
+    if end <= start {
+        return None;
+    }
     let inner = text.get(start..end)?.trim();
     if inner.is_empty() {
         return None;

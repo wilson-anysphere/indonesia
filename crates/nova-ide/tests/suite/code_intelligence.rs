@@ -401,6 +401,52 @@ class B extends A {
 }
 
 #[test]
+fn completion_resolves_this_field_access_with_whitespace() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  String foo = "x";
+
+  void m() {
+    this . foo.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"substring"),
+        "expected completion list to contain String.substring for `this . foo` receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_super_field_access_with_whitespace() {
+    let (db, file, pos) = fixture(
+        r#"
+class Base {
+  String foo = "x";
+}
+
+class A extends Base {
+  void m() {
+    super . foo.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"substring"),
+        "expected completion list to contain String.substring for `super . foo` receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_includes_class_literal_members() {
     let (db, file, pos) = fixture(
         r#"
@@ -1265,6 +1311,51 @@ class A {
     assert!(
         labels.contains(&"substring"),
         "expected completion list to contain String.substring for parenthesized call-chain field receiver with trailing line comment; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_parenthesized_call_receiver_with_trailing_block_comment_in_chain() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  String b() { return "x"; }
+
+  void m() {
+    (b()/*comment*/).<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"substring"),
+        "expected completion list to contain String.substring for parenthesized call receiver with trailing block comment; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_parenthesized_call_receiver_with_trailing_line_comment_in_chain() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  String b() { return "x"; }
+
+  void m() {
+    (b() // comment
+    ).<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"substring"),
+        "expected completion list to contain String.substring for parenthesized call receiver with trailing line comment; got {labels:?}"
     );
 }
 
