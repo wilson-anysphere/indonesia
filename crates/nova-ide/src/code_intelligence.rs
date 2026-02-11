@@ -9867,28 +9867,16 @@ fn member_completions(
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.')
         && class_id_of_type(&mut types, &receiver_ty).is_none()
     {
-        let parts: Vec<&str> = receiver.split('.').filter(|p| !p.is_empty()).collect();
-        if parts.len() >= 2 {
-            let (mut ty, mut kind) =
-                infer_receiver(&mut types, &analysis, &file_ctx, parts[0], receiver_offset);
-            ty = ensure_local_class_receiver(&mut types, &analysis, ty);
+        if let Some((ty, kind)) = infer_dotted_field_chain_receiver_type(
+            &mut types,
+            &analysis,
+            &file_ctx,
+            receiver,
+            receiver_offset,
+        ) {
             if !matches!(ty, Type::Unknown | Type::Error) {
-                let mut ok = true;
-                for part in parts.into_iter().skip(1) {
-                    let Some(field_ty) =
-                        resolve_field_type_in_store(&mut types, &ty, part, kind)
-                    else {
-                        ok = false;
-                        break;
-                    };
-                    ty = ensure_local_class_receiver(&mut types, &analysis, field_ty);
-                    kind = CallKind::Instance;
-                }
-
-                if ok && !matches!(ty, Type::Unknown | Type::Error) {
-                    receiver_ty = ty;
-                    call_kind = CallKind::Instance;
-                }
+                receiver_ty = ty;
+                call_kind = kind;
             }
         }
     }
@@ -10077,6 +10065,53 @@ fn resolve_field_type_in_store(
     }
 
     None
+}
+
+fn infer_dotted_field_chain_receiver_type(
+    types: &mut TypeStore,
+    analysis: &Analysis,
+    file_ctx: &CompletionResolveCtx,
+    receiver: &str,
+    offset: usize,
+) -> Option<(Type, CallKind)> {
+    let receiver = receiver.trim();
+    if receiver.is_empty() || !receiver.contains('.') {
+        return None;
+    }
+
+    let parts: Vec<&str> = receiver.split('.').filter(|p| !p.is_empty()).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    // Qualified `this` / `super` can appear in dotted receiver chains (`Outer.this.foo`,
+    // `Outer.super.foo`). Treat everything up to the keyword as the true receiver expression so we
+    // can resolve the remaining segments as normal field accesses.
+    let root_end = parts
+        .iter()
+        .position(|seg| *seg == "this" || *seg == "super")
+        .filter(|idx| *idx > 0)
+        .unwrap_or(0);
+    let root_expr: Cow<'_, str> = if root_end == 0 {
+        Cow::Borrowed(parts[0])
+    } else {
+        Cow::Owned(parts[..=root_end].join("."))
+    };
+
+    let (mut ty, mut kind) = infer_receiver(types, analysis, file_ctx, root_expr.as_ref(), offset);
+    ty = ensure_local_class_receiver(types, analysis, ty);
+    if matches!(ty, Type::Unknown | Type::Error) {
+        return None;
+    }
+
+    for segment in parts.iter().skip(root_end + 1) {
+        let field_ty = resolve_field_type_in_store(types, &ty, segment, kind)?;
+        ty = ensure_local_class_receiver(types, analysis, field_ty);
+        // Accessing a field always yields a value receiver, even when the field itself is static.
+        kind = CallKind::Instance;
+    }
+
+    Some((ty, kind))
 }
 
 fn infer_call_chain_field_access_receiver_type_in_store(
@@ -11336,28 +11371,16 @@ pub(crate) fn infer_receiver_type_for_member_access(
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.')
         && class_id_of_type(&mut types, &receiver_ty).is_none()
     {
-        let parts: Vec<&str> = receiver.split('.').filter(|p| !p.is_empty()).collect();
-        if parts.len() >= 2 {
-            let (mut ty, mut kind) =
-                infer_receiver(&mut types, &analysis, &file_ctx, parts[0], receiver_offset);
-            ty = ensure_local_class_receiver(&mut types, &analysis, ty);
+        if let Some((ty, kind)) = infer_dotted_field_chain_receiver_type(
+            &mut types,
+            &analysis,
+            &file_ctx,
+            receiver,
+            receiver_offset,
+        ) {
             if !matches!(ty, Type::Unknown | Type::Error) {
-                let mut ok = true;
-                for part in parts.into_iter().skip(1) {
-                    let Some(field_ty) = resolve_field_type_in_store(&mut types, &ty, part, kind) else {
-                        ok = false;
-                        break;
-                    };
-
-                    ty = field_ty;
-                    kind = CallKind::Instance;
-                    ty = ensure_local_class_receiver(&mut types, &analysis, ty);
-                }
-
-                if ok && !matches!(ty, Type::Unknown | Type::Error) {
-                    receiver_ty = ty;
-                    call_kind = CallKind::Instance;
-                }
+                receiver_ty = ty;
+                call_kind = kind;
             }
         }
     }
@@ -12066,29 +12089,12 @@ fn infer_call_receiver_lexical(
                     .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.')
                 && class_id_of_type(types, &receiver_ty).is_none()
             {
-                let parts: Vec<&str> = receiver.split('.').filter(|p| !p.is_empty()).collect();
-                if parts.len() >= 2 {
-                    let (mut ty, mut kind) =
-                        infer_receiver(types, analysis, file_ctx, parts[0], dot_offset);
-                    ty = ensure_local_class_receiver(types, analysis, ty);
+                if let Some((ty, kind)) = infer_dotted_field_chain_receiver_type(
+                    types, analysis, file_ctx, receiver.as_str(), dot_offset,
+                ) {
                     if !matches!(ty, Type::Unknown | Type::Error) {
-                        let mut ok = true;
-                        for part in parts.into_iter().skip(1) {
-                            let Some(field_ty) =
-                                resolve_field_type_in_store(types, &ty, part, kind)
-                            else {
-                                ok = false;
-                                break;
-                            };
-
-                            ty = ensure_local_class_receiver(types, analysis, field_ty);
-                            kind = CallKind::Instance;
-                        }
-
-                        if ok && !matches!(ty, Type::Unknown | Type::Error) {
-                            receiver_ty = ty;
-                            call_kind = CallKind::Instance;
-                        }
+                        receiver_ty = ty;
+                        call_kind = kind;
                     }
                 }
             }
@@ -12208,29 +12214,12 @@ fn infer_receiver_type_of_expr_ending_at(
                     .chars()
                     .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.')
             {
-                let parts: Vec<&str> = expr.split('.').filter(|p| !p.is_empty()).collect();
-                if parts.len() >= 2 {
-                    let (mut ty, mut kind) =
-                        infer_receiver(types, analysis, file_ctx, parts[0], expr_end);
-                    ty = ensure_local_class_receiver(types, analysis, ty);
-                    if matches!(ty, Type::Unknown | Type::Error) {
-                        return None;
-                    }
-
-                    for part in parts.into_iter().skip(1) {
-                        let Some(field_ty) = resolve_field_type_in_store(types, &ty, part, kind)
-                        else {
-                            return None;
-                        };
-                        ty = ensure_local_class_receiver(types, analysis, field_ty);
-                        kind = CallKind::Instance;
-                    }
-
-                    ty
-                } else {
-                    let (ty, _kind) = infer_receiver(types, analysis, file_ctx, expr, expr_end);
-                    ty
-                }
+                infer_dotted_field_chain_receiver_type(types, analysis, file_ctx, expr, expr_end)
+                    .map(|(ty, _kind)| ty)
+                    .unwrap_or_else(|| {
+                        let (ty, _kind) = infer_receiver(types, analysis, file_ctx, expr, expr_end);
+                        ty
+                    })
             } else {
                 let (ty, _kind) = infer_receiver(types, analysis, file_ctx, expr, expr_end);
                 ty

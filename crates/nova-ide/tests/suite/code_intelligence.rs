@@ -412,6 +412,84 @@ class Outer extends Base {
 }
 
 #[test]
+fn completion_resolves_qualified_this_field_chain_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class Outer {
+  String foo = "";
+
+  class Inner {
+    void m() {
+      Outer.this.foo.<|>
+    }
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain String.length for qualified this field-chain receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_qualified_super_field_chain_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class Base {
+  String foo = "";
+}
+
+class Outer extends Base {
+  class Inner {
+    void m() {
+      Outer.super.foo.<|>
+    }
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"substring"),
+        "expected completion list to contain String.substring for qualified super field-chain receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_qualified_this_field_chain_call_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  String get() { return ""; }
+}
+
+class Outer {
+  Foo foo = new Foo();
+
+  class Inner {
+    void m() {
+      Outer.this.foo.get().<|>
+    }
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"substring"),
+        "expected completion list to contain String.substring for qualified this call-chain receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_in_incomplete_import_is_non_empty() {
     let (db, file, pos) = fixture(
         r#"

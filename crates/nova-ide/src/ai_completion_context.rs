@@ -570,6 +570,87 @@ class Outer extends Base {
     }
 
     #[test]
+    fn receiver_type_infers_qualified_this_field_chain_receiver_type_and_methods() {
+        let ctx = ctx_for(
+            r#"
+class Outer {
+  String foo = "";
+
+  class Inner {
+    void m() {
+      Outer.this.foo.<cursor>
+    }
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "length"));
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
+    fn receiver_type_infers_qualified_super_field_chain_receiver_type_and_methods() {
+        let ctx = ctx_for(
+            r#"
+class Base {
+  String foo = "";
+}
+
+class Outer extends Base {
+  class Inner {
+    void m() {
+      Outer.super.foo.<cursor>
+    }
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "length"));
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
+    fn receiver_type_infers_qualified_this_field_chain_call_receiver_type_and_methods() {
+        let ctx = ctx_for(
+            r#"
+class Foo {
+  String get() { return ""; }
+}
+
+class Outer {
+  Foo foo = new Foo();
+
+  class Inner {
+    void m() {
+      Outer.this.foo.get().<cursor>
+    }
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "length"));
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
     fn receiver_type_infers_super_field_access() {
         let ctx = ctx_for(
             r#"
