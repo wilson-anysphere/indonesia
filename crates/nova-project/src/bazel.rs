@@ -366,8 +366,17 @@ pub fn load_bazel_workspace_model_with_runner<R: CommandRunner>(
 
     let mut workspace = BazelWorkspace::new(root.to_path_buf(), runner)
         .and_then(|ws| ws.with_cache_path(cache_path))
-        .map_err(|err| ProjectError::Bazel {
-            message: err.to_string(),
+        .map_err(|err| {
+            let message = err.to_string();
+            let message = if err
+                .chain()
+                .any(|cause| cause.is::<serde_json::Error>())
+            {
+                crate::discover::sanitize_json_error_message(&message)
+            } else {
+                message
+            };
+            ProjectError::Bazel { message }
         })?;
 
     // Best-effort: `bazel info execution_root` can fail in some environments; fall back to
@@ -379,7 +388,14 @@ pub fn load_bazel_workspace_model_with_runner<R: CommandRunner>(
         None => workspace.java_targets(),
     }
     .map_err(|err| ProjectError::Bazel {
-        message: err.to_string(),
+        message: {
+            let message = err.to_string();
+            if err.chain().any(|cause| cause.is::<serde_json::Error>()) {
+                crate::discover::sanitize_json_error_message(&message)
+            } else {
+                message
+            }
+        },
     })?;
     targets.sort();
     targets.dedup();
@@ -399,7 +415,14 @@ pub fn load_bazel_workspace_model_with_runner<R: CommandRunner>(
             Err(err) if is_target_without_javac_action(&err) => continue,
             Err(err) => {
                 return Err(ProjectError::Bazel {
-                    message: err.to_string(),
+                    message: {
+                        let message = err.to_string();
+                        if err.chain().any(|cause| cause.is::<serde_json::Error>()) {
+                            crate::discover::sanitize_json_error_message(&message)
+                        } else {
+                            message
+                        }
+                    },
                 })
             }
         };

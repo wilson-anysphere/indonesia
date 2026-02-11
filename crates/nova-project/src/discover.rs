@@ -7,6 +7,96 @@ use crate::{
     bazel, gradle, maven, simple, BuildSystem, Module, ProjectConfig, WorkspaceProjectModel,
 };
 
+pub(crate) fn sanitize_error_message(err: &(dyn std::error::Error + 'static)) -> String {
+    // Many project-loading flows ultimately surface errors to user-facing logs and diagnostics.
+    // `serde_json::Error` display strings can include user-provided scalar values (for example:
+    // `invalid type: string "..."`). If any serde-json error appears in the error chain, redact
+    // quoted/backticked substrings from the final formatted message so we don't leak secrets.
+    let message = err.to_string();
+    if error_chain_contains_serde_json(err) {
+        sanitize_json_error_message(&message)
+    } else {
+        message
+    }
+}
+
+fn error_chain_contains_serde_json(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current: &(dyn std::error::Error + 'static) = err;
+    loop {
+        if current.is::<serde_json::Error>() {
+            return true;
+        }
+
+        let Some(source) = current.source() else {
+            return false;
+        };
+        current = source;
+    }
+}
+
+pub(crate) fn sanitize_json_error_message(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let mut end = None;
+        let bytes = rest.as_bytes();
+        for (idx, &b) in bytes.iter().enumerate() {
+            if b != b'"' {
+                continue;
+            }
+
+            // Treat quotes preceded by an odd number of backslashes as escaped.
+            let mut backslashes = 0usize;
+            let mut k = idx;
+            while k > 0 && bytes[k - 1] == b'\\' {
+                backslashes += 1;
+                k -= 1;
+            }
+            if backslashes % 2 == 0 {
+                end = Some(idx);
+                break;
+            }
+        }
+
+        let Some(end) = end else {
+            // Unterminated quote: redact the remainder and stop.
+            out.push_str("<redacted>");
+            rest = "";
+            break;
+        };
+
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+
+    // `serde` wraps unknown fields/variants in backticks:
+    // `unknown field `secret`, expected ...`
+    //
+    // Redact only the first backticked segment so we keep the expected value list actionable.
+    if let Some(start) = out.find('`') {
+        let after_start = &out[start.saturating_add(1)..];
+        let end = if let Some(end_rel) = after_start.rfind("`, expected") {
+            Some(start.saturating_add(1).saturating_add(end_rel))
+        } else if let Some(end_rel) = after_start.rfind('`') {
+            Some(start.saturating_add(1).saturating_add(end_rel))
+        } else {
+            None
+        };
+        if let Some(end) = end {
+            if start + 1 <= end && end <= out.len() {
+                out.replace_range(start + 1..end, "<redacted>");
+            }
+        }
+    }
+
+    out
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LoadOptions {
     /// Additional classpath entries (directories or jars) to include.
@@ -381,7 +471,7 @@ fn build_system_error_to_project_error(
         BuildSystemError::Other(err) => match err.downcast::<ProjectError>() {
             Ok(err) => *err,
             Err(err) => ProjectError::Bazel {
-                message: err.to_string(),
+                message: sanitize_error_message(err.as_ref()),
             },
         },
         BuildSystemError::Io(source) => ProjectError::Io {
@@ -1006,6 +1096,27 @@ mod tests {
     use crate::ClasspathEntryKind;
     use nova_modules::ModuleName;
     use tempfile::tempdir;
+
+    #[test]
+    fn project_error_bazel_does_not_echo_serde_json_string_values() {
+        let secret_suffix = "nova-project-super-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
+        let err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+
+        let build_err = nova_build_model::BuildSystemError::other(err);
+        let project_err = build_system_error_to_project_error(Path::new("/workspace"), build_err);
+        let message = project_err.to_string();
+
+        assert!(
+            !message.contains(secret_suffix),
+            "expected ProjectError to omit serde_json string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected ProjectError to include redaction marker: {message}"
+        );
+    }
 
     #[test]
     fn maven_build_file_detection_includes_mvn_wrapper_and_mvn_config() {
