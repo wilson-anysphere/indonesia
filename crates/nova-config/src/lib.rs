@@ -1931,7 +1931,7 @@ fn sanitize_bugreport_log_line(line: &str) -> String {
     }
 }
 
-fn sanitize_bugreport_log_text(text: &str) -> String {
+fn sanitize_plain_log_text(text: &str) -> String {
     if text.is_empty() {
         return String::new();
     }
@@ -1950,8 +1950,71 @@ fn sanitize_bugreport_log_text(text: &str) -> String {
     out
 }
 
+fn sanitize_json_log_value(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) => {
+            if log_line_contains_serde_json_error(&s) {
+                serde_json::Value::String(sanitize_json_error_message(&s))
+            } else {
+                serde_json::Value::String(s)
+            }
+        }
+        serde_json::Value::Array(values) => serde_json::Value::Array(
+            values
+                .into_iter()
+                .map(sanitize_json_log_value)
+                .collect::<Vec<_>>(),
+        ),
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.into_iter()
+                .map(|(key, value)| (key, sanitize_json_log_value(value)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn sanitize_json_log_line(line: &str) -> String {
+    if !log_line_contains_serde_json_error(line) {
+        return line.to_owned();
+    }
+
+    let value: serde_json::Value = match serde_json::from_str(line) {
+        Ok(value) => value,
+        Err(_) => return sanitize_json_error_message(line),
+    };
+    let sanitized = sanitize_json_log_value(value);
+    serde_json::to_string(&sanitized).unwrap_or_else(|_| sanitize_json_error_message(line))
+}
+
+fn sanitize_json_log_text(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::with_capacity(text.len());
+    for chunk in text.split_inclusive('\n') {
+        if let Some(line) = chunk.strip_suffix('\n') {
+            let line = line.trim_end_matches('\r');
+            out.push_str(&sanitize_json_log_line(line));
+            out.push('\n');
+        } else {
+            let line = chunk.trim_end_matches('\r');
+            out.push_str(&sanitize_json_log_line(line));
+        }
+    }
+    out
+}
+
+#[derive(Clone, Copy, Debug)]
+enum LogSanitizeMode {
+    PlainText,
+    Json,
+}
+
 struct SanitizingMakeWriter<M> {
     inner: M,
+    mode: LogSanitizeMode,
 }
 
 impl<'a, M> MakeWriter<'a> for SanitizingMakeWriter<M>
@@ -1964,6 +2027,7 @@ where
         SanitizingWriter {
             inner: self.inner.make_writer(),
             bytes: Vec::new(),
+            mode: self.mode,
         }
     }
 }
@@ -1971,6 +2035,7 @@ where
 struct SanitizingWriter<W: Write> {
     inner: W,
     bytes: Vec<u8>,
+    mode: LogSanitizeMode,
 }
 
 impl<W: Write> Write for SanitizingWriter<W> {
@@ -1991,7 +2056,10 @@ impl<W: Write> Drop for SanitizingWriter<W> {
         }
 
         let text = String::from_utf8_lossy(&self.bytes);
-        let sanitized = sanitize_bugreport_log_text(&text);
+        let sanitized = match self.mode {
+            LogSanitizeMode::PlainText => sanitize_plain_log_text(&text),
+            LogSanitizeMode::Json => sanitize_json_log_text(&text),
+        };
         let _ = self.inner.write_all(sanitized.as_bytes());
         let _ = self.inner.flush();
     }
@@ -2197,12 +2265,17 @@ fn init_tracing_inner(logging: &LoggingConfig, ai: Option<&AiConfig>) -> Arc<Log
             make_writer = BoxMakeWriter::new(make_writer.and(MutexFileMakeWriter { file }));
         }
 
-        if !logging.json {
-            // Best-effort: sanitize serde_json-style diagnostics before writing them to stderr/file
-            // sinks. This keeps logs safe by default without affecting the structured JSON logging
-            // mode (which must remain valid JSON).
-            make_writer = BoxMakeWriter::new(SanitizingMakeWriter { inner: make_writer });
-        }
+        // Best-effort: sanitize serde_json-style diagnostics before writing them to stderr/file
+        // sinks. When `logging.json=true`, keep the output as valid JSON by parsing and
+        // re-serializing the structured log line.
+        make_writer = BoxMakeWriter::new(SanitizingMakeWriter {
+            inner: make_writer,
+            mode: if logging.json {
+                LogSanitizeMode::Json
+            } else {
+                LogSanitizeMode::PlainText
+            },
+        });
 
         let base_layer: Box<dyn tracing_subscriber::Layer<_> + Send + Sync> = if logging.json {
             let layer = tracing_subscriber::fmt::layer()
@@ -2436,6 +2509,91 @@ mod toml_tests {
         assert!(
             text.contains("<redacted>"),
             "expected log buffer to include redaction marker: {text}"
+        );
+    }
+
+    #[test]
+    fn json_logging_sanitizes_serde_json_error_messages_and_remains_valid_json() {
+        use std::io;
+
+        #[derive(Clone)]
+        struct SharedBytesMakeWriter {
+            bytes: Arc<std::sync::Mutex<Vec<u8>>>,
+        }
+
+        struct SharedBytesWriter {
+            bytes: Arc<std::sync::Mutex<Vec<u8>>>,
+        }
+
+        impl io::Write for SharedBytesWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                let mut guard = self.bytes.lock().expect("bytes mutex poisoned");
+                guard.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> tracing_subscriber::fmt::writer::MakeWriter<'a> for SharedBytesMakeWriter {
+            type Writer = SharedBytesWriter;
+
+            fn make_writer(&'a self) -> Self::Writer {
+                SharedBytesWriter {
+                    bytes: self.bytes.clone(),
+                }
+            }
+        }
+
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let make_writer = SanitizingMakeWriter {
+            inner: SharedBytesMakeWriter { bytes: bytes.clone() },
+            mode: LogSanitizeMode::Json,
+        };
+
+        let subscriber = tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::EnvFilter::default()
+                    .add_directive(tracing_subscriber::filter::LevelFilter::WARN.into()),
+            )
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .with_writer(make_writer)
+                    .with_ansi(false),
+            );
+
+        tracing::subscriber::with_default(subscriber, || {
+            let secret_suffix = "nova-config-json-log-secret-token";
+            let secret = format!("prefix\"{secret_suffix}");
+            let serde_err = serde_json::from_value::<bool>(serde_json::json!(secret))
+                .expect_err("expected type mismatch");
+            let io_err = std::io::Error::new(std::io::ErrorKind::Other, serde_err);
+            tracing::warn!(target: "nova.config", error = ?io_err, "failed to parse JSON");
+        });
+
+        let out = {
+            let guard = bytes.lock().expect("bytes mutex poisoned");
+            String::from_utf8_lossy(&guard).into_owned()
+        };
+
+        let line = out
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .expect("expected at least one log line");
+        let value: serde_json::Value =
+            serde_json::from_str(line).expect("expected sanitized output to remain valid JSON");
+
+        let rendered = value.to_string();
+        assert!(
+            !rendered.contains("nova-config-json-log-secret-token"),
+            "expected JSON log line to omit string scalar values from serde_json errors: {rendered}"
+        );
+        assert!(
+            rendered.contains("<redacted>"),
+            "expected JSON log line to include redaction marker: {rendered}"
         );
     }
 }
