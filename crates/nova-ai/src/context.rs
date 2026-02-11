@@ -928,6 +928,8 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
             let before_idx = bounds.start.checked_sub(1);
             let before = before_idx.and_then(|idx| bytes.get(idx));
             let after = bytes.get(bounds.end);
+            let amp_entity_before_token =
+                before_idx.is_some_and(|idx| html_entity_is_ampersand(bytes, idx));
 
             let amp_escape_before_token = bounds.start >= 4
                 && bytes[bounds.start - 4..bounds.start].eq_ignore_ascii_case(b"amp;");
@@ -1100,6 +1102,119 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
             } else {
                 false
             };
+
+            if amp_entity_before_token {
+                fn hex_value(b: u8) -> Option<u8> {
+                    match b {
+                        b'0'..=b'9' => Some(b - b'0'),
+                        b'a'..=b'f' => Some(b - b'a' + 10),
+                        b'A'..=b'F' => Some(b - b'A' + 10),
+                        _ => None,
+                    }
+                }
+
+                fn fragment_starts_with_named_separator(fragment: &[u8]) -> bool {
+                    fragment
+                        .get(..3)
+                        .is_some_and(|frag| frag.eq_ignore_ascii_case(b"sol"))
+                        || fragment
+                            .get(..5)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"slash"))
+                        || fragment
+                            .get(..4)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"dsol"))
+                        || fragment
+                            .get(..4)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"bsol"))
+                        || fragment
+                            .get(..9)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"backslash"))
+                        || fragment
+                            .get(..5)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"frasl"))
+                        || fragment
+                            .get(..8)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"setminus"))
+                        || fragment
+                            .get(..5)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"setmn"))
+                        || fragment
+                            .get(..13)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"smallsetminus"))
+                        || fragment
+                            .get(..6)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"ssetmn"))
+                }
+
+                fn fragment_starts_with_numeric_separator(fragment: &[u8]) -> bool {
+                    if !fragment.first().is_some_and(|b| *b == b'#') {
+                        return false;
+                    }
+
+                    let mut j = 1usize;
+                    let base = match fragment.get(j) {
+                        Some(b'x') | Some(b'X') => {
+                            j += 1;
+                            16u32
+                        }
+                        _ => 10u32,
+                    };
+                    if j >= fragment.len() {
+                        return false;
+                    }
+
+                    let mut value = 0u32;
+                    let mut significant = 0usize;
+                    while j < fragment.len() && significant < 8 {
+                        let b = fragment[j];
+                        let digit = if base == 16 {
+                            let Some(v) = hex_value(b) else {
+                                break;
+                            };
+                            v as u32
+                        } else if b.is_ascii_digit() {
+                            (b - b'0') as u32
+                        } else {
+                            break;
+                        };
+                        if significant == 0 && digit == 0 {
+                            j += 1;
+                            continue;
+                        }
+                        value = value
+                            .checked_mul(base)
+                            .and_then(|v| v.checked_add(digit))
+                            .unwrap_or(u32::MAX);
+                        significant += 1;
+                        j += 1;
+                    }
+
+                    significant > 0 && html_entity_codepoint_is_path_separator(value)
+                }
+
+                fn fragment_is_separator(mut fragment: &[u8]) -> bool {
+                    for _ in 0..8 {
+                        if fragment.len() >= 4
+                            && fragment[..3].eq_ignore_ascii_case(b"amp")
+                            && fragment[3] == b';'
+                        {
+                            fragment = &fragment[4..];
+                            if fragment.is_empty() {
+                                return false;
+                            }
+                            continue;
+                        }
+                        break;
+                    }
+
+                    fragment_starts_with_named_separator(fragment)
+                        || fragment_starts_with_numeric_separator(fragment)
+                }
+
+                if fragment_is_separator(token.as_bytes()) {
+                    return true;
+                }
+            }
 
             // Avoid emitting HTML-entity artifacts like `amp` into semantic-search queries when the
             // focal selection is HTML-escaped content (e.g. `&amp;#47;home...`). This keeps
@@ -3506,13 +3621,6 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
         }
     }
 
-    let bytes = tok.as_bytes();
-    for (idx, b) in bytes.iter().enumerate() {
-        if *b == b';' && html_entity_is_path_separator(bytes, idx) {
-            return true;
-        }
-    }
-
     fn html_named_fragment_is_path_separator(bytes: &[u8], start: usize) -> bool {
         bytes
             .get(start..start + 3)
@@ -3544,6 +3652,89 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
             || bytes
                 .get(start..start + 6)
                 .is_some_and(|frag| frag.eq_ignore_ascii_case(b"ssetmn"))
+    }
+
+    fn html_numeric_fragment_is_path_separator(bytes: &[u8], start: usize) -> bool {
+        if start >= bytes.len() || bytes[start] != b'#' {
+            return false;
+        }
+
+        let mut j = start + 1;
+        let base = match bytes.get(j) {
+            Some(b'x') | Some(b'X') => {
+                j += 1;
+                16u32
+            }
+            _ => 10u32,
+        };
+        if j >= bytes.len() {
+            return false;
+        }
+
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        while j < bytes.len() && significant < 8 {
+            let b = bytes[j];
+            let digit = if base == 16 {
+                let Some(v) = hex_value(b) else {
+                    break;
+                };
+                v as u32
+            } else if b.is_ascii_digit() {
+                (b - b'0') as u32
+            } else {
+                break;
+            };
+            if significant == 0 && digit == 0 {
+                j += 1;
+                continue;
+            }
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+            significant += 1;
+            j += 1;
+        }
+
+        significant > 0 && html_entity_codepoint_is_path_separator(value)
+    }
+
+    fn html_fragment_is_path_separator(bytes: &[u8], mut start: usize) -> bool {
+        for _ in 0..8 {
+            if start + 3 < bytes.len()
+                && bytes[start..start + 3].eq_ignore_ascii_case(b"amp")
+                && bytes[start + 3] == b';'
+            {
+                start += 4;
+                if start >= bytes.len() {
+                    return false;
+                }
+                continue;
+            }
+            break;
+        }
+
+        html_named_fragment_is_path_separator(bytes, start)
+            || html_numeric_fragment_is_path_separator(bytes, start)
+    }
+
+    let bytes = tok.as_bytes();
+    for (idx, b) in bytes.iter().enumerate() {
+        if *b != b';' {
+            continue;
+        }
+
+        if html_entity_is_path_separator(bytes, idx) {
+            return true;
+        }
+
+        // Some HTML escapes encode the `&` itself as an entity (e.g. `&#38;sol` or `&#x26;#47`)
+        // where the nested separator fragment omits a trailing `;`. Treat these as separators so
+        // path-only selections do not leak segments or trigger low-signal semantic-search queries.
+        if html_entity_is_ampersand(bytes, idx) && html_fragment_is_path_separator(bytes, idx + 1) {
+            return true;
+        }
     }
 
     // Handle nested `&amp;#47...` patterns where the escaped entity itself does not have a trailing
