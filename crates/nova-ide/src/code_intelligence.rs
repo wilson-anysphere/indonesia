@@ -8025,7 +8025,38 @@ fn simple_receiver_before_dot(text: &str, dot_offset: usize) -> Option<SimpleRec
 
     let last = *bytes.get(receiver_end - 1)? as char;
     let (start, expr) = if last == '"' {
-        // String literal receiver: find the opening quote.
+        // String literal receiver: `"foo".<cursor>`
+        //
+        // Also handle Java text blocks: `""" ... """.<cursor>` (best-effort). Text blocks can span
+        // multiple lines and may end in a run of quotes where only the final `"""` is the closing
+        // delimiter, so a naive "find the previous quote" scan would only capture the closing
+        // delimiter.
+        let mut quote_run_start = receiver_end;
+        while quote_run_start > 0 && bytes.get(quote_run_start - 1) == Some(&b'"') {
+            quote_run_start -= 1;
+        }
+        let quote_run_len = receiver_end.saturating_sub(quote_run_start);
+
+        if quote_run_len >= 3 {
+            // Text block: find the opening `"""` before the final quote run.
+            let mut i = quote_run_start;
+            while i >= 3 {
+                i -= 1;
+                if bytes.get(i) == Some(&b'"')
+                    && bytes.get(i - 1) == Some(&b'"')
+                    && bytes.get(i - 2) == Some(&b'"')
+                    && !is_escaped_quote(bytes, i - 2)
+                {
+                    let start = i - 2;
+                    return Some(SimpleReceiverExpr {
+                        span_to_dot: Span::new(start, dot_offset),
+                        expr: text.get(start..receiver_end)?.trim().to_string(),
+                    });
+                }
+            }
+        }
+
+        // Regular Java string literal: find the opening quote.
         let mut i = receiver_end - 1;
         let mut start_quote = None;
         while i > 0 {

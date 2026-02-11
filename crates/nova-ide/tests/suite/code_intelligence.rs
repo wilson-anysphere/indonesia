@@ -2287,6 +2287,29 @@ class A {
 }
 
 #[test]
+fn completion_resolves_text_block_receiver_with_url_across_lines() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    """
+      http://example.com
+      """
+      .<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain String.length for text block receiver across lines; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_resolves_new_expression_receiver_with_leading_block_comment_after_dot() {
     let (db, file, pos) = fixture(
         r#"
@@ -2406,6 +2429,28 @@ class A {
     assert!(
         labels.contains(&"length"),
         "expected completion list to contain String.length for string literal receiver method reference; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_method_reference_text_block_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    java.util.function.Supplier<Integer> sup = """
+      hello
+      """::<|>;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain String.length for text block receiver method reference; got {labels:?}"
     );
 }
 
@@ -6593,6 +6638,56 @@ class A {
     assert!(
         edit.new_text.contains("System.out.println"),
         "expected snippet to contain `System.out.println`; got {:?}",
+        edit.new_text
+    );
+}
+
+#[test]
+fn completion_includes_postfix_var_for_text_block_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    """
+      hello
+      """.var<|>
+  }
+}
+"#,
+    );
+
+    let text_without_caret = db
+        .file_text(file)
+        .expect("expected file content for fixture")
+        .to_string();
+    let expr_start = text_without_caret
+        .find("\"\"\"")
+        .expect("expected text block opening delimiter in fixture");
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "var" && i.kind == Some(lsp_types::CompletionItemKind::SNIPPET))
+        .expect("expected postfix `var` snippet completion");
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&text_without_caret, expr_start)
+    );
+    assert_eq!(edit.range.end, pos);
+    assert!(
+        edit.new_text.contains("var ${1:name} = \"\"\""),
+        "expected snippet to contain `var ${{1:name}} = \"\"\"`; got {:?}",
+        edit.new_text
+    );
+    assert!(
+        edit.new_text.contains("hello"),
+        "expected snippet to include text block contents; got {:?}",
         edit.new_text
     );
 }

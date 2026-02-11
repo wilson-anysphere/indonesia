@@ -186,6 +186,18 @@ impl CompletionEnvCache {
             let text = db.file_content(*file_id);
             text.len().hash(&mut hasher);
             text.as_ptr().hash(&mut hasher);
+            // Pointer/len hashing is fast, but can collide in tests where short-lived in-memory
+            // buffers reuse the same allocations across different fixtures. Mix in a small,
+            // content-dependent sample to make cache invalidation deterministic without hashing
+            // entire files.
+            let bytes = text.as_bytes();
+            const SAMPLE: usize = 64;
+            let prefix_len = bytes.len().min(SAMPLE);
+            bytes.get(..prefix_len).unwrap_or(&[]).hash(&mut hasher);
+            let suffix_len = bytes.len().min(SAMPLE);
+            bytes.get(bytes.len().saturating_sub(suffix_len)..)
+                .unwrap_or(&[])
+                .hash(&mut hasher);
         }
         let fingerprint = hasher.finish();
 
