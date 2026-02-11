@@ -858,6 +858,41 @@ fn unified_diff_with_index_section_headers_is_supported() {
 }
 
 #[test]
+fn unified_diff_with_svn_revision_metadata_is_supported() {
+    // SVN-style diffs use `(revision N)` / `(working copy)` metadata after the path instead of
+    // timestamps. Ensure we still parse the header paths and can omit excluded file sections.
+    let excluded_path = "src/secrets/secret file.txt";
+
+    let excluded_section = "Index: src/secrets/secret file.txt\n\
+===================================================================\n\
+--- src/secrets/secret file.txt\t(revision 123)\n\
++++ src/secrets/secret file.txt\t(working copy)\n\
+@@ -1 +1 @@\n\
+-old\n\
++SVN_SECRET\n";
+
+    let allowed_section = "Index: src/Ok.java\n\
+===================================================================\n\
+--- src/Ok.java\t(revision 123)\n\
++++ src/Ok.java\t(working copy)\n\
+@@ -1 +1 @@\n\
+-class Ok {}\n\
++class Ok { int x = 26; }\n";
+
+    let diff = format!("{excluded_section}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("SVN_SECRET"));
+    assert!(!filtered.contains("Index: src/secrets/secret file.txt"));
+    assert!(filtered.contains(allowed_section));
+}
+
+#[test]
 fn unified_diff_with_index_and_diff_u_preamble_is_supported() {
     // Some tools may include both SVN-style `Index:` metadata and a diffutils-style `diff -u …`
     // line before the `---`/`+++` headers. Ensure all of these lines are treated as part of the

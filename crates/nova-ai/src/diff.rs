@@ -454,7 +454,7 @@ fn parse_git_file_header_path(line: &str, prefix: &str) -> Option<String> {
     // treat the tab as a delimiter so paths containing spaces remain parseable.
     if let Some((path_part, after_tab)) = rest.split_once('\t') {
         let after_tab = after_tab.trim();
-        if !after_tab.is_empty() && !looks_like_unified_diff_timestamp(after_tab) {
+        if !after_tab.is_empty() && !looks_like_unified_diff_header_metadata(after_tab) {
             return None;
         }
         return Some(path_part.to_string());
@@ -810,7 +810,7 @@ fn parse_file_header_path(line: &str, prefix: &str) -> Option<String> {
     // present) as the path.
     if let Some((path_part, after_tab)) = rest.split_once('\t') {
         let after_tab = after_tab.trim();
-        if !after_tab.is_empty() && !looks_like_unified_diff_timestamp(after_tab) {
+        if !after_tab.is_empty() && !looks_like_unified_diff_header_metadata(after_tab) {
             return None;
         }
         return Some(path_part.to_string());
@@ -870,6 +870,26 @@ fn looks_like_unified_diff_timestamp(s: &str) -> bool {
     false
 }
 
+fn looks_like_unified_diff_header_metadata(s: &str) -> bool {
+    looks_like_unified_diff_timestamp(s) || looks_like_svn_diff_revision_metadata(s)
+}
+
+fn looks_like_svn_diff_revision_metadata(s: &str) -> bool {
+    let s = s.trim();
+    if s.eq_ignore_ascii_case("(working copy)") {
+        return true;
+    }
+
+    let Some(rest) = s.strip_prefix("(revision ") else {
+        return false;
+    };
+    let Some(rest) = rest.strip_suffix(')') else {
+        return false;
+    };
+    let rest = rest.trim();
+    !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())
+}
+
 fn validate_unified_header_path_remainder(path: String, remaining: &str) -> Option<String> {
     let remaining = remaining.trim();
     if remaining.is_empty() {
@@ -878,7 +898,7 @@ fn validate_unified_header_path_remainder(path: String, remaining: &str) -> Opti
 
     // If there is additional content after the filename, only accept it if it looks like a
     // timestamp. Otherwise, treat the header as ambiguous and fail closed.
-    if looks_like_unified_diff_timestamp(remaining) {
+    if looks_like_unified_diff_header_metadata(remaining) {
         return Some(path);
     }
 
