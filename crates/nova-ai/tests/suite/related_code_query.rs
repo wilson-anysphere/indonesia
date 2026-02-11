@@ -1426,6 +1426,32 @@ fn related_code_query_skips_unicode_escaped_unicode_separator_path_only_selectio
 }
 
 #[test]
+fn related_code_query_skips_octal_escaped_path_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for octal-escaped path selections");
+        }
+    }
+
+    let search = PanicSearch;
+    for focal_code in [
+        r"\057home",
+        r"\57home",
+        r"\134home",
+        r"\057Users",
+        r"\134Users",
+    ] {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for octal-escaped path-only focal code"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_hex_escaped_path_only_selections() {
     struct PanicSearch;
 

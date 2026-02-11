@@ -915,6 +915,7 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 || token_contains_percent_encoded_path_separator(token)
                 || token_contains_unicode_escaped_path_separator(token)
                 || token_contains_hex_escaped_path_separator(token)
+                || token_contains_octal_escaped_path_separator(token)
                 || token_contains_html_entity_path_separator(token)
                 || token_contains_html_entity_percent_encoded_path_separator(token)
                 || token_contains_obvious_secret_fragment(token)
@@ -1866,6 +1867,9 @@ fn related_code_query_fallback(focal_code: &str) -> String {
         if token_contains_hex_escaped_path_separator(raw_tok) {
             continue;
         }
+        if token_contains_octal_escaped_path_separator(raw_tok) {
+            continue;
+        }
         if token_contains_html_entity_path_separator(raw_tok) {
             continue;
         }
@@ -2749,6 +2753,41 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
             match (bytes[i + 1], bytes[i + 2]) {
                 (b'2', b'f' | b'F') | (b'5', b'c' | b'C') => return true,
                 _ => {}
+            }
+        }
+
+        i += 1;
+    }
+
+    false
+}
+
+fn token_contains_octal_escaped_path_separator(tok: &str) -> bool {
+    let bytes = tok.as_bytes();
+    if bytes.len() < 2 {
+        return false;
+    }
+
+    let mut i = 0usize;
+    while i + 1 < bytes.len() {
+        if bytes[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+
+        let mut j = i + 1;
+        let mut value = 0u32;
+        let mut digits = 0usize;
+        while j < bytes.len() && digits < 3 {
+            let b = bytes[j];
+            if !(b'0'..=b'7').contains(&b) {
+                break;
+            }
+            value = (value << 3) | (b - b'0') as u32;
+            digits += 1;
+            j += 1;
+            if matches!(value, 47 | 92) {
+                return true;
             }
         }
 
