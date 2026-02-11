@@ -315,10 +315,10 @@ fn handle_custom_request_inner_cancelable(
                 enabled,
                 reason: reason.map(ToString::to_string),
             })
-            .map_err(|err| NovaLspError::Internal(err.to_string()))
+            .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
         }
         METRICS_METHOD => serde_json::to_value(nova_metrics::MetricsRegistry::global().snapshot())
-            .map_err(|err| NovaLspError::Internal(err.to_string())),
+            .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err))),
         RESET_METRICS_METHOD => {
             nova_metrics::MetricsRegistry::global().reset();
             Ok(serde_json::json!({ "ok": true }))
@@ -490,7 +490,7 @@ pub fn handle_custom_request_with_state<B: BuildSystem, J: JdwpRedefiner>(
     match method {
         BUG_REPORT_METHOD => hardening::handle_bug_report(params),
         DEBUG_CONFIGURATIONS_METHOD => serde_json::to_value(server.debug_configurations())
-            .map_err(|err| NovaLspError::Internal(err.to_string())),
+            .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err))),
         DEBUG_HOT_SWAP_METHOD => {
             let params: HotSwapParams = serde_json::from_value(params)
                 .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
@@ -498,7 +498,7 @@ pub fn handle_custom_request_with_state<B: BuildSystem, J: JdwpRedefiner>(
                 NovaLspError::InvalidParams("hot-swap service is not available".into())
             })?;
             serde_json::to_value(server.hot_swap(hot_swap, params))
-                .map_err(|err| NovaLspError::Internal(err.to_string()))
+                .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
         }
         _ => handle_custom_request_inner_cancelable(method, params, CancellationToken::new()),
     }
@@ -796,6 +796,42 @@ mod tests {
         assert!(
             !message.contains(secret_suffix),
             "expected sanitized serde_json error message to omit backticked values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized serde_json error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn sanitize_serde_json_error_does_not_echo_string_values_from_serialization_errors() {
+        use serde::Serialize;
+
+        #[derive(Debug)]
+        struct BadSerialize {
+            secret: String,
+        }
+
+        impl Serialize for BadSerialize {
+            fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                Err(serde::ser::Error::custom(format!(
+                    "invalid type: string \"{}\"",
+                    self.secret
+                )))
+            }
+        }
+
+        let secret_suffix = "nova-lsp-serialization-secret-token";
+        let secret = format!("prefix\\\"{secret_suffix}");
+        let err = serde_json::to_value(BadSerialize { secret }).expect_err("expected serialize error");
+
+        let message = crate::sanitize_serde_json_error(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized serde_json error message to omit string values: {message}"
         );
         assert!(
             message.contains("<redacted>"),
