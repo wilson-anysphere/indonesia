@@ -1868,36 +1868,66 @@ fn json_log_line_contains_toml_error_scalar(line: &str) -> bool {
 
 fn json_log_line_contains_toml_snippet(line: &str) -> bool {
     // JSON log lines are single-line objects; multiline strings (like TOML snippet displays) are
-    // encoded with `\n` escapes. Look for a `\n`-prefixed snippet line like `\n1 | ...`.
-    if !line.contains("\\n") || !line.contains('|') {
+    // encoded with `\n` escapes. Look for snippet markers:
+    // - after a `\n` escape (`\n1 | ...` / `\n  | ^`), and
+    // - at the start of a string value (`"1 | ..."` / `"  | ^"`).
+    if !line.contains('|') {
         return false;
     }
 
-    let bytes = line.as_bytes();
-    let mut i = 0usize;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b'\\' && bytes[i + 1] == b'n' {
-            let mut j = i + 2;
-            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                j += 1;
-            }
+    fn looks_like_snippet_start(bytes: &[u8], mut idx: usize) -> bool {
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= bytes.len() {
+            return false;
+        }
 
-            if j < bytes.len() && bytes[j].is_ascii_digit() {
-                while j < bytes.len() && bytes[j].is_ascii_digit() {
-                    j += 1;
-                }
-                while j < bytes.len() && bytes[j] == b' ' {
-                    j += 1;
-                }
-                if j < bytes.len() && bytes[j] == b'|' {
-                    return true;
-                }
-            } else if j < bytes.len() && bytes[j] == b'|' {
+        if bytes[idx] == b'|' {
+            return true;
+        }
+
+        if bytes[idx].is_ascii_digit() {
+            while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+                idx += 1;
+            }
+            while idx < bytes.len() && bytes[idx] == b' ' {
+                idx += 1;
+            }
+            if idx < bytes.len() && bytes[idx] == b'|' {
                 return true;
             }
         }
+        false
+    }
 
-        i += 1;
+    let bytes = line.as_bytes();
+
+    if line.contains("\\n") {
+        let mut i = 0usize;
+        while i + 1 < bytes.len() {
+            if bytes[i] == b'\\' && bytes[i + 1] == b'n' && looks_like_snippet_start(bytes, i + 2)
+            {
+                return true;
+            }
+            i += 1;
+        }
+    }
+
+    // Also catch snippet markers at the start of a string value. We intentionally keep this
+    // lightweight and approximate: false positives are fine because the sanitizer re-parses the
+    // log line as JSON and only redacts string values that contain snippet-like lines.
+    for (idx, &b) in bytes.iter().enumerate() {
+        if b != b'"' {
+            continue;
+        }
+        if idx > 0 && bytes[idx - 1] == b'\\' {
+            // Ignore escaped quotes (`\"`) within string values.
+            continue;
+        }
+        if looks_like_snippet_start(bytes, idx + 1) {
+            return true;
+        }
     }
 
     false
@@ -2149,6 +2179,30 @@ mod bugreport_log_sanitization_tests {
         );
         serde_json::from_str::<serde_json::Value>(&sanitized)
             .expect("expected sanitized semver JSON log line to remain valid JSON");
+    }
+
+    #[test]
+    fn sanitize_bugreport_log_line_redacts_single_line_toml_snippet_values_in_json_logs() {
+        let secret_number = 9_876_543_210u64;
+        let secret_text = secret_number.to_string();
+        let message = format!("1 | enabled = {secret_number}");
+        let line = serde_json::json!({ "message": message }).to_string();
+        assert!(
+            line.contains(&secret_text),
+            "expected raw JSON log line to include the numeric value so this test catches leaks: {line}"
+        );
+
+        let sanitized = sanitize_bugreport_log_line(&line);
+        assert!(
+            !sanitized.contains(&secret_text),
+            "expected JSON log sanitizer to omit numeric values from TOML snippet lines: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected JSON log sanitizer to include redaction marker: {sanitized}"
+        );
+        serde_json::from_str::<serde_json::Value>(&sanitized)
+            .expect("expected sanitized snippet JSON log line to remain valid JSON");
     }
 }
 
