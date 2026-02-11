@@ -1083,6 +1083,57 @@ mod tests {
     }
 
     #[test]
+    fn crash_records_sanitize_serde_json_unknown_field_errors() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OnlyFoo {
+            #[allow(dead_code)]
+            foo: u32,
+        }
+
+        let secret_suffix = "nova-bugreport-crash-backtick-secret-token";
+        let secret = format!("prefix`, expected {secret_suffix}");
+        let json = format!(r#"{{"{secret}": 1}}"#);
+        let err = serde_json::from_str::<OnlyFoo>(&json).expect_err("expected unknown field error");
+        let raw_message = format!("called unwrap: {err}");
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw serde_json unknown-field error string to include the backticked value so this test catches leaks: {raw_message}"
+        );
+
+        let crash_store = CrashStore::new(10);
+        crash_store.record(CrashRecord {
+            timestamp_unix_ms: 0,
+            message: raw_message,
+            location: None,
+            backtrace: None,
+        });
+
+        let config = NovaConfig::default();
+        let buffer = LogBuffer::new(1);
+        let perf = PerfStats::default();
+        let bundle = create_bug_report_bundle(
+            &config,
+            &buffer,
+            &crash_store,
+            &perf,
+            BugReportOptions::default(),
+        )
+        .expect("bundle creation failed");
+
+        let crashes_text = std::fs::read_to_string(bundle.path().join("crashes.json"))
+            .expect("crashes read failed");
+        assert!(
+            !crashes_text.contains(secret_suffix),
+            "expected sanitized crash record to omit backticked values: {crashes_text}"
+        );
+        assert!(
+            crashes_text.contains("<redacted>"),
+            "expected sanitized crash record to include redaction marker: {crashes_text}"
+        );
+    }
+
+    #[test]
     fn bug_report_error_json_does_not_echo_string_values() {
         let secret_suffix = "nova-bugreport-super-secret-token";
         let secret = format!("prefix\"{secret_suffix}");
