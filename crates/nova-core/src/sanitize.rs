@@ -68,7 +68,15 @@ pub fn sanitize_json_error_message(message: &str) -> String {
         .filter_map(|pattern| out.find(pattern).map(|pos| pos + pattern.len().saturating_sub(1)))
         .min();
     if start.is_none() && (out.contains("invalid type:") || out.contains("invalid value:")) {
-        start = out.find('`');
+        // `invalid type/value` errors include the unexpected scalar value before `, expected ...`.
+        // Redact only backticked values in that prefix so we don't hide schema names or parser
+        // expected-token diagnostics in the `expected` portion.
+        let boundary = out.find(", expected").unwrap_or(out.len());
+        start = out[..boundary].find('`');
+        if start.is_none() && boundary == out.len() {
+            // Some serde errors omit the `, expected ...` suffix. Fall back to the first backtick.
+            start = out.find('`');
+        }
     }
     if let Some(start) = start {
         let after_start = &out[start.saturating_add(1)..];
@@ -184,6 +192,17 @@ mod tests {
     fn sanitize_json_error_message_preserves_expected_token_backticks() {
         // Parser errors can include expected tokens in backticks; keep these intact.
         let message = "expected `,` or `}` at line 1 column 8";
+        let sanitized = sanitize_json_error_message(message);
+        assert_eq!(sanitized, message);
+    }
+
+    #[test]
+    fn sanitize_json_error_message_preserves_backticks_in_expected_portion_for_invalid_type_errors()
+    {
+        // Some wrapper/custom errors include backticked schema names in the `expected` portion of
+        // an `invalid type/value` diagnostic. Only redact backticks that refer to the unexpected
+        // scalar value, not the expected list.
+        let message = "invalid type: map, expected one of `foo`, `bar`";
         let sanitized = sanitize_json_error_message(message);
         assert_eq!(sanitized, message);
     }
