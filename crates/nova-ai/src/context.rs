@@ -838,6 +838,23 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         return true;
     }
 
+    // HTML percent entities without semicolons (`&percnt...`, `&percent...`) are treated as a
+    // percent marker by the decoder, but the leading `&` is not part of an identifier token. When
+    // braced escapes are used for the hex digits (e.g. `&percntu{0032}u{0046}home`), the entity
+    // name and the first digit escape can be merged into a single identifier token (`percntu`)
+    // which would otherwise leak into the semantic-search query. Treat any identifier that
+    // immediately follows an `&` starting a percent entity as path-like when we can decode a
+    // path-like percent-encoded byte from that entity.
+    if start > 0 && bytes[start - 1] == b'&' {
+        if let Some(digits_start) = percent_marker_end(bytes, start - 1) {
+            if percent_encoded_byte_after_obfuscated_digits(bytes, digits_start)
+                .is_some_and(|(value, _)| percent_encoded_byte_is_path_like(value))
+            {
+                return true;
+            }
+        }
+    }
+
     if start > 0 {
         if unicode_path_separator_before(bytes, start) {
             return true;
@@ -1345,9 +1362,9 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                     if tail.first().is_some_and(|b| *b == b';') {
                         tail = &tail[1..];
                     }
-                    tail.get(..2).is_some_and(|prefix| {
-                        prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit()
-                    })
+                    tail.get(..2)
+                        .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
+                        || percent_encoded_byte_after_obfuscated_digits(tail, 0).is_some()
                 };
 
                 let token_bytes = token.as_bytes();
@@ -1693,25 +1710,27 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                         .get(start..start + 6)
                         .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percnt"))
                     {
-                        let mut tail = bytes.get(start + 6..).unwrap_or_default();
-                        if tail.first().is_some_and(|b| *b == b';') {
-                            tail = &tail[1..];
+                        let mut digits_start = start + 6;
+                        if bytes.get(digits_start).is_some_and(|b| *b == b';') {
+                            digits_start += 1;
                         }
-                        return tail.get(..2).is_some_and(|prefix| {
-                            prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit()
-                        });
+                        return bytes
+                            .get(digits_start..digits_start + 2)
+                            .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
+                            || percent_encoded_byte_after_obfuscated_digits(bytes, digits_start).is_some();
                     }
                     if bytes
                         .get(start..start + 7)
                         .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percent"))
                     {
-                        let mut tail = bytes.get(start + 7..).unwrap_or_default();
-                        if tail.first().is_some_and(|b| *b == b';') {
-                            tail = &tail[1..];
+                        let mut digits_start = start + 7;
+                        if bytes.get(digits_start).is_some_and(|b| *b == b';') {
+                            digits_start += 1;
                         }
-                        return tail.get(..2).is_some_and(|prefix| {
-                            prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit()
-                        });
+                        return bytes
+                            .get(digits_start..digits_start + 2)
+                            .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
+                            || percent_encoded_byte_after_obfuscated_digits(bytes, digits_start).is_some();
                     }
                     if start >= bytes.len() || bytes[start] != b'#' {
                         return false;
@@ -4724,6 +4743,31 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
                     return Some(j);
                 }
             }
+        }
+    }
+
+    // Handle percent markers whose leading `&` was HTML-escaped as `&amp;`, yielding patterns like
+    // `&amp;percnt2F...` or `&amp;percntu0032u0046...`.
+    if idx >= 5 && bytes[idx - 5..idx].eq_ignore_ascii_case(b"&amp;") {
+        if bytes
+            .get(idx..idx + 6)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percnt"))
+        {
+            let mut next = idx + 6;
+            if bytes.get(next).is_some_and(|b| *b == b';') {
+                next += 1;
+            }
+            return Some(next);
+        }
+        if bytes
+            .get(idx..idx + 7)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percent"))
+        {
+            let mut next = idx + 7;
+            if bytes.get(next).is_some_and(|b| *b == b';') {
+                next += 1;
+            }
+            return Some(next);
         }
     }
 

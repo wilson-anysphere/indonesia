@@ -2796,6 +2796,48 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_wit
 }
 
 #[test]
+fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_without_semicolons_with_escaped_hex_digits(
+) {
+    struct PanicSearch<'a> {
+        sep: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for HTML entity percent-encoded path selections without semicolons with escaped hex digits (sep={}); got query={_query}",
+                self.sep
+            );
+        }
+    }
+
+    for sep in [
+        "&percntu0032u0046",       // %2F (unicode digits)
+        "&percntu{0032}u{0046}",   // %2F (braced digits)
+        "&percntu0032u{0046}",     // %2F (mixed braced/unbraced digits)
+        "&percntu{0032}u0046",     // %2F (mixed braced/unbraced digits)
+        "&percntu0035u0043",       // %5C (unicode digits)
+        "&percntu{0035}u{0043}",   // %5C (braced digits)
+        "&percntu0035u{0043}",     // %5C (mixed braced/unbraced digits)
+        "&percntu{0035}u0043",     // %5C (mixed braced/unbraced digits)
+        "&percentu0032u0046",      // %2F (alternate entity name)
+        "&percentu{0032}u{0046}",  // %2F
+        "&percentu0035u0043",      // %5C
+        "&percentu{0035}u{0043}",  // %5C
+        "&amp;percntu0032u0046",   // `&amp;` layer + missing semicolon.
+        "&amp;percntu{0032}u{0046}",
+    ] {
+        let search = PanicSearch { sep };
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for HTML entity percent-encoded path-only focal code without semicolons and with escaped hex digits"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_with_long_zero_padding() {
     struct PanicSearch;
 
