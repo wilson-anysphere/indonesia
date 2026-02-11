@@ -56,6 +56,20 @@ impl fmt::Display for AiError {
                 rest = &rest[end + 1..];
             }
             out.push_str(rest);
+
+            // `serde` wraps unknown fields/variants in backticks:
+            // `unknown field `secret`, expected ...`
+            //
+            // Redact only the first backticked segment so we keep the expected value list actionable.
+            if let Some(start) = out.find('`') {
+                if let Some(end_rel) = out[start.saturating_add(1)..].find('`') {
+                    let end = start.saturating_add(1).saturating_add(end_rel);
+                    if start + 1 <= end && end <= out.len() {
+                        out.replace_range(start + 1..end, "<redacted>");
+                    }
+                }
+            }
+
             out
         }
 
@@ -109,6 +123,16 @@ impl fmt::Debug for AiError {
                 rest = &rest[end + 1..];
             }
             out.push_str(rest);
+
+            if let Some(start) = out.find('`') {
+                if let Some(end_rel) = out[start.saturating_add(1)..].find('`') {
+                    let end = start.saturating_add(1).saturating_add(end_rel);
+                    if start + 1 <= end && end <= out.len() {
+                        out.replace_range(start + 1..end, "<redacted>");
+                    }
+                }
+            }
+
             out
         }
 

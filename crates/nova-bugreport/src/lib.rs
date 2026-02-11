@@ -43,14 +43,14 @@ impl Default for BugReportOptions {
 #[derive(Debug)]
 pub enum BugReportError {
     Io(std::io::Error),
-    Json(serde_json::Error),
+    Json { message: String },
 }
 
 impl std::fmt::Display for BugReportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BugReportError::Io(err) => write!(f, "io error: {err}"),
-            BugReportError::Json(err) => write!(f, "json error: {err}"),
+            BugReportError::Json { message } => write!(f, "json error: {message}"),
         }
     }
 }
@@ -65,8 +65,49 @@ impl From<std::io::Error> for BugReportError {
 
 impl From<serde_json::Error> for BugReportError {
     fn from(value: serde_json::Error) -> Self {
-        Self::Json(value)
+        // `serde_json::Error` display strings can include user-provided scalar values (e.g.
+        // `invalid type: string "..."` or `unknown field `...``). Bug report bundles often contain
+        // config snapshots and request payloads; avoid echoing string values in error messages.
+        let message = sanitize_json_error_message(&value.to_string());
+        Self::Json { message }
     }
+}
+
+fn sanitize_json_error_message(message: &str) -> String {
+    // Conservatively redact all double-quoted substrings. This keeps the error actionable (it
+    // retains the overall structure + line/column info) without echoing potentially-sensitive
+    // content embedded in strings.
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let Some(end) = rest.find('"') else {
+            // Unterminated quote: append the remainder and stop.
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+
+    // `serde` wraps unknown fields/variants in backticks:
+    // `unknown field `secret`, expected ...`
+    //
+    // Redact only the first backticked segment so we keep the expected value list actionable.
+    if let Some(start) = out.find('`') {
+        if let Some(end_rel) = out[start.saturating_add(1)..].find('`') {
+            let end = start.saturating_add(1).saturating_add(end_rel);
+            if start + 1 <= end && end <= out.len() {
+                out.replace_range(start + 1..end, "<redacted>");
+            }
+        }
+    }
+
+    out
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -973,6 +1014,24 @@ mod tests {
         assert_eq!(
             persisted[0].get("message").and_then(|v| v.as_str()),
             Some("boom")
+        );
+    }
+
+    #[test]
+    fn bug_report_error_json_does_not_echo_string_values() {
+        let secret = "nova-bugreport-super-secret-token";
+        let err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+
+        let bug_err = BugReportError::from(err);
+        let message = bug_err.to_string();
+        assert!(
+            !message.contains(secret),
+            "expected BugReportError json message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected BugReportError json message to include redaction marker: {message}"
         );
     }
 }

@@ -137,6 +137,20 @@ fn sanitize_json_error_message(message: &str) -> String {
         rest = &rest[end + 1..];
     }
     out.push_str(rest);
+
+    // `serde` wraps unknown fields/variants in backticks:
+    // `unknown field `secret`, expected ...`
+    //
+    // Redact only the first backticked segment so we keep the expected value list actionable.
+    if let Some(start) = out.find('`') {
+        if let Some(end_rel) = out[start.saturating_add(1)..].find('`') {
+            let end = start.saturating_add(1).saturating_add(end_rel);
+            if start + 1 <= end && end <= out.len() {
+                out.replace_range(start + 1..end, "<redacted>");
+            }
+        }
+    }
+
     out
 }
 
@@ -718,6 +732,29 @@ mod tests {
         assert!(
             !message.contains(secret),
             "expected sanitized serde_json error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized serde_json error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn sanitize_serde_json_error_does_not_echo_backticked_values() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OnlyFoo {
+            foo: u32,
+        }
+
+        let secret = "nova-lsp-backticked-secret";
+        let json = format!(r#"{{"{secret}": 1}}"#);
+        let err = serde_json::from_str::<OnlyFoo>(&json).expect_err("expected unknown field error");
+
+        let message = crate::sanitize_serde_json_error(&err);
+        assert!(
+            !message.contains(secret),
+            "expected sanitized serde_json error message to omit backticked values: {message}"
         );
         assert!(
             message.contains("<redacted>"),

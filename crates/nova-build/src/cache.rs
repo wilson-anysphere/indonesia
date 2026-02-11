@@ -26,11 +26,48 @@ pub enum CacheError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("failed to parse cache file {path}: {source}")]
+    #[error("failed to parse cache file {path}: {message}")]
     Json {
         path: PathBuf,
-        source: serde_json::Error,
+        message: String,
     },
+}
+
+fn sanitize_json_error_message(message: &str) -> String {
+    // `serde_json::Error` display strings can include user-provided scalar values (for example:
+    // `invalid type: string "..."` or `unknown field `...``). Cache files can contain build output
+    // and other potentially-sensitive values; avoid echoing those values in error messages.
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let Some(end) = rest.find('"') else {
+            // Unterminated quote: append the remainder and stop.
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+
+    // `serde` wraps unknown fields/variants in backticks:
+    // `unknown field `secret`, expected ...`
+    //
+    // Redact only the first backticked segment so we keep the expected value list actionable.
+    if let Some(start) = out.find('`') {
+        if let Some(end_rel) = out[start.saturating_add(1)..].find('`') {
+            let end = start.saturating_add(1).saturating_add(end_rel);
+            if start + 1 <= end && end <= out.len() {
+                out.replace_range(start + 1..end, "<redacted>");
+            }
+        }
+    }
+
+    out
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -147,7 +184,7 @@ impl BuildCache {
         })?;
         let data = serde_json::from_slice(&bytes).map_err(|source| CacheError::Json {
             path: path.clone(),
-            source,
+            message: sanitize_json_error_message(&source.to_string()),
         })?;
         Ok(Some(data))
     }
@@ -173,7 +210,7 @@ impl BuildCache {
 
         let bytes = serde_json::to_vec_pretty(data).map_err(|e| CacheError::Json {
             path: path.clone(),
-            source: e,
+            message: sanitize_json_error_message(&e.to_string()),
         })?;
         let (tmp_path, mut file) =
             open_unique_tmp_file(&path, parent).map_err(|source| CacheError::Write {
@@ -375,5 +412,69 @@ fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, fs::
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(err),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_cache_load_json_errors_do_not_echo_string_values() {
+        let dir = tempfile::tempdir().expect("tempdir should succeed");
+        let project_root = tempfile::tempdir().expect("tempdir should succeed");
+        let cache = BuildCache::new(dir.path());
+        let fingerprint = BuildFileFingerprint {
+            digest: "deadbeef".to_string(),
+        };
+        let cache_file = cache.cache_file(project_root.path(), BuildSystemKind::Maven, &fingerprint);
+        std::fs::create_dir_all(
+            cache_file
+                .parent()
+                .expect("cache file should have a parent directory"),
+        )
+        .expect("mkdirs should succeed");
+
+        let secret = "nova-build-cache-super-secret-token";
+        // `modules` expects a map. Using a string triggers `invalid type: string "..."`.
+        let payload = format!(r#"{{"modules":"{secret}"}}"#);
+        std::fs::write(&cache_file, payload).expect("write cache file should succeed");
+
+        let err = cache
+            .load(project_root.path(), BuildSystemKind::Maven, &fingerprint)
+            .expect_err("expected load to fail");
+        let message = err.to_string();
+        assert!(
+            !message.contains(secret),
+            "expected build cache JSON error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected build cache JSON error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn build_cache_sanitize_json_error_message_redacts_backticked_values() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OnlyFoo {
+            foo: u32,
+        }
+
+        let secret = "nova-build-cache-backticked-secret";
+        let json = format!(r#"{{"{secret}": 1}}"#);
+        let err =
+            serde_json::from_str::<OnlyFoo>(&json).expect_err("expected unknown field error");
+
+        let sanitized = sanitize_json_error_message(&err.to_string());
+        assert!(
+            !sanitized.contains(secret),
+            "expected sanitized serde_json error message to omit backticked values: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected sanitized serde_json error message to include redaction marker: {sanitized}"
+        );
     }
 }
