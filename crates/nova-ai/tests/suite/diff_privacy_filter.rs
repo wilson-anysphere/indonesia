@@ -893,6 +893,39 @@ fn unified_diff_with_svn_revision_metadata_is_supported() {
 }
 
 #[test]
+fn unified_diff_with_svn_nonexistent_metadata_is_supported() {
+    // SVN can use `(nonexistent)` metadata for added/removed files. Treat it as a valid header
+    // suffix so we can still parse file paths.
+    let excluded_path = "src/secrets/deleted.txt";
+
+    let excluded_section = "Index: src/secrets/deleted.txt\n\
+===================================================================\n\
+--- src/secrets/deleted.txt\t(revision 123)\n\
++++ src/secrets/deleted.txt\t(nonexistent)\n\
+@@ -1 +0,0 @@\n\
+-SVN_DELETED_SECRET\n";
+
+    let allowed_section = "Index: src/Ok.java\n\
+===================================================================\n\
+--- src/Ok.java\t(revision 123)\n\
++++ src/Ok.java\t(working copy)\n\
+@@ -1 +1 @@\n\
+-class Ok {}\n\
++class Ok { int x = 28; }\n";
+
+    let diff = format!("{excluded_section}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("SVN_DELETED_SECRET"));
+    assert!(filtered.contains(allowed_section));
+}
+
+#[test]
 fn unified_diff_with_index_and_diff_u_preamble_is_supported() {
     // Some tools may include both SVN-style `Index:` metadata and a diffutils-style `diff -u …`
     // line before the `---`/`+++` headers. Ensure all of these lines are treated as part of the

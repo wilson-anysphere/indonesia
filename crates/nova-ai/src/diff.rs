@@ -900,6 +900,9 @@ fn looks_like_svn_diff_revision_metadata(s: &str) -> bool {
     if s.eq_ignore_ascii_case("(working copy)") {
         return true;
     }
+    if s.eq_ignore_ascii_case("(nonexistent)") {
+        return true;
+    }
 
     let Some(rest) = s.strip_prefix("(revision ") else {
         return false;
