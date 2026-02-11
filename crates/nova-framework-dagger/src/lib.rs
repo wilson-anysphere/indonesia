@@ -478,6 +478,137 @@ mod tests {
             .expect("expected cache invalidation");
         assert!(!Arc::ptr_eq(&proj2, &proj3));
     }
+
+    #[test]
+    fn filesystem_cache_invalidates_when_file_text_is_replaced_outside_sample_regions() {
+        use tempfile::TempDir;
+
+        struct MutableDb {
+            project: ProjectId,
+            file: FileId,
+            path: PathBuf,
+            text: String,
+            // Keep the previous allocation alive so the allocator cannot reuse it; this makes the
+            // pointer change deterministic when we replace `text`.
+            _previous_text: Option<String>,
+        }
+
+        impl Database for MutableDb {
+            fn class(&self, _class: ClassId) -> &ClassData {
+                static UNKNOWN: std::sync::OnceLock<ClassData> = std::sync::OnceLock::new();
+                UNKNOWN.get_or_init(ClassData::default)
+            }
+
+            fn project_of_class(&self, _class: ClassId) -> ProjectId {
+                self.project
+            }
+
+            fn project_of_file(&self, _file: FileId) -> ProjectId {
+                self.project
+            }
+
+            fn file_text(&self, file: FileId) -> Option<&str> {
+                (file == self.file).then_some(self.text.as_str())
+            }
+
+            fn file_path(&self, file: FileId) -> Option<&Path> {
+                (file == self.file).then_some(self.path.as_path())
+            }
+
+            fn file_id(&self, path: &Path) -> Option<FileId> {
+                (path == self.path).then_some(self.file)
+            }
+
+            fn all_files(&self, _project: ProjectId) -> Vec<FileId> {
+                // Force the analyzer down the filesystem scan path.
+                Vec::new()
+            }
+
+            fn has_dependency(&self, _project: ProjectId, _group: &str, _artifact: &str) -> bool {
+                false
+            }
+
+            fn has_class_on_classpath(&self, _project: ProjectId, _binary_name: &str) -> bool {
+                false
+            }
+
+            fn has_class_on_classpath_prefix(&self, _project: ProjectId, _prefix: &str) -> bool {
+                false
+            }
+        }
+
+        let tmp = TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        let src_dir = root.join("src");
+        std::fs::create_dir_all(&src_dir).expect("create src dir");
+        let file_path = src_dir.join("Main.java");
+        // Create a real file so `nova_project::workspace_root` and the filesystem scanner can find
+        // it.
+        std::fs::write(&file_path, "").expect("write file");
+
+        let project = ProjectId::new(0);
+        let file = FileId::from_raw(0);
+
+        // Large enough that we only sample prefix/middle/suffix.
+        let prefix = "package test; class Main { /*";
+        let suffix = "*/ }\n";
+        let mut text = String::new();
+        text.push_str(prefix);
+        text.push_str(&"a".repeat(1024));
+        text.push_str(suffix);
+
+        let mut db = MutableDb {
+            project,
+            file,
+            path: file_path,
+            text,
+            _previous_text: None,
+        };
+
+        let analyzer = DaggerAnalyzer::default();
+        let proj1 = analyzer
+            .project_analysis(&db, project, file)
+            .expect("expected project");
+        let proj2 = analyzer
+            .project_analysis(&db, project, file)
+            .expect("expected cache hit");
+        assert!(
+            Arc::ptr_eq(&proj1, &proj2),
+            "expected project analysis cache hit"
+        );
+
+        // Replace the text with the same length but a mutation outside prefix/middle/suffix sample
+        // regions. If the fingerprint only samples content, this would incorrectly hit the cache.
+        let mut next = db.text.clone();
+        const SAMPLE: usize = 64;
+        let len = next.len();
+        assert!(len > 3 * SAMPLE, "expected text to be larger than sample");
+        let mid = len / 2;
+        let mid_start = mid.saturating_sub(SAMPLE / 2);
+        let mid_end = (mid_start + SAMPLE).min(len);
+        let mutation_idx = 100;
+        assert!(mutation_idx >= SAMPLE, "expected index outside prefix sample");
+        assert!(mutation_idx < len - SAMPLE, "expected index outside suffix sample");
+        assert!(
+            mutation_idx < mid_start || mutation_idx >= mid_end,
+            "expected index outside middle sample"
+        );
+        unsafe {
+            let bytes = next.as_mut_vec();
+            assert_eq!(bytes[mutation_idx], b'a');
+            bytes[mutation_idx] = b'b';
+        }
+
+        db._previous_text = Some(std::mem::replace(&mut db.text, next));
+
+        let proj3 = analyzer
+            .project_analysis(&db, project, file)
+            .expect("expected cache invalidation");
+        assert!(
+            !Arc::ptr_eq(&proj2, &proj3),
+            "expected dagger project analysis cache to invalidate when file text changes"
+        );
+    }
 }
 
 fn fingerprint_fs_project_sources(
@@ -505,7 +636,14 @@ fn fingerprint_fs_project_sources(
 
     // Account for unsaved edits in the current file (when available).
     if let Some(text) = db.file_text(current_file) {
-        fingerprint_text_samples(text, &mut hasher);
+        let ptr = text.as_ptr();
+        let ptr_again = db.file_text(current_file).map(|t| t.as_ptr());
+        if ptr_again.is_some_and(|p| p == ptr) {
+            ptr.hash(&mut hasher);
+            fingerprint_text_samples(text, &mut hasher);
+        } else {
+            text.hash(&mut hasher);
+        }
     }
 
     hasher.finish()
