@@ -40,11 +40,10 @@ where
         };
     }
 
-    let newline = if diff.contains("\r\n") { "\r\n" } else { "\n" };
-    let sentinel_line = format!("{DIFF_OMITTED_SENTINEL}{newline}");
-
     // Preserve exact newlines by splitting inclusively.
     let lines: Vec<&str> = diff.split_inclusive('\n').collect();
+    let newline = newline_style_for_sentinel(&lines);
+    let sentinel_line = format!("{DIFF_OMITTED_SENTINEL}{newline}");
     let has_git_headers = lines.iter().any(|line| is_git_section_header_line(line));
 
     let result = if has_git_headers {
@@ -60,6 +59,28 @@ where
             omitted_any: true,
             parsed: false,
         },
+    }
+}
+
+fn newline_style_for_sentinel(lines: &[&str]) -> &'static str {
+    // Prefer CRLF only if the diff consistently uses CRLF line endings. Some diffs contain literal
+    // `\r` characters from CRLF-encoded file content even when the diff itself is LF-delimited.
+    // Using CRLF in the omission sentinel in that case would inject carriage returns into the
+    // output that weren't present as actual line endings.
+    let mut saw_crlf = false;
+    let mut saw_lf = false;
+    for line in lines {
+        if line.ends_with("\r\n") {
+            saw_crlf = true;
+        } else if line.ends_with('\n') {
+            saw_lf = true;
+        }
+    }
+
+    if saw_crlf && !saw_lf {
+        "\r\n"
+    } else {
+        "\n"
     }
 }
 

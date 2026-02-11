@@ -1220,3 +1220,38 @@ index 2222222..3333333 100644
     assert!(!filtered.contains("CRLF_SECRET"));
     assert!(filtered.contains(&allowed_crlf));
 }
+
+#[test]
+fn mixed_newlines_prefer_lf_for_sentinel_line() {
+    // Some diffs may contain `\r` characters from CRLF-encoded file contents even when the diff
+    // itself is LF-delimited (e.g. metadata lines end with `\n`, but hunk lines may end with
+    // `\r\n`). The omission sentinel should avoid injecting `\r` characters in this case.
+    let excluded_path = "src/secrets/Secret.java";
+
+    let excluded_section = "diff --git a/src/secrets/Secret.java b/src/secrets/Secret.java\n\
+index 0000000..1111111 100644\n\
+--- a/src/secrets/Secret.java\n\
++++ b/src/secrets/Secret.java\n\
+@@ -1 +1 @@\n\
+-old\n\
++MIXED_SECRET\r\n";
+
+    let allowed_section = "diff --git a/src/Ok.java b/src/Ok.java\n\
+index 2222222..3333333 100644\n\
+--- a/src/Ok.java\n\
++++ b/src/Ok.java\n\
+@@ -1 +1 @@\n\
+-class Ok {}\n\
++class Ok { int x = 27; }\n";
+
+    let diff = format!("{excluded_section}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("MIXED_SECRET"));
+    assert!(filtered.contains(allowed_section));
+}
