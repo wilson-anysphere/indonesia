@@ -1044,6 +1044,22 @@ fn unified_diff_with_ambiguous_quoted_headers_fails_closed() {
 }
 
 #[test]
+fn unified_diff_space_delimited_timestamp_with_date_like_path_segment_fails_closed() {
+    // Regression test: without a strict timestamp check, a filename containing a date-like
+    // segment (e.g. `2026-02-10.txt`) could be misclassified as a timestamp, truncating the parsed
+    // path and potentially bypassing excluded_paths checks.
+    let diff = "--- src/secrets/secret 2026-02-10.txt 2026-02-10 12:00:00.000000000 +0000\n\
++++ src/secrets/secret 2026-02-10.txt 2026-02-10 12:00:00.000000000 +0000\n\
+@@ -1 +1 @@\n\
+-old\n\
++LEAK\n";
+
+    let filtered = filter_diff_for_excluded_paths_for_tests(diff, |_| false);
+    assert_eq!(filtered, sentinel_line("\n"));
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+}
+
+#[test]
 fn git_diff_token_parsing_supports_octal_escapes() {
     let excluded_path = "src/secrets/café.txt";
 

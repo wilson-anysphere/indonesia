@@ -837,7 +837,7 @@ fn looks_like_unified_diff_timestamp(s: &str) -> bool {
         matches!(b, b'0'..=b'9')
     }
 
-    is_digit(bytes[0])
+    let is_date = is_digit(bytes[0])
         && is_digit(bytes[1])
         && is_digit(bytes[2])
         && is_digit(bytes[3])
@@ -846,7 +846,28 @@ fn looks_like_unified_diff_timestamp(s: &str) -> bool {
         && is_digit(bytes[6])
         && bytes[7] == b'-'
         && is_digit(bytes[8])
-        && is_digit(bytes[9])
+        && is_digit(bytes[9]);
+
+    if !is_date {
+        return false;
+    }
+
+    // Require a plausible separator after the date so we don't accidentally treat filename
+    // segments like `2026-02-10.txt` as a timestamp.
+    if bytes.len() == 10 {
+        return true;
+    }
+
+    if bytes[10].is_ascii_whitespace() {
+        return true;
+    }
+
+    // Best-effort support for ISO-8601 timestamps: `YYYY-MM-DDTHH:MM:SS...`
+    if bytes[10] == b'T' {
+        return bytes.get(11).copied().is_some_and(is_digit);
+    }
+
+    false
 }
 
 fn validate_unified_header_path_remainder(path: String, remaining: &str) -> Option<String> {
