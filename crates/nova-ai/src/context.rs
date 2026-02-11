@@ -2131,6 +2131,16 @@ fn html_entity_is_ampersand(bytes: &[u8], end_semicolon: usize) -> bool {
                 }
                 continue;
             }
+            if fragment.len() > 3 && fragment[..3].eq_ignore_ascii_case(b"amp") {
+                fragment = &fragment[3..];
+                if fragment.first().is_some_and(|b| *b == b';') {
+                    fragment = &fragment[1..];
+                }
+                if fragment.is_empty() {
+                    return false;
+                }
+                continue;
+            }
             break;
         }
 
