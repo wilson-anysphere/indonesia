@@ -343,10 +343,15 @@ pub fn install_panic_hook(config: PanicHookConfig, notifier: PanicNotifier) {
                 notifiers: Mutex::new(Vec::new()),
             });
 
-            let state_for_hook = state.clone();
-            std::panic::set_hook(Box::new(move |info| {
-                previous(info);
-                let include_backtrace = state_for_hook.include_backtrace.load(Ordering::Relaxed);
+             let state_for_hook = state.clone();
+             std::panic::set_hook(Box::new(move |info| {
+                 // Avoid echoing potentially sensitive panic payloads in production binaries.
+                 // (The hook still records the panic to crash logs + tracing, but those paths
+                 // apply additional redaction.)
+                 if cfg!(debug_assertions) {
+                     previous(info);
+                 }
+                 let include_backtrace = state_for_hook.include_backtrace.load(Ordering::Relaxed);
 
                 let timestamp_unix_ms = unix_ms_now();
                 let message = redact::redact_string(&panic_message(info));
