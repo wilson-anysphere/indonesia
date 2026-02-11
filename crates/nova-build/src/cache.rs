@@ -33,7 +33,7 @@ pub enum CacheError {
     },
 }
 
-fn sanitize_json_error_message(message: &str) -> String {
+pub(crate) fn sanitize_json_error_message(message: &str) -> String {
     // `serde_json::Error` display strings can include user-provided scalar values (for example:
     // `invalid type: string "..."` or `unknown field `...``). Cache files can contain build output
     // and other potentially-sensitive values; avoid echoing those values in error messages.

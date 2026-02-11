@@ -10,6 +10,51 @@ use std::time::Duration;
 
 pub type BuildTaskId = u64;
 
+fn contains_serde_json_error(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(err) = current {
+        if err.is::<serde_json::Error>() {
+            return true;
+        }
+
+        if let Some(build_err) = err.downcast_ref::<BuildError>() {
+            match build_err {
+                BuildError::Io(io_err) => {
+                    if contains_serde_json_error(io_err) {
+                        return true;
+                    }
+                }
+                BuildError::Cache(cache_err) => {
+                    if contains_serde_json_error(cache_err) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+            if let Some(inner) = io_err.get_ref() {
+                let inner: &(dyn std::error::Error + 'static) = inner;
+                if contains_serde_json_error(inner) {
+                    return true;
+                }
+            }
+        }
+
+        current = err.source();
+    }
+    false
+}
+
+fn sanitize_build_error_message(err: &(dyn std::error::Error + 'static)) -> String {
+    if contains_serde_json_error(err) {
+        crate::cache::sanitize_json_error_message(&err.to_string())
+    } else {
+        err.to_string()
+    }
+}
+
 /// High-level state for Nova's background build orchestration.
 ///
 /// This is intentionally coarse-grained so it can be surfaced through LSP
@@ -431,9 +476,135 @@ fn run_build(
                 BuildError::Io(err) if err.kind() == std::io::ErrorKind::Interrupted => {
                     (BuildTaskState::Cancelled, "cancelled".to_string())
                 }
-                _ => (BuildTaskState::Failure, err.to_string()),
+                _ => (BuildTaskState::Failure, sanitize_build_error_message(&err)),
             };
             (state, None, Some(msg))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::CommandOutput;
+    use std::io;
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[test]
+    fn build_orchestrator_errors_do_not_echo_serde_json_string_values() {
+        #[derive(Debug, Clone)]
+        struct FailingRunner {
+            secret: String,
+        }
+
+        impl CommandRunner for FailingRunner {
+            fn run(
+                &self,
+                _cwd: &Path,
+                _program: &Path,
+                _args: &[String],
+            ) -> io::Result<CommandOutput> {
+                let err =
+                    serde_json::from_value::<bool>(serde_json::json!(self.secret.clone()))
+                        .expect_err("expected type mismatch");
+                Err(io::Error::new(io::ErrorKind::Other, err))
+            }
+        }
+
+        #[derive(Debug)]
+        struct FailingRunnerFactory {
+            secret: String,
+        }
+
+        impl CommandRunnerFactory for FailingRunnerFactory {
+            fn build_runner(
+                &self,
+                _cancellation: CancellationToken,
+            ) -> Arc<dyn CommandRunner> {
+                Arc::new(FailingRunner {
+                    secret: self.secret.clone(),
+                })
+            }
+        }
+
+        let secret_suffix = "nova-build-orchestrator-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
+        let raw_err = serde_json::from_value::<bool>(serde_json::json!(secret.clone()))
+            .expect_err("expected type mismatch");
+        let raw_message = raw_err.to_string();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw serde_json error message to include the string value so this test catches leaks: {raw_message}"
+        );
+
+        let io_err = io::Error::new(io::ErrorKind::Other, raw_err);
+        let source_is_serde_json = io_err.get_ref().is_some_and(|source| {
+            let source: &(dyn std::error::Error + 'static) = source;
+            source.is::<serde_json::Error>()
+        });
+        assert!(
+            source_is_serde_json,
+            "expected orchestrator test harness to preserve serde_json::Error in the error chain"
+        );
+        let build_err: BuildError = io_err.into();
+        assert!(
+            contains_serde_json_error(&build_err),
+            "expected orchestrator sanitization to detect serde_json::Error in the error chain"
+        );
+        let sanitized = sanitize_build_error_message(&build_err);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected sanitized error message to omit string values: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected sanitized error message to include redaction marker: {sanitized}"
+        );
+
+        let tmp = tempfile::tempdir().expect("tempdir should succeed");
+        std::fs::write(tmp.path().join("pom.xml"), "<project></project>")
+            .expect("write pom.xml should succeed");
+        let root = tmp.path().canonicalize().expect("canonicalize should succeed");
+
+        let orchestrator = BuildOrchestrator::with_runner_factory(
+            root.clone(),
+            root.join(".nova").join("build-cache"),
+            Arc::new(FailingRunnerFactory { secret }),
+        );
+
+        orchestrator.enqueue(BuildRequest::Maven {
+            module_relative: None,
+            goal: MavenBuildGoal::Compile,
+        });
+
+        for _ in 0..200 {
+            if matches!(
+                orchestrator.status().state,
+                BuildTaskState::Failure | BuildTaskState::Cancelled
+            ) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert_eq!(
+            orchestrator.status().state,
+            BuildTaskState::Failure,
+            "expected orchestrator to fail"
+        );
+        let last_error = orchestrator
+            .status()
+            .last_error
+            .unwrap_or_default();
+        assert!(
+            !last_error.contains(secret_suffix),
+            "expected build orchestrator error message to omit string values: {last_error}"
+        );
+        assert!(
+            last_error.contains("<redacted>"),
+            "expected build orchestrator error message to include redaction marker: {last_error}"
+        );
     }
 }
