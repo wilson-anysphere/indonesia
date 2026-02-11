@@ -1266,6 +1266,30 @@ class A {
 }
 
 #[test]
+fn completion_resolves_new_array_initializer_receiver_with_trailing_block_comment_before_brace() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    new int[]/*comment*/ {1, 2}.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain array.length for array initializer receiver with comment before array initializer body; got {labels:?}"
+    );
+    assert!(
+        labels.contains(&"clone"),
+        "expected completion list to contain array.clone() for array initializer receiver with comment before array initializer body; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_resolves_new_array_initializer_element_receiver() {
     let (db, file, pos) = fixture(
         r#"
@@ -1306,6 +1330,30 @@ class A {
     assert!(
         labels.contains(&"bar"),
         "expected completion list to contain Foo.bar for anonymous class receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_anonymous_class_receiver_with_trailing_block_comment_before_body() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  void bar() {}
+}
+
+class A {
+  void m() {
+    new Foo()/*comment*/ { }.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"bar"),
+        "expected completion list to contain Foo.bar for anonymous class receiver with trailing block comment; got {labels:?}"
     );
 }
 
@@ -1654,6 +1702,27 @@ class A {
     assert!(
         labels.contains(&"substring"),
         "expected completion list to contain String.substring for array element receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_array_access_receiver_with_trailing_block_comment_before_index() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    String[] xs = new String[0];
+    xs/*comment*/[0].<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"substring"),
+        "expected completion list to contain String.substring for array access receiver with trailing block comment; got {labels:?}"
     );
 }
 

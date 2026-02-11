@@ -10819,7 +10819,7 @@ pub(crate) fn infer_receiver_type_before_dot(
 
         let close_bracket = end - 1;
         let open_bracket = find_matching_open_bracket(bytes, close_bracket)?;
-        let array_expr_end = skip_whitespace_backwards(text, open_bracket);
+        let array_expr_end = skip_trivia_backwards(text, open_bracket);
         if array_expr_end == 0 {
             return None;
         }
@@ -10883,7 +10883,7 @@ pub(crate) fn infer_receiver_type_before_dot(
     if bytes.get(end - 1) == Some(&b'}') {
         let close_brace = end - 1;
         let open_brace = find_matching_open_brace(bytes, close_brace)?;
-        let before_open = skip_whitespace_backwards(text, open_brace);
+        let before_open = skip_trivia_backwards(text, open_brace);
         if before_open == 0 {
             return None;
         }
