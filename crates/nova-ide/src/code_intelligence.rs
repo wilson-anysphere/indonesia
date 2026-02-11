@@ -10424,7 +10424,24 @@ fn method_reference_completions(
     if !receiver.is_empty() && receiver.contains('.') && call_kind == CallKind::Static {
         let is_known_type = class_id_of_type(&mut types, &receiver_ty).is_some();
         if !is_known_type {
-            if let Some((ty, kind)) =
+            // Best-effort recovery for call-chain receivers like `foo().bar::baz` / `foo().bar.baz::qux`.
+            //
+            // `receiver_before_double_colon` can't capture the call expression, so the lexical
+            // receiver inference above treats `.bar` / `.bar.baz` as a type reference. Detect the
+            // `<call>().<field_chain>::` pattern and resolve the field chain semantically.
+            if let Some(ty) = infer_call_chain_field_access_receiver_type_in_store(
+                &mut types,
+                &analysis,
+                &file_ctx,
+                text,
+                double_colon_offset,
+                6,
+            ) {
+                if !matches!(ty, Type::Unknown | Type::Error) {
+                    receiver_ty = ty;
+                    call_kind = CallKind::Instance;
+                }
+            } else if let Some((ty, kind)) =
                 infer_chained_field_access(&mut types, &analysis, &file_ctx, &receiver, offset)
             {
                 receiver_ty = ty;

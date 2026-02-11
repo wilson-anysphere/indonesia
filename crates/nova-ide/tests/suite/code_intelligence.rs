@@ -2080,6 +2080,36 @@ class A {
 }
 
 #[test]
+fn completion_resolves_method_reference_call_chain_field_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  void baz() {}
+}
+
+class Holder {
+  Foo foo = new Foo();
+}
+
+class A {
+  Holder h() { return new Holder(); }
+
+  void m() {
+    java.util.function.Supplier<Foo> sup = h().foo::<|>;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"baz"),
+        "expected completion list to contain Foo.baz for method-reference call-chain field receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_resolves_method_reference_qualified_this_field_chain_receiver() {
     let (db, file, pos) = fixture(
         r#"
