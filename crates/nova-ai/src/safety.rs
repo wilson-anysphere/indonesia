@@ -112,8 +112,17 @@ pub enum SafetyError {
     NonRelativePath { path: String },
     #[error("patch attempted to edit disallowed file extension '{extension}' for '{path}'")]
     DisallowedFileExtension { path: String, extension: String },
-    #[error("invalid excluded_paths glob {pattern:?}: {error}")]
-    InvalidExcludedGlob { pattern: String, error: String },
+    #[error("invalid excluded_paths glob {pattern}: {error}")]
+    InvalidExcludedGlob {
+        /// A snippet-free identifier for the failing glob pattern.
+        ///
+        /// This intentionally does **not** include the raw pattern value: users may put secrets in
+        /// `ai.privacy.excluded_paths` and safety errors can be surfaced to end users and/or fed
+        /// back into LLM repair prompts.
+        pattern: String,
+        /// Snippet-free summary of the `globset` error.
+        error: String,
+    },
     #[error("patch attempted to create a new file '{file}', but new files are not allowed")]
     NewFileNotAllowed { file: String },
     #[error("patch attempted to delete file '{file}', but file deletions are not allowed")]
@@ -422,11 +431,32 @@ fn build_excluded_globset(config: &PatchSafetyConfig) -> Result<Option<GlobSet>,
         return Ok(None);
     }
 
+    fn summarize_glob_error(err: &globset::Error) -> String {
+        // `globset` includes the raw pattern in its `Display` output, e.g.
+        // `error parsing glob '<pattern>': <reason>`.
+        //
+        // The pattern itself may contain sensitive path segments, so strip it and keep the reason.
+        let message = err.to_string();
+        if let Some(pos) = message.find("':") {
+            return message[pos + 2..]
+                .trim_start_matches(':')
+                .trim()
+                .to_string();
+        }
+        if let Some(pos) = message.find("\":") {
+            return message[pos + 2..]
+                .trim_start_matches(':')
+                .trim()
+                .to_string();
+        }
+        message
+    }
+
     let mut builder = GlobSetBuilder::new();
-    for pattern in &config.excluded_path_globs {
+    for (idx, pattern) in config.excluded_path_globs.iter().enumerate() {
         let glob = Glob::new(pattern).map_err(|err| SafetyError::InvalidExcludedGlob {
-            pattern: pattern.clone(),
-            error: err.to_string(),
+            pattern: format!("excluded_path_globs[{idx}]"),
+            error: summarize_glob_error(&err),
         })?;
         builder.add(glob);
     }
@@ -435,7 +465,7 @@ fn build_excluded_globset(config: &PatchSafetyConfig) -> Result<Option<GlobSet>,
         .build()
         .map_err(|err| SafetyError::InvalidExcludedGlob {
             pattern: "<globset build>".into(),
-            error: err.to_string(),
+            error: summarize_glob_error(&err),
         })?;
 
     Ok(Some(set))

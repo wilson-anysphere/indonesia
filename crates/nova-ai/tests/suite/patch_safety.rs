@@ -253,6 +253,36 @@ fn rejects_dot_and_empty_segments() {
 }
 
 #[test]
+fn invalid_excluded_path_globs_do_not_echo_pattern_values_in_errors() {
+    let secret = "super-secret-excluded-glob";
+    let workspace = VirtualWorkspace::default();
+    let patch = Patch::Json(JsonPatch {
+        edits: Vec::new(),
+        ops: Vec::new(),
+    });
+
+    let mut config = PatchSafetyConfig::default();
+    config.excluded_path_globs = vec![format!("{secret}[unterminated")];
+
+    let err = enforce_patch_safety(&patch, &workspace, &config).expect_err("expected invalid glob");
+    let message = err.to_string();
+    assert!(
+        !message.contains(secret),
+        "SafetyError should not echo raw excluded_path_globs values: {message}"
+    );
+    assert!(
+        message.contains("excluded_path_globs[0]"),
+        "SafetyError should include the failing index: {message}"
+    );
+
+    let debug = format!("{err:?}");
+    assert!(
+        !debug.contains(secret),
+        "SafetyError debug should not echo raw excluded_path_globs values: {debug}"
+    );
+}
+
+#[test]
 fn rejects_new_files_in_json_edits_by_default() {
     let workspace = VirtualWorkspace::new(vec![(
         "Existing.java".to_string(),
