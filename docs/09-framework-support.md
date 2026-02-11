@@ -250,6 +250,67 @@ impl AnalyzerRegistry {
 
 ---
 
+## Cache fingerprints and invalidation
+
+Framework analyzers and workspace indexes are frequently queried on every keystroke. Hashing entire
+workspaces (full file contents) on each request would be prohibitively expensive, so Nova uses
+**cheap, best-effort fingerprints** to key in-memory caches.
+
+### Standard text fingerprint strategy (in-memory buffers)
+
+When a host database provides file text (e.g. `Database::file_text` / `nova_db::Database::file_content`),
+Nova fingerprints text as:
+
+1. **Fast identity hash**: `len + as_ptr()`
+   - Many Nova DB implementations replace the underlying `String` on edits.
+   - Hashing the pointer is therefore a cheap signal that content changed without scanning the
+     entire file.
+2. **Deterministic content sample** to avoid stale cache hits when:
+   - a host mutates text in place (pointer/len stable), or
+   - short-lived test fixtures reuse allocations (pointer/len collisions).
+
+Sampling rule (used across `nova-ide` and `nova-framework-*` caches):
+
+- `SAMPLE = 64`
+- If `bytes.len() <= 3 * SAMPLE` (≤ 192): hash **all bytes**
+- Else hash: `64B prefix + centered 64B middle + 64B suffix`
+
+Pseudo-code:
+
+```rust
+use std::hash::{Hash, Hasher};
+
+fn fingerprint_text(text: &str, hasher: &mut impl Hasher) {
+    const SAMPLE: usize = 64;
+    const FULL_HASH_MAX: usize = 3 * SAMPLE;
+
+    let bytes = text.as_bytes();
+    bytes.len().hash(hasher);
+    text.as_ptr().hash(hasher);
+
+    if bytes.len() <= FULL_HASH_MAX {
+        bytes.hash(hasher);
+    } else {
+        bytes[..SAMPLE].hash(hasher);
+        let mid = bytes.len() / 2;
+        let mid_start = mid.saturating_sub(SAMPLE / 2);
+        let mid_end = (mid_start + SAMPLE).min(bytes.len());
+        bytes[mid_start..mid_end].hash(hasher);
+        bytes[bytes.len() - SAMPLE..].hash(hasher);
+    }
+}
+```
+
+### Fallback strategy (unopened buffers / filesystem only)
+
+When the host DB cannot provide file text, caches typically fall back to on-disk metadata:
+
+- file size
+- modified time (`mtime`)
+
+This is best-effort; analyzers should treat missing file text as “information not available” and
+degrade gracefully.
+
 ## Spring Framework Support
 
 ### Bean Model
