@@ -555,6 +555,50 @@ fn related_code_query_avoids_html_entity_percent_encoded_path_segments_without_s
 }
 
 #[test]
+fn related_code_query_avoids_html_entity_percent_encoded_path_segments_with_long_zero_padding_at_end() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let zeros = "0".repeat(80);
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+    for sep in [
+        format!("&#{zeros}37;2F"),
+        format!("&#x{zeros}25;2F"),
+        format!("&#{zeros}37;5C"),
+        format!("&#x{zeros}25;5C"),
+    ] {
+        let search = CapturingSearch::default();
+        let focal_code = format!("{sep}home{sep}user{sep}{private_segment}\nreturn foo.bar();\n");
+
+        let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+        let query = search
+            .last_query
+            .lock()
+            .expect("lock poisoned")
+            .clone()
+            .expect("query captured");
+
+        assert!(
+            !query.contains(private_segment),
+            "query should not include long zero-padded HTML entity percent-encoded path fragments: {query}"
+        );
+        assert!(
+            query.contains("foo") || query.contains("bar"),
+            "expected query to retain non-path identifiers, got: {query}"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_avoids_unicode_separator_path_segments() {
     #[derive(Default)]
     struct CapturingSearch {
@@ -924,6 +968,50 @@ fn related_code_query_avoids_html_entity_path_segments_without_semicolons() {
         assert!(
             !query.contains(private_segment),
             "query should not include HTML entity path fragments without semicolons: {query}"
+        );
+        assert!(
+            query.contains("foo") || query.contains("bar"),
+            "expected query to retain non-path identifiers, got: {query}"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_avoids_html_entity_path_segments_with_long_zero_padding_at_end() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let zeros = "0".repeat(80);
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+    for sep in [
+        format!("&#{zeros}47;"),
+        format!("&#x{zeros}2F;"),
+        format!("&#{zeros}92;"),
+        format!("&#x{zeros}5C;"),
+    ] {
+        let search = CapturingSearch::default();
+        let focal_code = format!("{sep}home{sep}user{sep}{private_segment}\nreturn foo.bar();\n");
+
+        let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+        let query = search
+            .last_query
+            .lock()
+            .expect("lock poisoned")
+            .clone()
+            .expect("query captured");
+
+        assert!(
+            !query.contains(private_segment),
+            "query should not include long zero-padded HTML entity path fragments: {query}"
         );
         assert!(
             query.contains("foo") || query.contains("bar"),
@@ -1734,6 +1822,33 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_wit
 }
 
 #[test]
+fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_with_long_zero_padding() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for long zero-padded HTML entity percent-encoded path selections");
+        }
+    }
+
+    let zeros = "0".repeat(80);
+    let search = PanicSearch;
+    for sep in [
+        format!("&#{zeros}37;2F"),
+        format!("&#x{zeros}25;2F"),
+        format!("&#{zeros}37;5C"),
+        format!("&#x{zeros}25;5C"),
+    ] {
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for long zero-padded HTML entity percent-encoded path-only focal code"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_unicode_separator_path_only_selections() {
     struct PanicSearch;
 
@@ -2024,6 +2139,33 @@ fn related_code_query_skips_html_entity_path_only_selections_without_semicolons(
         assert!(
             req.related_code.is_empty(),
             "expected no related code for HTML entity path-only focal code without semicolons"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_html_entity_path_only_selections_with_long_zero_padding() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for long zero-padded HTML entity path selections");
+        }
+    }
+
+    let zeros = "0".repeat(80);
+    let search = PanicSearch;
+    for sep in [
+        format!("&#{zeros}47;"),
+        format!("&#x{zeros}2F;"),
+        format!("&#{zeros}92;"),
+        format!("&#x{zeros}5C;"),
+    ] {
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for long zero-padded HTML entity path-only focal code"
         );
     }
 }

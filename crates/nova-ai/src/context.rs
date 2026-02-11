@@ -1511,7 +1511,7 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
     let mut scanned = 0usize;
     // Support nested escapes like `&amp;amp;Backslash;` which can push the leading `&` further
     // away from the terminating `;`.
-    while i > 0 && scanned < 64 {
+    while i > 0 && scanned < 256 {
         i -= 1;
         scanned += 1;
         if bytes[i] == b'&' {
@@ -1685,7 +1685,7 @@ fn html_entity_is_percent(bytes: &[u8], end_semicolon: usize) -> bool {
     let mut amp = None;
     let mut i = end_semicolon;
     let mut scanned = 0usize;
-    while i > 0 && scanned < 64 {
+    while i > 0 && scanned < 256 {
         i -= 1;
         scanned += 1;
         if bytes[i] == b'&' {
