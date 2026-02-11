@@ -2872,6 +2872,19 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_wit
         "x{26}percntu{0032}u{0046}",   // %2F (braced hex ampersand + braced digits)
         // Unicode-escaped ampersand followed by a numeric percent entity (`#37`), missing its `&`.
         "u0026#37u0032u0046",          // %2F
+        // Unicode-escaped ampersand + unicode-escaped number sign (`u0023`) building numeric percent
+        // entities like `&#37...`.
+        "u0026u002337u0032u0046",      // %2F
+        "u0026u002337u0035u0043",      // %5C
+        "u0026u{0023}37u0032u0046",    // %2F (braced number sign)
+        // Hex escape for `#` requires braces to avoid greedily consuming following digits.
+        "u0026x{23}37u0032u0046",      // %2F (braced hex number sign)
+        // Number sign emitted via HTML entities after an escaped ampersand.
+        "u0026&num;37u0032u0046",      // %2F
+        "u0026&#35;37u0032u0046",      // %2F
+        "u0026&#x23;37u0032u0046",     // %2F
+        // Escaped ampersand starting a nested `&num;` entity (`u0026u0026num;...`).
+        "u0026u0026num;37u0032u0046",  // %2F
     ] {
         let search = PanicSearch { sep };
         let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");

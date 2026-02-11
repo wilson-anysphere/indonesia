@@ -1309,13 +1309,12 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                         j += 1;
 
                         if value == 37 {
-                            let mut tail = fragment.get(j..).unwrap_or_default();
-                            if tail.first().is_some_and(|b| *b == b';') {
-                                tail = &tail[1..];
+                            let mut tail_start = j;
+                            if fragment.get(tail_start).is_some_and(|b| *b == b';') {
+                                tail_start += 1;
                             }
-                            return tail.get(..2).is_some_and(|prefix| {
-                                prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit()
-                            });
+                            return percent_encoded_byte_after_obfuscated_digits(fragment, tail_start)
+                                .is_some();
                         }
                     }
 
@@ -4529,46 +4528,230 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
         }
 
         // Numeric percent entities whose leading `&` has been emitted via a separate escape, e.g.
-        // `u0026#372F...` (aka `&#37...` after one decode pass).
-        if bytes.get(idx) == Some(&b'#') {
-            let mut j = idx + 1;
-            let base = match bytes.get(j) {
-                Some(b'x') | Some(b'X') => {
-                    j += 1;
-                    16u32
+        // `u0026#372F...` (aka `&#37...` after one decode pass). The number sign can also be
+        // obfuscated via escape sequences (`u0026u{0023}37...`) or encoded as its own HTML entity
+        // (`u0026&num;37...`), so detect a few common forms and treat them all as percent markers.
+        {
+            fn number_sign_entity_end_after_ampersand(bytes: &[u8], mut idx: usize) -> Option<usize> {
+                // Nested escaping can insert literal `amp` fragments after decoding `&` (e.g.
+                // `u0026amp;u0026num;...`). Skip a few layers.
+                for _ in 0..8 {
+                    if bytes
+                        .get(idx..idx + 3)
+                        .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+                    {
+                        idx += 3;
+                        if bytes.get(idx).is_some_and(|b| *b == b';') {
+                            idx += 1;
+                        }
+                        continue;
+                    }
+                    break;
                 }
-                _ => 10u32,
-            };
 
-            let mut value = 0u32;
-            let mut significant = 0usize;
-            while j < bytes.len() && significant < 8 {
-                let b = bytes[j];
-                let digit = if base == 16 {
-                    let Some(v) = hex_value(b) else {
+                if bytes
+                    .get(idx..idx + 3)
+                    .is_some_and(|frag| frag.eq_ignore_ascii_case(b"num"))
+                {
+                    let mut next = idx + 3;
+                    if bytes.get(next).is_some_and(|b| *b == b';') {
+                        next += 1;
+                    }
+                    return Some(next);
+                }
+
+                if bytes.get(idx) == Some(&b'#') {
+                    let mut j = idx + 1;
+                    let base = match bytes.get(j) {
+                        Some(b'x') | Some(b'X') => {
+                            j += 1;
+                            16u32
+                        }
+                        _ => 10u32,
+                    };
+
+                    let mut value = 0u32;
+                    let mut significant = 0usize;
+                    while j < bytes.len() && significant < 8 {
+                        let b = bytes[j];
+                        let digit = if base == 16 {
+                            let Some(v) = hex_value(b) else {
+                                break;
+                            };
+                            v as u32
+                        } else if b.is_ascii_digit() {
+                            (b - b'0') as u32
+                        } else {
+                            break;
+                        };
+                        if significant == 0 && digit == 0 {
+                            j += 1;
+                            continue;
+                        }
+                        value = value
+                            .checked_mul(base)
+                            .and_then(|v| v.checked_add(digit))
+                            .unwrap_or(u32::MAX);
+                        significant += 1;
+                        j += 1;
+                        if value == 35 {
+                            if bytes.get(j).is_some_and(|b| *b == b';') {
+                                j += 1;
+                            }
+                            return Some(j);
+                        }
+                    }
+                }
+
+                None
+            }
+
+            fn number_sign_fragment_end(bytes: &[u8], idx: usize) -> Option<usize> {
+                if bytes.get(idx) == Some(&b'#') {
+                    return Some(idx + 1);
+                }
+
+                if bytes
+                    .get(idx)
+                    .is_some_and(|b| matches!(*b, b'u' | b'U'))
+                {
+                    if let Some((value, next)) = parse_unicode_escape(bytes, idx) {
+                        if value == 0x23 {
+                            return Some(next);
+                        }
+                        if value == 0x26 {
+                            if let Some(next) = number_sign_entity_end_after_ampersand(bytes, next) {
+                                return Some(next);
+                            }
+                        }
+                    }
+                }
+
+                if bytes
+                    .get(idx)
+                    .is_some_and(|b| matches!(*b, b'x' | b'X'))
+                {
+                    if let Some((value, next)) = parse_hex_escape(bytes, idx) {
+                        if value == 0x23 {
+                            return Some(next);
+                        }
+                        if value == 0x26 {
+                            if let Some(next) = number_sign_entity_end_after_ampersand(bytes, next) {
+                                return Some(next);
+                            }
+                        }
+                    }
+                }
+
+                if bytes.get(idx) == Some(&b'\\') {
+                    if bytes
+                        .get(idx + 1)
+                        .is_some_and(|b| matches!(*b, b'u' | b'U'))
+                    {
+                        if let Some((value, next)) = parse_unicode_escape(bytes, idx + 1) {
+                            if value == 0x23 {
+                                return Some(next);
+                            }
+                            if value == 0x26 {
+                                if let Some(next) = number_sign_entity_end_after_ampersand(bytes, next) {
+                                    return Some(next);
+                                }
+                            }
+                        }
+                    }
+
+                    if bytes
+                        .get(idx + 1)
+                        .is_some_and(|b| matches!(*b, b'x' | b'X'))
+                    {
+                        if let Some((value, next)) = parse_hex_escape(bytes, idx + 1) {
+                            if value == 0x23 {
+                                return Some(next);
+                            }
+                            if value == 0x26 {
+                                if let Some(next) = number_sign_entity_end_after_ampersand(bytes, next) {
+                                    return Some(next);
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some((value, next)) = parse_backslash_octal_escape(bytes, idx) {
+                        if value == 35 {
+                            return Some(next);
+                        }
+                        if value == 38 {
+                            if let Some(next) = number_sign_entity_end_after_ampersand(bytes, next) {
+                                return Some(next);
+                            }
+                        }
+                    }
+                    if let Some((value, next)) = parse_backslash_hex_escape(bytes, idx) {
+                        if value == 0x23 {
+                            return Some(next);
+                        }
+                        if value == 0x26 {
+                            if let Some(next) = number_sign_entity_end_after_ampersand(bytes, next) {
+                                return Some(next);
+                            }
+                        }
+                    }
+                }
+
+                if bytes.get(idx) == Some(&b'&') {
+                    let scan_end = (idx + 128).min(bytes.len());
+                    for j in idx + 1..scan_end {
+                        if bytes[j] != b';' {
+                            continue;
+                        }
+                        if html_entity_is_number_sign(bytes, j) {
+                            return Some(j + 1);
+                        }
+                    }
+                }
+
+                None
+            }
+
+            if let Some(mut j) = number_sign_fragment_end(bytes, idx) {
+                let base = match bytes.get(j) {
+                    Some(b'x') | Some(b'X') => {
+                        j += 1;
+                        16u32
+                    }
+                    _ => 10u32,
+                };
+
+                let mut value = 0u32;
+                let mut significant = 0usize;
+                while j < bytes.len() && significant < 8 {
+                    let b = bytes[j];
+                    let digit = if base == 16 {
+                        let Some(v) = hex_value(b) else {
+                            break;
+                        };
+                        v as u32
+                    } else if b.is_ascii_digit() {
+                        (b - b'0') as u32
+                    } else {
                         break;
                     };
-                    v as u32
-                } else if b.is_ascii_digit() {
-                    (b - b'0') as u32
-                } else {
-                    break;
-                };
-                if significant == 0 && digit == 0 {
-                    j += 1;
-                    continue;
-                }
-                value = value
-                    .checked_mul(base)
-                    .and_then(|v| v.checked_add(digit))
-                    .unwrap_or(u32::MAX);
-                significant += 1;
-                j += 1;
-                if value == 37 {
-                    if bytes.get(j).is_some_and(|b| *b == b';') {
+                    if significant == 0 && digit == 0 {
                         j += 1;
+                        continue;
                     }
-                    return Some(j);
+                    value = value
+                        .checked_mul(base)
+                        .and_then(|v| v.checked_add(digit))
+                        .unwrap_or(u32::MAX);
+                    significant += 1;
+                    j += 1;
+                    if value == 37 {
+                        if bytes.get(j).is_some_and(|b| *b == b';') {
+                            j += 1;
+                        }
+                        return Some(j);
+                    }
                 }
             }
         }
