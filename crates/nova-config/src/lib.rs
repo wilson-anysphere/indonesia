@@ -1558,18 +1558,29 @@ fn sanitize_toml_error_message(message: &str) -> String {
         .replace_all(&out, "'<redacted>'")
         .into_owned();
 
-    // `serde` / `toml` wrap offending enum variants (and unknown fields) in backticks:
-    // `unknown variant `secret`, expected one of `a`, `b``
+    // `serde` uses backticks in a few different diagnostics:
     //
-    // Only redact the first backticked segment for unknown field/variant errors, because that
-    // segment can contain user-controlled content (the unknown key/variant).
+    // - `unknown field `secret`, expected ...` (user-controlled key → redact)
+    // - `unknown variant `secret`, expected ...` (user-controlled variant → redact)
+    // - `invalid type: integer `123`, expected ...` (user-controlled scalar → redact)
+    // - `missing field `foo`` (schema field name → keep)
     //
-    // Other serde diagnostics (e.g. `missing field `foo``) also use backticks, but those refer to
-    // schema field names and are safe + useful to keep.
-    let start = ["unknown field `", "unknown variant `"]
+    // Redact only when the backticked segment is known to contain user-controlled content.
+    let mut start = ["unknown field `", "unknown variant `"]
         .iter()
         .filter_map(|pattern| out.find(pattern).map(|pos| pos + pattern.len().saturating_sub(1)))
         .min();
+    if start.is_none() && (out.contains("invalid type:") || out.contains("invalid value:")) {
+        // `invalid type/value` errors include the unexpected scalar value before `, expected ...`.
+        // Redact only backticked values in that prefix so we don't hide schema names in the
+        // expected portion.
+        let boundary = out.find(", expected").unwrap_or(out.len());
+        start = out[..boundary].find('`');
+        if start.is_none() && boundary == out.len() {
+            // Some serde errors omit the `, expected ...` suffix. Fall back to the first backtick.
+            start = out.find('`');
+        }
+    }
     if let Some(start) = start {
         let after_start = &out[start.saturating_add(1)..];
         let end = if let Some(end_rel) = after_start.rfind("`, expected") {
@@ -2729,6 +2740,37 @@ mod toml_tests {
         assert!(
             sanitized.contains("<redacted>"),
             "expected toml error sanitizer to include redaction marker: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn toml_error_sanitization_redacts_backticked_numeric_values() {
+        #[derive(Debug, serde::Deserialize)]
+        struct Dummy {
+            #[allow(dead_code)]
+            flag: bool,
+        }
+
+        let raw_err =
+            toml::from_str::<Dummy>("flag = 123").expect_err("expected invalid type error");
+        let raw_message = raw_err.message();
+        assert!(
+            raw_message.contains("123"),
+            "expected raw toml error message to include the numeric value so this test catches leaks: {raw_message}"
+        );
+
+        let sanitized = sanitize_toml_error_message(raw_message);
+        assert!(
+            !sanitized.contains("123"),
+            "expected toml error sanitizer to redact backticked numeric values: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected toml error sanitizer to include redaction marker: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("expected"),
+            "expected toml error sanitizer to preserve the rest of the message: {sanitized}"
         );
     }
 }
