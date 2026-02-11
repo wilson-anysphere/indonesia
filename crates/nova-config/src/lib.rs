@@ -1556,8 +1556,15 @@ fn sanitize_toml_error_message(message: &str) -> String {
     // Only redact the *first* backticked segment so we keep the expected/allowed value list
     // actionable while still avoiding leaks of user-provided values.
     if let Some(start) = out.find('`') {
-        if let Some(end_rel) = out[start.saturating_add(1)..].find('`') {
-            let end = start.saturating_add(1).saturating_add(end_rel);
+        let after_start = &out[start.saturating_add(1)..];
+        let end = if let Some(end_rel) = after_start.find("`, expected") {
+            Some(start.saturating_add(1).saturating_add(end_rel))
+        } else if let Some(end_rel) = after_start.find('`') {
+            Some(start.saturating_add(1).saturating_add(end_rel))
+        } else {
+            None
+        };
+        if let Some(end) = end {
             if start + 1 <= end && end <= out.len() {
                 out.replace_range(start + 1..end, "<redacted>");
             }
