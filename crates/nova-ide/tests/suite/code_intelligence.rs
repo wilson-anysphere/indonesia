@@ -403,6 +403,25 @@ class B extends A {
 }
 
 #[test]
+fn completion_resolves_call_chain_receiver_for_parenthesized_this_with_comment_before_nested_parens() {
+    let (db, file, pos) = fixture(
+        r#"
+class B {
+  String bar() { return ""; }
+  void m() { (/*comment*/(this)).bar().<|> }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"substring"),
+        "expected completion list to contain String.substring for call-chain receiver after parenthesized this with comment before nested parens; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_includes_super_members() {
     let (db, file, pos) = fixture(
         r#"
@@ -485,6 +504,33 @@ class B extends A {
     assert!(
         labels.contains(&"x"),
         "expected completion list to contain superclass member for parenthesized super receiver with comment before nested parens; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_call_chain_receiver_for_parenthesized_super_with_comment_before_nested_parens() {
+    let (db, file, pos) = fixture(
+        r#"
+class Base {
+  String bar() { return ""; }
+}
+
+class B extends Base {
+  void m() {
+    (
+      // comment
+      (super)
+    ).bar().<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"substring"),
+        "expected completion list to contain String.substring for call-chain receiver after parenthesized super with comment before nested parens; got {labels:?}"
     );
 }
 

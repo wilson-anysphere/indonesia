@@ -12574,8 +12574,34 @@ fn infer_receiver_type_of_expr_ending_at(
 
     // Parenthesized expression like `(foo)`.
     let open_paren = find_matching_open_paren(bytes, end - 1)?;
-    let (start, inner_end) = unwrap_paren_expr(bytes, open_paren, end - 1)?;
+    let (mut start, mut inner_end) = unwrap_paren_expr(bytes, open_paren, end - 1)?;
+    // `unwrap_paren_expr` strips whitespace but not comments. Skip leading/trailing trivia inside the
+    // parentheses so receivers like `(/*comment*/this)` / `(/*comment*/(this))` still resolve.
+    loop {
+        start = skip_trivia_forwards(text, start);
+        inner_end = skip_trivia_backwards(text, inner_end);
+        if inner_end <= start {
+            return None;
+        }
+
+        // After skipping trivia, strip redundant nested parentheses (best-effort).
+        if bytes.get(start) == Some(&b'(') && bytes.get(inner_end - 1) == Some(&b')') {
+            if let Some(inner_open) = find_matching_open_paren(bytes, inner_end - 1) {
+                if inner_open == start {
+                    start += 1;
+                    inner_end -= 1;
+                    continue;
+                }
+            }
+        }
+
+        break;
+    }
+
     let inner = text.get(start..inner_end)?.trim();
+    if inner.is_empty() {
+        return None;
+    }
 
     if let Some(cast_ty) = cast_type_in_expr(inner) {
         let ty = parse_source_type_in_context(types, file_ctx, cast_ty);

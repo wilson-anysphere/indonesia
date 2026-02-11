@@ -646,6 +646,28 @@ class Test {
     }
 
     #[test]
+    fn call_chain_receiver_after_parenthesized_this_with_comment_before_nested_parens_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class Test {
+    String bar() { return ""; }
+
+    void f() {
+        (/*comment*/(this)).bar().<cursor>
+    }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
     fn receiver_type_infers_qualified_this_receiver_type_and_methods() {
         let ctx = ctx_for(
             r#"
@@ -771,6 +793,33 @@ class Test extends Base {
             "expected receiver type to contain `Base`, got {receiver_ty:?}"
         );
         assert!(ctx.available_methods.iter().any(|m| m == "base"));
+    }
+
+    #[test]
+    fn call_chain_receiver_after_parenthesized_super_with_comment_before_nested_parens_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class Base {
+  String bar() { return ""; }
+}
+
+class Test extends Base {
+  void f() {
+    (
+      // comment
+      (super)
+    ).bar().<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
     }
 
     #[test]
