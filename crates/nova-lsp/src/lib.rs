@@ -336,6 +336,22 @@ fn handle_custom_request_inner_cancelable(
             cancel,
             extensions::test::handle_debug_configuration,
         ),
+        // Debug/test-only endpoint for validating that we sanitize serde-json unknown field/variant
+        // errors in JSON-RPC responses.
+        #[cfg(debug_assertions)]
+        "nova/testSerdeJsonArgs" => {
+            #[derive(Debug, serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct TestSerdeJsonArgs {
+                #[allow(dead_code)]
+                foo: u32,
+            }
+
+            let _args: TestSerdeJsonArgs = serde_json::from_value(params)
+                .map_err(|err| NovaLspError::InvalidParams(crate::sanitize_serde_json_error(&err)))?;
+
+            Ok(serde_json::json!({ "ok": true }))
+        }
         BUILD_PROJECT_METHOD => hardening::run_with_watchdog_cancelable(
             method,
             params,

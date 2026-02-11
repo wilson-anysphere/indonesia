@@ -100,6 +100,9 @@ mod stdio_jdk_qualified_definition;
 mod stdio_jdk_type_definition;
 #[path = "suite/stdio_lifecycle.rs"]
 mod stdio_lifecycle;
+#[cfg(debug_assertions)]
+#[path = "suite/stdio_json_error_sanitization.rs"]
+mod stdio_json_error_sanitization;
 #[path = "suite/stdio_misc_language_features.rs"]
 mod stdio_misc_language_features;
 #[path = "suite/stdio_navigation.rs"]
