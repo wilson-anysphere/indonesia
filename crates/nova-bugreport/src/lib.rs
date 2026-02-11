@@ -49,13 +49,28 @@ pub enum BugReportError {
 impl std::fmt::Display for BugReportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BugReportError::Io(err) => write!(f, "io error: {err}"),
+            BugReportError::Io(err) => {
+                let message = err.to_string();
+                if contains_serde_json_error(err) {
+                    let message = sanitize_json_error_message(&message);
+                    write!(f, "io error: {message}")
+                } else {
+                    write!(f, "io error: {message}")
+                }
+            }
             BugReportError::Json { message } => write!(f, "json error: {message}"),
         }
     }
 }
 
-impl std::error::Error for BugReportError {}
+impl std::error::Error for BugReportError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            BugReportError::Io(err) => Some(err),
+            BugReportError::Json { .. } => None,
+        }
+    }
+}
 
 impl From<std::io::Error> for BugReportError {
     fn from(value: std::io::Error) -> Self {
@@ -71,6 +86,31 @@ impl From<serde_json::Error> for BugReportError {
         let message = sanitize_json_error_message(&value.to_string());
         Self::Json { message }
     }
+}
+
+fn contains_serde_json_error(err: &(dyn std::error::Error + 'static)) -> bool {
+    if err.is::<serde_json::Error>() {
+        return true;
+    }
+
+    // `std::io::Error` can wrap an inner error, but on this toolchain the
+    // `source()` chain may not report it. Descend into `get_ref()` explicitly.
+    if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+        if let Some(inner) = io_err.get_ref() {
+            if contains_serde_json_error(inner) {
+                return true;
+            }
+        }
+    }
+
+    let mut source = err.source();
+    while let Some(next) = source {
+        if contains_serde_json_error(next) {
+            return true;
+        }
+        source = next.source();
+    }
+    false
 }
 
 fn sanitize_json_error_message(message: &str) -> String {
@@ -1061,6 +1101,31 @@ mod tests {
         assert!(
             message.contains("<redacted>"),
             "expected BugReportError json message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn bug_report_error_io_wrapped_serde_json_does_not_echo_string_values() {
+        let secret_suffix = "nova-bugreport-super-secret-token-io";
+        let secret = format!("prefix\"{secret_suffix}");
+        let err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+
+        let io_err = std::io::Error::other(err);
+        let bug_err = BugReportError::from(io_err);
+        let message = bug_err.to_string();
+
+        assert!(
+            !message.contains(secret_suffix),
+            "expected BugReportError io message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected BugReportError io message to include redaction marker: {message}"
+        );
+        assert!(
+            std::error::Error::source(&bug_err).is_some(),
+            "expected BugReportError Io variant to expose its source error"
         );
     }
 }
