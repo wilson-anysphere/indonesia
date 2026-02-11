@@ -190,14 +190,23 @@ impl CompletionEnvCache {
             // buffers reuse the same allocations across different fixtures. Mix in a small,
             // content-dependent sample to make cache invalidation deterministic without hashing
             // entire files.
+            //
+            // Sample strategy:
+            // - Small files: hash all bytes (fixtures are typically small).
+            // - Large files: hash prefix + middle + suffix chunks.
             let bytes = text.as_bytes();
             const SAMPLE: usize = 64;
-            let prefix_len = bytes.len().min(SAMPLE);
-            bytes.get(..prefix_len).unwrap_or(&[]).hash(&mut hasher);
-            let suffix_len = bytes.len().min(SAMPLE);
-            bytes.get(bytes.len().saturating_sub(suffix_len)..)
-                .unwrap_or(&[])
-                .hash(&mut hasher);
+            const FULL_HASH_MAX: usize = 3 * SAMPLE;
+            if bytes.len() <= FULL_HASH_MAX {
+                bytes.hash(&mut hasher);
+            } else {
+                bytes[..SAMPLE].hash(&mut hasher);
+                let mid = bytes.len() / 2;
+                let mid_start = mid.saturating_sub(SAMPLE / 2);
+                let mid_end = (mid_start + SAMPLE).min(bytes.len());
+                bytes[mid_start..mid_end].hash(&mut hasher);
+                bytes[bytes.len() - SAMPLE..].hash(&mut hasher);
+            }
         }
         let fingerprint = hasher.finish();
 

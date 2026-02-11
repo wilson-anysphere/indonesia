@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use nova_db::InMemoryFileStore;
+use nova_db::{Database, FileId, InMemoryFileStore};
 use nova_ide::{completion_cache, completions};
 use tempfile::TempDir;
 
@@ -82,5 +82,92 @@ public class FooBar { }
     assert_eq!(
         labels1, labels3,
         "expected deterministic completions after rebuild"
+    );
+}
+
+#[test]
+fn completion_env_invalidates_when_file_text_changes_in_place_with_same_ptr_and_len() {
+    /// Minimal `Database` implementation whose file text can be mutated in place (keeping the
+    /// backing allocation + length stable). This models pathological-but-realistic scenarios where
+    /// pointer/len-only cache fingerprints would fail to invalidate.
+    struct MutableDb {
+        file_id: FileId,
+        path: std::path::PathBuf,
+        text: String,
+    }
+
+    impl Database for MutableDb {
+        fn file_content(&self, file_id: FileId) -> &str {
+            if file_id == self.file_id {
+                self.text.as_str()
+            } else {
+                ""
+            }
+        }
+
+        fn file_path(&self, file_id: FileId) -> Option<&std::path::Path> {
+            (file_id == self.file_id).then_some(self.path.as_path())
+        }
+
+        fn all_file_ids(&self) -> Vec<FileId> {
+            vec![self.file_id]
+        }
+    }
+
+    let tmp = TempDir::new().expect("tempdir");
+    let root = tmp.path();
+    let src_dir = root.join("src/main/java/p");
+    std::fs::create_dir_all(&src_dir).expect("create dirs");
+    let file_path = src_dir.join("Main.java");
+    // Create a real file so `nova_project::workspace_root` prefers this tempdir instead of walking
+    // up to unrelated ancestors like `/tmp`.
+    std::fs::write(&file_path, "").expect("write file");
+
+    let file_id = FileId::from_raw(0);
+    let prefix = "package p;\npublic class A {\n";
+    let suffix = "\n}\n";
+    let mut text = String::new();
+    text.push_str(prefix);
+    text.push_str("/*");
+    text.push_str(&"a".repeat(1024));
+    text.push_str("*/");
+    text.push_str(suffix);
+
+    let mut db = MutableDb {
+        file_id,
+        path: file_path,
+        text,
+    };
+
+    let env1 = completion_cache::completion_env_for_file(&db, file_id).expect("env");
+
+    // Mutate a byte in the middle of the buffer, preserving the allocation + length.
+    let ptr_before = db.text.as_ptr();
+    let len_before = db.text.len();
+    let mid_idx = prefix.len() + 2 + 512;
+    assert!(
+        mid_idx > 64 && mid_idx + 64 < len_before,
+        "expected mutation index to be outside the sampled prefix/suffix regions"
+    );
+    unsafe {
+        let bytes = db.text.as_mut_vec();
+        assert_eq!(bytes[mid_idx], b'a');
+        bytes[mid_idx] = b'b';
+    }
+    assert_eq!(
+        ptr_before,
+        db.text.as_ptr(),
+        "expected in-place mutation to keep the same allocation"
+    );
+    assert_eq!(
+        len_before,
+        db.text.len(),
+        "expected in-place mutation to keep the same length"
+    );
+
+    let env2 = completion_cache::completion_env_for_file(&db, file_id).expect("env");
+    assert!(
+        !Arc::ptr_eq(&env1, &env2),
+        "expected completion env cache to invalidate when file text changes, even when pointer/len are stable"
     );
 }
