@@ -350,6 +350,14 @@ pub fn install_panic_hook(config: PanicHookConfig, notifier: PanicNotifier) {
 
                 let timestamp_unix_ms = unix_ms_now();
                 let message = redact::redact_string(&panic_message(info));
+                // Panic payloads frequently include debug-formatted error values (e.g.
+                // `called Result::unwrap() on an Err value: Error("invalid type: string \"...\"")`).
+                // If the panic is ultimately caused by a `serde_json::Error`, that debug string can
+                // embed user-controlled scalar values.
+                //
+                // Best-effort: apply the same quoted/backticked redaction we use for `serde_json`
+                // errors so panic messages are safe to include in bug report bundles and logs.
+                let message = sanitize_json_error_message(&message);
                 let location = info.location().map(|loc| format!("{loc}"));
                 let backtrace = include_backtrace
                     .then(|| format!("{:?}", std::backtrace::Backtrace::force_capture()))
@@ -565,7 +573,8 @@ fn read_persisted_crashes(path: &Path, max_records: usize) -> Vec<CrashRecord> {
 }
 
 fn sanitize_crash_record(record: &mut CrashRecord) {
-    record.message = redact::redact_string(&record.message);
+    let message = redact::redact_string(&record.message);
+    record.message = sanitize_json_error_message(&message);
     if let Some(bt) = record.backtrace.as_mut() {
         *bt = redact::redact_string(bt);
     }
@@ -1082,6 +1091,50 @@ mod tests {
         assert_eq!(
             persisted[0].get("message").and_then(|v| v.as_str()),
             Some("boom")
+        );
+    }
+
+    #[test]
+    fn crash_records_sanitize_serde_json_error_messages() {
+        let secret_suffix = "nova-bugreport-crash-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
+        let err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+        let raw_message = format!("called unwrap: {err}");
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw serde_json error string to include the string value so this test catches leaks: {raw_message}"
+        );
+
+        let crash_store = CrashStore::new(10);
+        crash_store.record(CrashRecord {
+            timestamp_unix_ms: 0,
+            message: raw_message,
+            location: None,
+            backtrace: None,
+        });
+
+        let config = NovaConfig::default();
+        let buffer = LogBuffer::new(1);
+        let perf = PerfStats::default();
+        let bundle = create_bug_report_bundle(
+            &config,
+            &buffer,
+            &crash_store,
+            &perf,
+            BugReportOptions::default(),
+        )
+        .expect("bundle creation failed");
+
+        let crashes_text = std::fs::read_to_string(bundle.path().join("crashes.json"))
+            .expect("crashes read failed");
+        assert!(
+            !crashes_text.contains(secret_suffix),
+            "expected sanitized crash record to omit string values: {crashes_text}"
+        );
+        assert!(
+            crashes_text.contains("<redacted>"),
+            "expected sanitized crash record to include redaction marker: {crashes_text}"
         );
     }
 
