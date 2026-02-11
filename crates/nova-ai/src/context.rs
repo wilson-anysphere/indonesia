@@ -671,6 +671,11 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
     {
         let bounds = surrounding_token_bounds(text, start, end);
         if !bounds.is_empty() {
+            let token = &text[bounds.clone()];
+            if looks_like_email_address(token) || looks_like_ipv4_address(token) {
+                return true;
+            }
+
             let before = bounds.start.checked_sub(1).and_then(|idx| bytes.get(idx));
             let after = bytes.get(bounds.end);
             let before_is_sep = before.is_some_and(|b| *b == b'/' || *b == b'\\');
@@ -905,7 +910,7 @@ fn clean_query_word(tok: &str) -> &str {
 
 fn token_contains_secret_fragment(tok: &str) -> bool {
     fn is_token_char(c: char) -> bool {
-        c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '=' | '+' | '/' | '.')
+        c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '=' | '+' | '/' | '.' | '@')
     }
 
     if tok.is_empty() {
@@ -921,6 +926,13 @@ fn looks_like_secret_token(tok: &str) -> bool {
     let trimmed = tok.trim();
     if trimmed.is_empty() {
         return false;
+    }
+
+    if looks_like_email_address(trimmed) {
+        return true;
+    }
+    if looks_like_ipv4_address(trimmed) {
+        return true;
     }
 
     if trimmed.starts_with("sk-") && trimmed.len() >= 20 {
@@ -942,6 +954,80 @@ fn looks_like_secret_token(tok: &str) -> bool {
 
     // Heuristic: long-ish base64/hex-ish strings.
     trimmed.len() >= 32 && is_mostly_alnum_or_symbols(trimmed)
+}
+
+fn looks_like_email_address(token: &str) -> bool {
+    let token = token.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    let Some((local, domain)) = token.split_once('@') else {
+        return false;
+    };
+    if local.is_empty() || domain.is_empty() {
+        return false;
+    }
+    // Avoid treating Java annotations like `@Override` as email-like tokens.
+    if local.is_empty() && token.starts_with('@') {
+        return false;
+    }
+    if domain.starts_with('@') {
+        return false;
+    }
+    if domain.starts_with('.') || domain.ends_with('.') {
+        return false;
+    }
+    if !domain.contains('.') {
+        return false;
+    }
+
+    let local_ok = local.bytes().all(|b| {
+        b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'%' | b'+' | b'-')
+    });
+    if !local_ok {
+        return false;
+    }
+    let domain_ok = domain
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'));
+    if !domain_ok {
+        return false;
+    }
+
+    let tld = domain.rsplit('.').next().unwrap_or("");
+    if tld.len() < 2 || tld.len() > 24 {
+        return false;
+    }
+    if !tld.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return false;
+    }
+
+    true
+}
+
+fn looks_like_ipv4_address(token: &str) -> bool {
+    let token = token.trim_matches(|c: char| !(c.is_ascii_digit() || c == '.' || c == ':'));
+    let ip = token.split_once(':').map(|(ip, _port)| ip).unwrap_or(token);
+    let mut parts = ip.split('.');
+
+    let mut count = 0usize;
+    while let Some(part) = parts.next() {
+        count += 1;
+        if count > 4 {
+            return false;
+        }
+        if part.is_empty() || part.len() > 3 {
+            return false;
+        }
+        if !part.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+        let Ok(num) = part.parse::<u16>() else {
+            return false;
+        };
+        if num > 255 {
+            return false;
+        }
+    }
+
+    count == 4
 }
 
 fn is_mostly_alnum_or_symbols(s: &str) -> bool {

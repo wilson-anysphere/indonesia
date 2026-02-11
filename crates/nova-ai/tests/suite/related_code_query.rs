@@ -529,6 +529,44 @@ fn related_code_query_skips_secret_values_embedded_in_json_tokens() {
 }
 
 #[test]
+fn related_code_query_skips_email_address_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for email-only related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = "alice@example.com";
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for email-only focal code"
+    );
+}
+
+#[test]
+fn related_code_query_skips_ipv4_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for ip-only related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = "192.168.0.1";
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for ip-only focal code"
+    );
+}
+
+#[test]
 fn related_code_query_skips_empty_queries() {
     struct PanicSearch;
 
