@@ -1568,10 +1568,17 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 let scan_end = (j + 64).min(bytes.len());
                     while j < scan_end {
                         if bytes[j] == b';' {
-                            if html_entity_obfuscated_numeric_reference_value(bytes, j)
-                                .is_some_and(html_entity_codepoint_is_path_separator)
-                            {
-                                return true;
+                            if let Some(value) = html_entity_obfuscated_numeric_reference_value(bytes, j) {
+                                if html_entity_codepoint_is_path_separator(value) {
+                                    return true;
+                                }
+                                if value == 37
+                                    && bytes
+                                        .get(j + 1..j + 3)
+                                        .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
+                                {
+                                    return true;
+                                }
                             }
                             if html_entity_is_path_separator(bytes, j) {
                                 return true;
@@ -1641,10 +1648,17 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 let scan_end = (j + 64).min(bytes.len());
                 while j < scan_end {
                     if bytes[j] == b';' {
-                        if html_entity_obfuscated_numeric_reference_value(bytes, j)
-                            .is_some_and(html_entity_codepoint_is_path_separator)
-                        {
-                            return true;
+                        if let Some(value) = html_entity_obfuscated_numeric_reference_value(bytes, j) {
+                            if html_entity_codepoint_is_path_separator(value) {
+                                return true;
+                            }
+                            if value == 37
+                                && bytes
+                                    .get(j + 1..j + 3)
+                                    .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
+                            {
+                                return true;
+                            }
                         }
                     }
                     j += 1;
@@ -1670,7 +1684,10 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
             // digits (`2F`, `252F`, ...) and the entity delimiter `;` is treated as a boundary, so
             // we need to look at the preceding entity to decide whether this identifier is a path
             // segment.
-            if before_idx.is_some_and(|idx| html_entity_is_percent(bytes, idx)) {
+            if before_idx.is_some_and(|idx| html_entity_is_percent(bytes, idx))
+                || before_idx
+                    .is_some_and(|idx| html_entity_obfuscated_numeric_reference_value(bytes, idx) == Some(37))
+            {
                 // Treat any token that begins with a percent-encoded byte (`2F`, `E2`, `25`, ...)
                 // as path-like. In HTML-escaped logs this commonly represents `%2F`/`%5C` as well
                 // as percent-encoded Unicode separators (`%E2%88%95`, etc) and percent-encoded HTML
@@ -5008,6 +5025,19 @@ fn token_contains_html_entity_percent_encoded_path_separator(tok: &str) -> bool 
     let bytes = tok.as_bytes();
     if !bytes.contains(&b'&') {
         return false;
+    }
+
+    for (idx, b) in bytes.iter().enumerate() {
+        if *b != b';' {
+            continue;
+        }
+        if html_entity_obfuscated_numeric_reference_value(bytes, idx) == Some(37)
+            && bytes
+                .get(idx + 1..idx + 3)
+                .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
+        {
+            return true;
+        }
     }
 
     let mut base: std::borrow::Cow<'_, str> = std::borrow::Cow::Borrowed(tok);
