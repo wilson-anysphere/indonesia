@@ -1134,6 +1134,50 @@ mod tests {
     }
 
     #[test]
+    fn crash_records_sanitize_serde_json_errors_with_backticked_numeric_values() {
+        let secret_number = 9_876_543_210u64;
+        let secret_text = secret_number.to_string();
+        let err = serde_json::from_value::<bool>(serde_json::json!(secret_number))
+            .expect_err("expected type error");
+        let raw_message = format!("called unwrap: {err}");
+        assert!(
+            raw_message.contains(&secret_text),
+            "expected raw serde_json error string to include the numeric value so this test catches leaks: {raw_message}"
+        );
+
+        let crash_store = CrashStore::new(10);
+        crash_store.record(CrashRecord {
+            timestamp_unix_ms: 0,
+            message: raw_message,
+            location: None,
+            backtrace: None,
+        });
+
+        let config = NovaConfig::default();
+        let buffer = LogBuffer::new(1);
+        let perf = PerfStats::default();
+        let bundle = create_bug_report_bundle(
+            &config,
+            &buffer,
+            &crash_store,
+            &perf,
+            BugReportOptions::default(),
+        )
+        .expect("bundle creation failed");
+
+        let crashes_text = std::fs::read_to_string(bundle.path().join("crashes.json"))
+            .expect("crashes read failed");
+        assert!(
+            !crashes_text.contains(&secret_text),
+            "expected sanitized crash record to omit backticked numeric values: {crashes_text}"
+        );
+        assert!(
+            crashes_text.contains("<redacted>"),
+            "expected sanitized crash record to include redaction marker: {crashes_text}"
+        );
+    }
+
+    #[test]
     fn bug_report_error_json_does_not_echo_string_values() {
         let secret_suffix = "nova-bugreport-super-secret-token";
         let secret = format!("prefix\"{secret_suffix}");
