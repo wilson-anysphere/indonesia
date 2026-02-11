@@ -11114,7 +11114,8 @@ pub(crate) fn infer_receiver_type_before_dot(
 
     // Otherwise, treat as a parenthesized expression like `(foo).<cursor>`.
     let open_paren = find_matching_open_paren(bytes, end - 1)?;
-    let (start, mut end) = unwrap_paren_expr(bytes, open_paren, end - 1)?;
+    let (mut start, mut end) = unwrap_paren_expr(bytes, open_paren, end - 1)?;
+    start = skip_trivia_forwards(text, start);
     // `unwrap_paren_expr` strips whitespace but not comments. Skip trailing trivia inside the
     // parentheses so receivers like `(b()/*comment*/).<cursor>` still infer the call return type.
     end = skip_trivia_backwards(text, end);
@@ -22427,6 +22428,44 @@ pub(crate) fn skip_trivia_backwards(text: &str, mut offset: usize) -> usize {
 
         break;
     }
+    offset
+}
+
+fn skip_trivia_forwards(text: &str, mut offset: usize) -> usize {
+    // Best-effort: skip whitespace and leading comments (`/* ... */` and `// ...`).
+    let bytes = text.as_bytes();
+    offset = offset.min(bytes.len());
+
+    loop {
+        while offset < bytes.len() && (bytes[offset] as char).is_ascii_whitespace() {
+            offset += 1;
+        }
+
+        if offset + 1 < bytes.len() && bytes[offset] == b'/' && bytes[offset + 1] == b'/' {
+            // Line comment
+            offset += 2;
+            while offset < bytes.len() && bytes[offset] != b'\n' {
+                offset += 1;
+            }
+            continue;
+        }
+
+        if offset + 1 < bytes.len() && bytes[offset] == b'/' && bytes[offset + 1] == b'*' {
+            // Block comment
+            offset += 2;
+            while offset + 1 < bytes.len() {
+                if bytes[offset] == b'*' && bytes[offset + 1] == b'/' {
+                    offset += 2;
+                    break;
+                }
+                offset += 1;
+            }
+            continue;
+        }
+
+        break;
+    }
+
     offset
 }
 

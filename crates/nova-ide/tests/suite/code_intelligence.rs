@@ -363,6 +363,26 @@ class B extends A {
 }
 
 #[test]
+fn completion_includes_parenthesized_this_members_with_leading_block_comment() {
+    let (db, file, pos) = fixture(
+        r#"
+class A { int x; }
+class B extends A {
+  int y;
+  void m() { (/*comment*/this).<|> }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"y"),
+        "expected completion list to contain member of current class for parenthesized this receiver with leading comment; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_includes_super_members() {
     let (db, file, pos) = fixture(
         r#"
@@ -397,6 +417,30 @@ class B extends A {
     assert!(
         labels.contains(&"x"),
         "expected completion list to contain superclass member for parenthesized super receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_includes_parenthesized_super_members_with_leading_line_comment() {
+    let (db, file, pos) = fixture(
+        r#"
+class A { int x; }
+class B extends A {
+  void m() {
+    (
+      // comment
+      super
+    ).<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"x"),
+        "expected completion list to contain superclass member for parenthesized super receiver with leading line comment; got {labels:?}"
     );
 }
 
