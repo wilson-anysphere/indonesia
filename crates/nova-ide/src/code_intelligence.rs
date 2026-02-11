@@ -10362,7 +10362,6 @@ pub(crate) fn member_completions_for_receiver_type(
     items
 }
 
-#[cfg(any(feature = "ai", test))]
 pub(crate) fn field_type_for_receiver_type(
     db: &dyn Database,
     file: FileId,
@@ -10652,7 +10651,164 @@ pub(crate) fn infer_receiver_type_before_dot(
         }
     }
 
+    // Best-effort support for parenthesized receivers that include a call-chain + field access like
+    // `(b().s).<cursor>` / `(b().inner.s).<cursor>`.
+    //
+    // This is intentionally narrow: we only attempt it when the inner expression contains
+    // parentheses (a strong signal of call syntax) so we don't accidentally bypass the
+    // `CallKind::Static` field-hiding guard in `infer_receiver_type_for_member_access` (e.g.
+    // `Sub.X`).
+    if normalized.contains('.') && normalized.contains(')') {
+        if let Some(ty) = infer_expr_type_for_parenthesized_member_chain(
+            db, file, text, &analysis, start, end, dot_offset, 8,
+        ) {
+            return Some(ty);
+        }
+    }
+
     None
+}
+
+fn infer_expr_type_for_parenthesized_member_chain(
+    db: &dyn Database,
+    file: FileId,
+    text: &str,
+    analysis: &Analysis,
+    expr_start: usize,
+    expr_end: usize,
+    completion_offset: usize,
+    budget: u8,
+) -> Option<String> {
+    fn last_top_level_dot(bytes: &[u8], start: usize, end: usize) -> Option<usize> {
+        let mut paren_depth = 0i32;
+        let mut bracket_depth = 0i32;
+        let mut brace_depth = 0i32;
+
+        let mut i = end;
+        while i > start {
+            i -= 1;
+            match bytes.get(i)? {
+                b')' => paren_depth += 1,
+                b'(' => {
+                    if paren_depth > 0 {
+                        paren_depth -= 1;
+                    }
+                }
+                b']' => bracket_depth += 1,
+                b'[' => {
+                    if bracket_depth > 0 {
+                        bracket_depth -= 1;
+                    }
+                }
+                b'}' => brace_depth += 1,
+                b'{' => {
+                    if brace_depth > 0 {
+                        brace_depth -= 1;
+                    }
+                }
+                b'.' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => return Some(i),
+                _ => {}
+            }
+        }
+
+        None
+    }
+
+    fn infer(
+        db: &dyn Database,
+        file: FileId,
+        text: &str,
+        analysis: &Analysis,
+        bytes: &[u8],
+        expr_start: usize,
+        expr_end: usize,
+        completion_offset: usize,
+        budget: u8,
+    ) -> Option<String> {
+        if budget == 0 {
+            return None;
+        }
+
+        let expr_end = expr_end.min(bytes.len());
+        let end = skip_whitespace_backwards(text, expr_end);
+        if end <= expr_start {
+            return None;
+        }
+
+        // Call expression: try to resolve return type (`b()` / `new Foo()` / `recv.foo()`).
+        if bytes.get(end - 1) == Some(&b')') {
+            if let Some(call) = analysis.calls.iter().find(|c| c.close_paren == end) {
+                return infer_call_return_type(db, file, text, analysis, call);
+            }
+            if let Some(call) = scan_call_expr_ending_at(text, analysis, end) {
+                return infer_call_return_type(db, file, text, analysis, &call);
+            }
+            return None;
+        }
+
+        // Field access chain ending in an identifier.
+        if !bytes
+            .get(end - 1)
+            .is_some_and(|b| is_ident_continue(*b as char))
+        {
+            return None;
+        }
+
+        let mut ident_start = end;
+        while ident_start > expr_start
+            && bytes
+                .get(ident_start - 1)
+                .is_some_and(|b| is_ident_continue(*b as char))
+        {
+            ident_start -= 1;
+        }
+        if !bytes
+            .get(ident_start)
+            .is_some_and(|b| is_ident_start(*b as char))
+        {
+            return None;
+        }
+        let ident = text.get(ident_start..end)?;
+
+        if let Some(dot_pos) = last_top_level_dot(bytes, expr_start, ident_start) {
+            let lhs_end = skip_whitespace_backwards(text, dot_pos);
+            let lhs_ty = infer(
+                db,
+                file,
+                text,
+                analysis,
+                bytes,
+                expr_start,
+                lhs_end,
+                completion_offset,
+                budget.saturating_sub(1),
+            )?;
+            return field_type_for_receiver_type(db, file, &lhs_ty, ident);
+        }
+
+        // Plain identifier (e.g. `foo`, `this`, `super`).
+        if ident == "super" {
+            let Some(class) = enclosing_class(analysis, completion_offset) else {
+                return Some("Object".to_string());
+            };
+            return Some(class.extends.clone().unwrap_or_else(|| "Object".to_string()));
+        }
+
+        infer_ident_type_name(analysis, ident, completion_offset)
+    }
+
+    let bytes = text.as_bytes();
+    infer(
+        db,
+        file,
+        text,
+        analysis,
+        bytes,
+        expr_start,
+        expr_end,
+        completion_offset,
+        budget,
+    )
 }
 
 pub(crate) fn infer_receiver_type_for_member_access(
@@ -21343,6 +21499,38 @@ class A {
             .find("(this.b.s).")
             .expect("expected `(this.b.s).` in fixture")
             + "(this.b.s)".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert!(
+            ty.as_deref().unwrap_or_default().contains("String"),
+            "expected receiver type to contain `String`, got {ty:?}"
+        );
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_parenthesized_call_chain_field_access() {
+        let java = r#"
+class B {
+  String s = "x";
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    (b().s).
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("(b().s).")
+            .expect("expected `(b().s).` in fixture")
+            + "(b().s)".len();
 
         let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
         assert!(

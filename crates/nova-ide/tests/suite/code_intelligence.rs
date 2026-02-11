@@ -963,6 +963,32 @@ class Base {
 }
 
 #[test]
+fn completion_resolves_parenthesized_call_chain_field_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class B {
+  String s = "x";
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    (b().s).<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain String.length for parenthesized call-chain field receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_at_eof_after_whitespace_is_deterministic() {
     let (db, file, pos) = fixture(
         r#"
