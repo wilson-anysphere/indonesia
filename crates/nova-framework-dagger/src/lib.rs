@@ -458,14 +458,17 @@ mod tests {
             .expect("expected cache hit");
         assert!(Arc::ptr_eq(&proj1, &proj2));
 
-        // Mutate a byte in the middle of the buffer, preserving allocation + length.
+        // Mutate a byte just before the middle of the buffer, preserving allocation + length.
+        // Older fingerprint sampling started the "middle" slice at `len / 2`, which would miss
+        // edits immediately before it.
         let ptr_before = db.text.as_ptr();
         let len_before = db.text.len();
         let mid_idx = len_before / 2;
-        assert!(mid_idx > 64 && mid_idx + 64 < len_before);
+        let mutation_idx = mid_idx.saturating_sub(10);
+        assert!(mutation_idx > 64 && mutation_idx + 64 < len_before);
         unsafe {
             let bytes = db.text.as_mut_vec();
-            bytes[mid_idx] = b'b';
+            bytes[mutation_idx] = b'b';
         }
         assert_eq!(ptr_before, db.text.as_ptr());
         assert_eq!(len_before, db.text.len());
@@ -512,16 +515,18 @@ fn fingerprint_text_samples(text: &str, hasher: &mut impl Hasher) {
     let bytes = text.as_bytes();
     bytes.len().hash(hasher);
 
-    const EDGE: usize = 64;
-    let prefix_len = bytes.len().min(EDGE);
-    bytes[..prefix_len].hash(hasher);
-
-    let mid_start = bytes.len() / 2;
-    let mid_end = (mid_start + EDGE).min(bytes.len());
-    bytes[mid_start..mid_end].hash(hasher);
-
-    let suffix_start = bytes.len().saturating_sub(EDGE);
-    bytes[suffix_start..].hash(hasher);
+    const SAMPLE: usize = 64;
+    const FULL_HASH_MAX: usize = 3 * SAMPLE;
+    if bytes.len() <= FULL_HASH_MAX {
+        bytes.hash(hasher);
+    } else {
+        bytes[..SAMPLE].hash(hasher);
+        let mid = bytes.len() / 2;
+        let mid_start = mid.saturating_sub(SAMPLE / 2);
+        let mid_end = (mid_start + SAMPLE).min(bytes.len());
+        bytes[mid_start..mid_end].hash(hasher);
+        bytes[bytes.len() - SAMPLE..].hash(hasher);
+    }
 }
 
 fn hash_mtime(hasher: &mut impl Hasher, time: Option<SystemTime>) {

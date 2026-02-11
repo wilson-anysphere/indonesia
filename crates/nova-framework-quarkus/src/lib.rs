@@ -461,21 +461,28 @@ fn fingerprint_project_sources(db: &dyn Database, files: &[FileId]) -> u64 {
         file.to_raw().hash(&mut hasher);
         if let Some(src) = db.file_text(*file) {
             src.len().hash(&mut hasher);
+            src.as_ptr().hash(&mut hasher);
 
-            // Hash a few small slices for best-effort change detection without scanning
-            // entire sources. This intentionally trades perfect invalidation for speed.
+            // NOTE: Avoid hashing full source contents here; framework analyzers can run on every
+            // keystroke and hashing entire workspaces is expensive. Pointer/len hashing is a cheap
+            // best-effort invalidation signal for common DB implementations that replace the
+            // underlying `String` on edits.
+            //
+            // Pointer/len hashing can still collide when allocations are reused or when text is
+            // mutated in place, so we also hash a small content-dependent sample.
             let bytes = src.as_bytes();
-            let len = bytes.len();
-
-            let prefix_len = len.min(64);
-            bytes[..prefix_len].hash(&mut hasher);
-
-            let mid_start = len / 2;
-            let mid_end = (mid_start + 64).min(len);
-            bytes[mid_start..mid_end].hash(&mut hasher);
-
-            let suffix_start = len.saturating_sub(64);
-            bytes[suffix_start..].hash(&mut hasher);
+            const SAMPLE: usize = 64;
+            const FULL_HASH_MAX: usize = 3 * SAMPLE;
+            if bytes.len() <= FULL_HASH_MAX {
+                bytes.hash(&mut hasher);
+            } else {
+                bytes[..SAMPLE].hash(&mut hasher);
+                let mid = bytes.len() / 2;
+                let mid_start = mid.saturating_sub(SAMPLE / 2);
+                let mid_end = (mid_start + SAMPLE).min(bytes.len());
+                bytes[mid_start..mid_end].hash(&mut hasher);
+                bytes[bytes.len() - SAMPLE..].hash(&mut hasher);
+            }
         } else if let Some(path) = db.file_path(*file) {
             match std::fs::metadata(path) {
                 Ok(meta) => {
@@ -665,15 +672,18 @@ fn fingerprint_text(text: &str, hasher: &mut impl Hasher) {
     bytes.len().hash(hasher);
     text.as_ptr().hash(hasher);
 
-    const EDGE: usize = 64;
-    let prefix_len = bytes.len().min(EDGE);
-    bytes[..prefix_len].hash(hasher);
-    let mid_start = bytes.len() / 2;
-    let mid_end = (mid_start + EDGE).min(bytes.len());
-    bytes[mid_start..mid_end].hash(hasher);
-
-    let suffix_start = bytes.len().saturating_sub(EDGE);
-    bytes[suffix_start..].hash(hasher);
+    const SAMPLE: usize = 64;
+    const FULL_HASH_MAX: usize = 3 * SAMPLE;
+    if bytes.len() <= FULL_HASH_MAX {
+        bytes.hash(hasher);
+    } else {
+        bytes[..SAMPLE].hash(hasher);
+        let mid = bytes.len() / 2;
+        let mid_start = mid.saturating_sub(SAMPLE / 2);
+        let mid_end = (mid_start + SAMPLE).min(bytes.len());
+        bytes[mid_start..mid_end].hash(hasher);
+        bytes[bytes.len() - SAMPLE..].hash(hasher);
+    }
 }
 
 fn fingerprint_fs_config_files(files: &[(std::path::PathBuf, ConfigFileKind)]) -> u64 {
@@ -948,5 +958,344 @@ pub fn analyze_java_sources_with_spans(sources: &[&str]) -> AnalysisResultWithSp
         diagnostics: cdi.diagnostics,
         endpoints,
         config_properties,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use nova_hir::framework::ClassData;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn analysis_cache_invalidates_when_text_is_replaced_with_same_len_outside_sample_regions() {
+        struct MutableDb {
+            project: ProjectId,
+            file: FileId,
+            path: PathBuf,
+            text: String,
+            // Keep the previous allocation alive so the allocator can't reuse it; this makes the
+            // pointer change deterministic when we replace `text`.
+            _previous_text: Option<String>,
+        }
+
+        impl Database for MutableDb {
+            fn class(&self, _class: ClassId) -> &ClassData {
+                static UNKNOWN: std::sync::OnceLock<ClassData> = std::sync::OnceLock::new();
+                UNKNOWN.get_or_init(ClassData::default)
+            }
+
+            fn project_of_class(&self, _class: ClassId) -> ProjectId {
+                self.project
+            }
+
+            fn project_of_file(&self, _file: FileId) -> ProjectId {
+                self.project
+            }
+
+            fn file_text(&self, file: FileId) -> Option<&str> {
+                (file == self.file).then_some(self.text.as_str())
+            }
+
+            fn file_path(&self, file: FileId) -> Option<&Path> {
+                (file == self.file).then_some(self.path.as_path())
+            }
+
+            fn file_id(&self, path: &Path) -> Option<FileId> {
+                (path == self.path).then_some(self.file)
+            }
+
+            fn all_files(&self, project: ProjectId) -> Vec<FileId> {
+                (project == self.project)
+                    .then(|| vec![self.file])
+                    .unwrap_or_default()
+            }
+
+            fn has_dependency(&self, _project: ProjectId, _group: &str, _artifact: &str) -> bool {
+                false
+            }
+
+            fn has_class_on_classpath(&self, _project: ProjectId, _binary_name: &str) -> bool {
+                false
+            }
+
+            fn has_class_on_classpath_prefix(&self, _project: ProjectId, _prefix: &str) -> bool {
+                false
+            }
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        let project = ProjectId::new(0);
+        let file = FileId::from_raw(0);
+        let path =
+            PathBuf::from(format!("/quarkus-analyzer-cache-test-{unique}/src/Main.java"));
+
+        // Large enough that we only sample prefix/middle/suffix.
+        let prefix = "package test;\nclass Main { /*";
+        let suffix = "*/ }\n";
+        let mut text = String::new();
+        text.push_str(prefix);
+        text.push_str(&"a".repeat(1024));
+        text.push_str(suffix);
+
+        let mut db = MutableDb {
+            project,
+            file,
+            path,
+            text,
+            _previous_text: None,
+        };
+
+        let analyzer = QuarkusAnalyzer::new();
+        let entry1 = analyzer
+            .project_analysis(&db, project, file)
+            .expect("expected analysis");
+        let entry2 = analyzer
+            .project_analysis(&db, project, file)
+            .expect("expected cache hit");
+        assert!(
+            Arc::ptr_eq(&entry1, &entry2),
+            "expected analysis to be reused from cache"
+        );
+
+        // Replace the text with the same length but a mutation outside prefix/middle/suffix sample
+        // regions. If the fingerprint only samples content, this would incorrectly hit the cache.
+        let mut next = db.text.clone();
+        let mutation_idx = 100;
+        assert!(
+            mutation_idx > 64 && mutation_idx + 64 < next.len(),
+            "expected mutation index to be outside sampled regions"
+        );
+        unsafe {
+            let bytes = next.as_mut_vec();
+            assert_eq!(bytes[mutation_idx], b'a');
+            bytes[mutation_idx] = b'b';
+        }
+        db._previous_text = Some(std::mem::replace(&mut db.text, next));
+
+        let entry3 = analyzer
+            .project_analysis(&db, project, file)
+            .expect("expected cache invalidation");
+        assert!(
+            !Arc::ptr_eq(&entry2, &entry3),
+            "expected quarkus analysis cache to invalidate when file text changes"
+        );
+    }
+
+    #[test]
+    fn analysis_cache_invalidates_when_text_changes_in_place_near_middle_sample() {
+        struct MutableDb {
+            project: ProjectId,
+            file: FileId,
+            path: PathBuf,
+            text: String,
+        }
+
+        impl Database for MutableDb {
+            fn class(&self, _class: ClassId) -> &ClassData {
+                static UNKNOWN: std::sync::OnceLock<ClassData> = std::sync::OnceLock::new();
+                UNKNOWN.get_or_init(ClassData::default)
+            }
+
+            fn project_of_class(&self, _class: ClassId) -> ProjectId {
+                self.project
+            }
+
+            fn project_of_file(&self, _file: FileId) -> ProjectId {
+                self.project
+            }
+
+            fn file_text(&self, file: FileId) -> Option<&str> {
+                (file == self.file).then_some(self.text.as_str())
+            }
+
+            fn file_path(&self, file: FileId) -> Option<&Path> {
+                (file == self.file).then_some(self.path.as_path())
+            }
+
+            fn file_id(&self, path: &Path) -> Option<FileId> {
+                (path == self.path).then_some(self.file)
+            }
+
+            fn all_files(&self, project: ProjectId) -> Vec<FileId> {
+                (project == self.project)
+                    .then(|| vec![self.file])
+                    .unwrap_or_default()
+            }
+
+            fn has_dependency(&self, _project: ProjectId, _group: &str, _artifact: &str) -> bool {
+                false
+            }
+
+            fn has_class_on_classpath(&self, _project: ProjectId, _binary_name: &str) -> bool {
+                false
+            }
+
+            fn has_class_on_classpath_prefix(&self, _project: ProjectId, _prefix: &str) -> bool {
+                false
+            }
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        let project = ProjectId::new(0);
+        let file = FileId::from_raw(0);
+        let path = PathBuf::from(format!(
+            "/quarkus-analyzer-cache-inplace-test-{unique}/src/Main.java"
+        ));
+
+        let prefix = "package test;\nclass Main { /*";
+        let suffix = "*/ }\n";
+        let mut text = String::new();
+        text.push_str(prefix);
+        text.push_str(&"a".repeat(1024));
+        text.push_str(suffix);
+
+        let mut db = MutableDb {
+            project,
+            file,
+            path,
+            text,
+        };
+
+        let analyzer = QuarkusAnalyzer::new();
+        let entry1 = analyzer
+            .project_analysis(&db, project, file)
+            .expect("expected analysis");
+        let entry2 = analyzer
+            .project_analysis(&db, project, file)
+            .expect("expected cache hit");
+        assert!(Arc::ptr_eq(&entry1, &entry2));
+
+        let len_before = db.text.len();
+        let mid_idx = len_before / 2;
+        let mutation_idx = mid_idx.saturating_sub(10);
+        assert!(
+            mutation_idx > 64 && mutation_idx + 64 < len_before,
+            "expected mutation index to be outside sampled prefix/suffix regions"
+        );
+
+        let ptr_before = db.text.as_ptr();
+        unsafe {
+            let bytes = db.text.as_mut_vec();
+            assert_eq!(bytes[mutation_idx], b'a');
+            bytes[mutation_idx] = b'b';
+        }
+        assert_eq!(ptr_before, db.text.as_ptr());
+        assert_eq!(len_before, db.text.len());
+
+        let entry3 = analyzer
+            .project_analysis(&db, project, file)
+            .expect("expected cache invalidation");
+        assert!(
+            !Arc::ptr_eq(&entry2, &entry3),
+            "expected quarkus analysis cache to invalidate on in-place mutation"
+        );
+    }
+
+    #[test]
+    fn config_cache_invalidates_when_text_changes_in_place_with_same_ptr_and_len() {
+        struct MutableDb {
+            project: ProjectId,
+            file: FileId,
+            path: PathBuf,
+            text: String,
+        }
+
+        impl Database for MutableDb {
+            fn class(&self, _class: ClassId) -> &ClassData {
+                static UNKNOWN: std::sync::OnceLock<ClassData> = std::sync::OnceLock::new();
+                UNKNOWN.get_or_init(ClassData::default)
+            }
+
+            fn project_of_class(&self, _class: ClassId) -> ProjectId {
+                self.project
+            }
+
+            fn project_of_file(&self, _file: FileId) -> ProjectId {
+                self.project
+            }
+
+            fn file_text(&self, file: FileId) -> Option<&str> {
+                (file == self.file).then_some(self.text.as_str())
+            }
+
+            fn file_path(&self, file: FileId) -> Option<&Path> {
+                (file == self.file).then_some(self.path.as_path())
+            }
+
+            fn file_id(&self, path: &Path) -> Option<FileId> {
+                (path == self.path).then_some(self.file)
+            }
+
+            fn all_files(&self, project: ProjectId) -> Vec<FileId> {
+                (project == self.project)
+                    .then(|| vec![self.file])
+                    .unwrap_or_default()
+            }
+
+            fn has_dependency(&self, _project: ProjectId, _group: &str, _artifact: &str) -> bool {
+                false
+            }
+
+            fn has_class_on_classpath(&self, _project: ProjectId, _binary_name: &str) -> bool {
+                false
+            }
+
+            fn has_class_on_classpath_prefix(&self, _project: ProjectId, _prefix: &str) -> bool {
+                false
+            }
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        let project = ProjectId::new(0);
+        let file = FileId::from_raw(1);
+        let path = PathBuf::from(format!(
+            "/quarkus-config-cache-inplace-test-{unique}/src/main/resources/application.properties"
+        ));
+
+        // Length chosen so old prefix/middle/suffix sampling would leave a gap after the first 64
+        // bytes, but the new strategy hashes full bytes for small files.
+        let mut text = String::from("foo=");
+        text.push_str(&"a".repeat(150 - text.len()));
+
+        let mut db = MutableDb {
+            project,
+            file,
+            path,
+            text,
+        };
+
+        let analyzer = QuarkusAnalyzer::new();
+        let entry1 = analyzer.project_config_keys(&db, project, None);
+        let entry2 = analyzer.project_config_keys(&db, project, None);
+        assert!(Arc::ptr_eq(&entry1, &entry2));
+
+        let ptr_before = db.text.as_ptr();
+        let len_before = db.text.len();
+        let mutation_idx = 70;
+        assert!(mutation_idx < len_before);
+        unsafe {
+            let bytes = db.text.as_mut_vec();
+            assert_eq!(bytes[mutation_idx], b'a');
+            bytes[mutation_idx] = b'b';
+        }
+        assert_eq!(ptr_before, db.text.as_ptr());
+        assert_eq!(len_before, db.text.len());
+
+        let entry3 = analyzer.project_config_keys(&db, project, None);
+        assert!(
+            !Arc::ptr_eq(&entry2, &entry3),
+            "expected quarkus config cache to invalidate on in-place mutation"
+        );
     }
 }
