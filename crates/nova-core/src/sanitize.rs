@@ -118,5 +118,30 @@ mod tests {
             "expected sanitized message to preserve expected list: {sanitized}"
         );
     }
-}
 
+    #[test]
+    fn sanitize_json_error_message_redacts_backticked_values_with_embedded_backticks() {
+        // Some callers feed sanitized `anyhow` chains or wrapper errors into this helper, and the
+        // offending field/variant name can itself contain backticks + `, expected` substrings.
+        //
+        // When that happens we still want to redact the *entire* offending segment without
+        // accidentally stopping at the first internal backtick.
+        let secret_suffix = "nova-core-embedded-backtick-secret";
+        let secret = format!("prefix`, expected {secret_suffix}");
+        let message = format!("unknown field `{secret}`, expected foo, bar");
+
+        let sanitized = sanitize_json_error_message(&message);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected sanitized message to omit embedded backticked values: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected sanitized message to include redaction marker: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("expected foo, bar"),
+            "expected sanitized message to preserve expected list: {sanitized}"
+        );
+    }
+}
