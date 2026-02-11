@@ -1198,6 +1198,30 @@ class A {
 }
 
 #[test]
+fn completion_resolves_new_array_creation_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    int n = new int[0].<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain array.length for `new int[0].`; got {labels:?}"
+    );
+    assert!(
+        labels.contains(&"clone"),
+        "expected completion list to contain array.clone() for `new int[0].`; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_resolves_array_access_receiver() {
     let (db, file, pos) = fixture(
         r#"

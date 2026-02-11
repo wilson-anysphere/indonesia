@@ -10809,6 +10809,14 @@ pub(crate) fn infer_receiver_type_before_dot(
 
     // Array access receiver: `arr[0].<cursor>` / `((Foo[]) obj)[0].<cursor>`.
     if bytes.get(end - 1) == Some(&b']') {
+        // Array creation receiver: `new int[0].<cursor>` / `new String[0][0].<cursor>`.
+        //
+        // `receiver_before_dot` returns empty for this syntax, and the array-access logic below
+        // would otherwise treat the trailing `]` like an indexing operation and strip a dimension.
+        if let Some(array_ty) = new_array_creation_type_name(text, end) {
+            return Some(array_ty);
+        }
+
         let close_bracket = end - 1;
         let open_bracket = find_matching_open_bracket(bytes, close_bracket)?;
         let array_expr_end = skip_whitespace_backwards(text, open_bracket);
@@ -10892,6 +10900,14 @@ pub(crate) fn infer_receiver_type_before_dot(
     let inner = text.get(start..end)?.trim();
     if inner.is_empty() {
         return None;
+    }
+
+    // If the inner expression ends with `]` (array access/creation), reuse the same inference logic
+    // we use for top-level array receivers.
+    if end > 0 && bytes.get(end - 1) == Some(&b']') {
+        if let Some(ty) = infer_receiver_type_before_dot(db, file, end) {
+            return Some(ty);
+        }
     }
 
     // Best-effort `this.<field>` / `super.<field>` support for parenthesized receivers like
@@ -11045,6 +11061,70 @@ fn cast_type_in_expr(expr: &str) -> Option<&str> {
         return None;
     }
     looks_like_cast_type(ty).then_some(ty)
+}
+
+fn new_array_creation_type_name(text: &str, expr_end: usize) -> Option<String> {
+    let bytes = text.as_bytes();
+    let end = skip_whitespace_backwards(text, expr_end.min(bytes.len()));
+    if end == 0 || bytes.get(end - 1) != Some(&b']') {
+        return None;
+    }
+
+    // Find the end of the base type name (immediately before the first `[`), while also counting
+    // array dimensions (`new int[0][0]` -> dims=2).
+    let mut dims = 0usize;
+    let mut close_bracket = end - 1;
+    let type_end = loop {
+        dims += 1;
+        let open_bracket = find_matching_open_bracket(bytes, close_bracket)?;
+        let before_open = skip_whitespace_backwards(text, open_bracket);
+        if before_open == 0 {
+            return None;
+        }
+
+        // Multi-dimensional array creation expressions are written as sequential bracket pairs:
+        // `new int[0][1]`. When walking backwards, that means we may see another `]` immediately
+        // before this `[`.
+        if bytes.get(before_open - 1) == Some(&b']') {
+            close_bracket = before_open - 1;
+            continue;
+        }
+
+        break before_open;
+    };
+    let (seg_start, segment) = identifier_prefix(text, type_end);
+    let segment = segment.trim();
+    if segment.is_empty() {
+        return None;
+    }
+
+    let (qual_start, qualifier_prefix) = dotted_qualifier_prefix(text, seg_start);
+    let base = format!("{qualifier_prefix}{segment}");
+    let base = base.trim();
+    if base.is_empty() {
+        return None;
+    }
+
+    // Ensure the base type name is preceded by `new`, so we don't misinterpret array indexing
+    // expressions (`arr[0]`) as array creation.
+    let before_type = skip_whitespace_backwards(text, qual_start);
+    if before_type < 3 {
+        return None;
+    }
+    let start_new = before_type - 3;
+    if text.get(start_new..before_type)? != "new" {
+        return None;
+    }
+    if start_new > 0 && is_ident_continue(bytes[start_new - 1] as char) {
+        return None;
+    }
+
+    let mut out = String::with_capacity(base.len() + dims * 2);
+    out.push_str(base);
+    for _ in 0..dims {
+        out.push_str("[]");
+    }
+    Some(out)
 }
 
 fn infer_expr_type_for_parenthesized_member_chain(
@@ -11871,6 +11951,15 @@ fn infer_receiver_type_of_expr_ending_at(
 
     // Array access receiver: `arr[0]` / `arr[0][1]` / `this.arr[0]` / `((Foo[]) obj)[0]`.
     if bytes.get(end - 1) == Some(&b']') {
+        // Array creation receiver: `new int[0]` / `new String[0][0]`.
+        if let Some(array_ty_name) = new_array_creation_type_name(text, end) {
+            let ty = parse_source_type_in_context(types, file_ctx, &array_ty_name);
+            return match ty {
+                Type::Unknown | Type::Error => None,
+                other => Some(other),
+            };
+        }
+
         let close_bracket = end - 1;
         let open_bracket = find_matching_open_bracket(bytes, close_bracket)?;
         let array_expr_end = skip_whitespace_backwards(text, open_bracket);
@@ -22192,6 +22281,29 @@ class A {
             ty.as_deref().unwrap_or_default().contains("String"),
             "expected receiver type to contain `String`, got {ty:?}"
         );
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_new_array_creation_type() {
+        let java = r#"
+class A {
+  void m() {
+    new int[0].
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("new int[0].")
+            .expect("expected `new int[0].` in fixture")
+            + "new int[0]".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert_eq!(ty.as_deref(), Some("int[]"));
     }
 
     #[test]

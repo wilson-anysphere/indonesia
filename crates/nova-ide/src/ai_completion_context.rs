@@ -983,6 +983,30 @@ class A {
     }
 
     #[test]
+    fn new_array_creation_receiver_type_and_methods_are_semantic() {
+        let ctx = ctx_for(
+            r#"
+class A {
+  void m() {
+    new int[0].<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.replace(' ', "").contains("int[]"),
+            "expected receiver type to contain `int[]`, got {receiver_ty:?}"
+        );
+        assert!(
+            ctx.available_methods.iter().any(|m| m == "clone"),
+            "expected array receiver to include clone(), got {:?}",
+            ctx.available_methods
+        );
+    }
+
+    #[test]
     fn array_access_receiver_type_and_methods_are_semantic() {
         let ctx = ctx_for(
             r#"
