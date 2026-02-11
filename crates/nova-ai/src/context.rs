@@ -928,6 +928,22 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
 
             let amp_escape_before_token = bounds.start >= 4
                 && bytes[bounds.start - 4..bounds.start].eq_ignore_ascii_case(b"amp;");
+            let amp_named_escape_before_token = if amp_escape_before_token {
+                token
+                    .as_bytes()
+                    .get(..3)
+                    .is_some_and(|frag| frag.eq_ignore_ascii_case(b"sol"))
+                    || token
+                        .as_bytes()
+                        .get(..4)
+                        .is_some_and(|frag| frag.eq_ignore_ascii_case(b"bsol"))
+                    || token
+                        .as_bytes()
+                        .get(..9)
+                        .is_some_and(|frag| frag.eq_ignore_ascii_case(b"backslash"))
+            } else {
+                false
+            };
             let amp_numeric_escape_before_token = if amp_escape_before_token
                 && bytes.get(bounds.start).is_some_and(|b| *b == b'#')
             {
@@ -1034,7 +1050,21 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 }
 
                 let mut j = bounds.end + 1;
-                if html_numeric_fragment_is_path_separator(bytes, j) {
+                fn html_named_fragment_is_path_separator(bytes: &[u8], start: usize) -> bool {
+                    bytes
+                        .get(start..start + 3)
+                        .is_some_and(|frag| frag.eq_ignore_ascii_case(b"sol"))
+                        || bytes
+                            .get(start..start + 4)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"bsol"))
+                        || bytes
+                            .get(start..start + 9)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"backslash"))
+                }
+
+                if html_numeric_fragment_is_path_separator(bytes, j)
+                    || html_named_fragment_is_path_separator(bytes, j)
+                {
                     return true;
                 }
                 // Allow a few nested escapes like `&amp;amp;#47;` by scanning for the *next* entity
@@ -1046,6 +1076,9 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                             return true;
                         }
                         if html_numeric_fragment_is_path_separator(bytes, j + 1) {
+                            return true;
+                        }
+                        if html_named_fragment_is_path_separator(bytes, j + 1) {
                             return true;
                         }
                         if html_entity_is_percent(bytes, j)
@@ -1086,6 +1119,7 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 || unicode_path_separator_before(bytes, bounds.start)
                 || before_idx.is_some_and(|idx| braced_unicode_escape_is_path_separator(bytes, idx))
                 || before_idx.is_some_and(|idx| html_entity_is_path_separator(bytes, idx))
+                || amp_named_escape_before_token
                 || amp_numeric_escape_before_token;
             let after_is_sep = after.is_some_and(|b| *b == b'/' || *b == b'\\')
                 || unicode_path_separator_at(bytes, bounds.end)
@@ -2552,6 +2586,18 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
         }
     }
 
+    fn html_named_fragment_is_path_separator(bytes: &[u8], start: usize) -> bool {
+        bytes
+            .get(start..start + 3)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"sol"))
+            || bytes
+                .get(start..start + 4)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"bsol"))
+            || bytes
+                .get(start..start + 9)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"backslash"))
+    }
+
     // Handle nested `&amp;#47...` patterns where the escaped entity itself does not have a trailing
     // `;` (e.g. `&amp;#47home`, which decodes to `&#47home`). These can appear in HTML-escaped
     // stack traces/logs and should be treated as path separators.
@@ -2612,6 +2658,36 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
             if matches!(value, 47 | 92) {
                 return true;
             }
+        }
+
+        i += 1;
+    }
+
+    // Some HTML emitters also omit the trailing semicolon in named entities like `&sol`/`&bsol`,
+    // especially when the selection is already HTML-escaped (e.g. `&amp;solhome`), leaving a
+    // separator run such as `amp;sol` with no second `;` delimiter. Treat these as separators so
+    // encoded paths do not leak into semantic-search queries.
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'&' {
+            i += 1;
+            continue;
+        }
+
+        let mut j = i + 1;
+        for _ in 0..3 {
+            if j + 3 < bytes.len()
+                && bytes[j..j + 3].eq_ignore_ascii_case(b"amp")
+                && bytes[j + 3] == b';'
+            {
+                j += 4;
+                continue;
+            }
+            break;
+        }
+
+        if html_named_fragment_is_path_separator(bytes, j) {
+            return true;
         }
 
         i += 1;

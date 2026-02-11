@@ -663,6 +663,56 @@ fn related_code_query_avoids_named_html_entity_path_segments() {
 }
 
 #[test]
+fn related_code_query_avoids_named_html_entity_path_segments_without_semicolons() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+    for sep in [
+        "&sol",
+        "&bsol",
+        "&Backslash",
+        "&amp;sol",
+        "&amp;bsol",
+        "&amp;Backslash",
+        "&amp;amp;sol",
+        "&amp;amp;bsol",
+        "&amp;amp;Backslash",
+    ] {
+        let search = CapturingSearch::default();
+        let focal_code = format!(
+            "{sep}home{sep}user{sep}my-{private_segment}-project{sep}src{sep}main{sep}java\nreturn foo.bar();\n"
+        );
+
+        let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+        let query = search
+            .last_query
+            .lock()
+            .expect("lock poisoned")
+            .clone()
+            .expect("query captured");
+
+        assert!(
+            !query.contains(private_segment),
+            "query should not include named HTML entity path fragments without semicolons: {query}"
+        );
+        assert!(
+            query.contains("foo") || query.contains("bar"),
+            "expected query to retain non-path identifiers, got: {query}"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_avoids_double_escaped_html_entity_path_segments() {
     #[derive(Default)]
     struct CapturingSearch {
@@ -1219,6 +1269,36 @@ fn related_code_query_skips_named_html_entity_path_only_selections() {
         assert!(
             req.related_code.is_empty(),
             "expected no related code for named HTML entity path-only focal code"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_named_html_entity_path_only_selections_without_semicolons() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for named HTML entity path selections without semicolons");
+        }
+    }
+
+    let search = PanicSearch;
+    for focal_code in [
+        "&solhome&soluser&solsecret&solcredentials",
+        "&bsolhome&bsoluser&bsolsecret&bsolcredentials",
+        "&Backslashhome&Backslashuser&Backslashsecret&Backslashcredentials",
+        "&amp;solhome&amp;soluser&amp;solsecret&amp;solcredentials",
+        "&amp;bsolhome&amp;bsoluser&amp;bsolsecret&amp;bsolcredentials",
+        "&amp;Backslashhome&amp;Backslashuser&amp;Backslashsecret&amp;Backslashcredentials",
+        "&amp;amp;solhome&amp;amp;soluser&amp;amp;solsecret&amp;amp;solcredentials",
+        "&amp;amp;bsolhome&amp;amp;bsoluser&amp;amp;bsolsecret&amp;amp;bsolcredentials",
+        "&amp;amp;Backslashhome&amp;amp;Backslashuser&amp;amp;Backslashsecret&amp;amp;Backslashcredentials",
+    ] {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for named HTML entity path-only focal code without semicolons"
         );
     }
 }
