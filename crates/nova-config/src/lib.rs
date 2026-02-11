@@ -1920,6 +1920,13 @@ fn log_line_contains_escaped_toml_snippet(line: &str) -> bool {
     false
 }
 
+fn log_line_contains_toml_error_debug(line: &str) -> bool {
+    // `toml::de::Error`'s `Debug` output (used by `?err` formatting) includes the full input TOML
+    // source in a `raw: Some("...")` field. That raw source can contain secrets and should not
+    // make it into logs / bug report bundles.
+    line.contains("TomlError {") && line.contains("raw: Some(")
+}
+
 fn json_log_line_contains_toml_error_scalar(line: &str) -> bool {
     // JSON log lines are single-line objects; scalar error phrases are still visible as plain
     // substrings.
@@ -2003,12 +2010,16 @@ fn sanitize_bugreport_log_line(line: &str) -> String {
     if line.trim_start().starts_with('{')
         && (log_line_contains_serde_json_error(line)
             || json_log_line_contains_toml_snippet(line)
-            || json_log_line_contains_toml_error_scalar(line))
+            || json_log_line_contains_toml_error_scalar(line)
+            || log_line_contains_toml_error_debug(line))
     {
         return sanitize_json_log_line(line);
     }
 
-    if log_line_looks_like_toml_snippet(line) || log_line_contains_escaped_toml_snippet(line) {
+    if log_line_looks_like_toml_snippet(line)
+        || log_line_contains_escaped_toml_snippet(line)
+        || log_line_contains_toml_error_debug(line)
+    {
         sanitize_toml_error_message(line)
     } else if log_line_contains_toml_error_scalar(line) {
         sanitize_toml_error_message(line)
@@ -2045,6 +2056,7 @@ fn sanitize_json_log_value(value: serde_json::Value) -> serde_json::Value {
             // (notably numeric literals) that the JSON sanitizer would not redact.
             if s.lines().any(log_line_looks_like_toml_snippet)
                 || log_line_contains_escaped_toml_snippet(&s)
+                || log_line_contains_toml_error_debug(&s)
             {
                 serde_json::Value::String(sanitize_toml_error_message(&s))
             } else if log_line_contains_serde_json_error(&s) {
@@ -2074,6 +2086,7 @@ fn sanitize_json_log_line(line: &str) -> String {
     if !log_line_contains_serde_json_error(line)
         && !json_log_line_contains_toml_snippet(line)
         && !json_log_line_contains_toml_error_scalar(line)
+        && !log_line_contains_toml_error_debug(line)
     {
         return line.to_owned();
     }
@@ -2191,6 +2204,36 @@ mod bugreport_log_sanitization_tests {
     }
 
     #[test]
+    fn sanitize_bugreport_log_line_redacts_toml_error_debug_raw_source() {
+        let secret_suffix = "nova-config-toml-debug-secret";
+        let input = format!("flag = [1,\napi_key = \"{secret_suffix}\"\n");
+        let err = toml::from_str::<toml::Value>(&input).expect_err("expected parse error");
+        let debug = format!("{err:?}");
+        assert!(
+            debug.contains(secret_suffix),
+            "expected raw toml debug output to include secret so this test catches leaks: {debug}"
+        );
+        assert!(
+            !debug.contains("invalid type:"),
+            "expected toml debug output to not match serde_json invalid-type detection so this test covers the debug/raw leak surface: {debug}"
+        );
+
+        let sanitized = sanitize_bugreport_log_line(&debug);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected log sanitizer to omit raw TOML source embedded in toml debug output: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("invalid array"),
+            "expected log sanitizer to preserve toml error message for debug output: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("raw: Some(\"<redacted>\")"),
+            "expected log sanitizer to redact the raw TOML source field in toml debug output: {sanitized}"
+        );
+    }
+
+    #[test]
     fn sanitize_json_log_line_redacts_toml_snippet_blocks_in_string_values() {
         let secret_suffix = "nova-config-json-toml-snippet-secret";
         let secret_number = 42_424_242u64;
@@ -2260,6 +2303,45 @@ mod bugreport_log_sanitization_tests {
 
         serde_json::from_str::<serde_json::Value>(&sanitized)
             .expect("expected sanitized log line to remain valid JSON");
+    }
+
+    #[test]
+    fn sanitize_json_log_line_redacts_toml_error_debug_raw_source() {
+        let secret_suffix = "nova-config-json-toml-debug-secret";
+        let input = format!("flag = [1,\napi_key = \"{secret_suffix}\"\n");
+        let err = toml::from_str::<toml::Value>(&input).expect_err("expected parse error");
+        let debug = format!("{err:?}");
+
+        let line = serde_json::json!({ "message": debug }).to_string();
+        assert!(
+            line.contains(secret_suffix),
+            "expected raw JSON log line to include secret so this test catches leaks: {line}"
+        );
+
+        let sanitized = sanitize_json_log_line(&line);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected JSON log sanitizer to omit raw TOML source embedded in toml debug output: {sanitized}"
+        );
+
+        let value: serde_json::Value =
+            serde_json::from_str(&sanitized).expect("expected sanitized log line to remain valid JSON");
+        let message = value
+            .get("message")
+            .and_then(|value| value.as_str())
+            .expect("expected message field");
+        assert!(
+            message.contains("invalid array"),
+            "expected JSON log sanitizer to preserve toml error message for debug output: {message}"
+        );
+        assert!(
+            message.contains("raw: Some(\"<redacted>\")"),
+            "expected JSON log sanitizer to redact the raw source field in toml debug output: {message}"
+        );
+        assert!(
+            !message.contains(secret_suffix),
+            "expected JSON log sanitizer not to leak secret in message field: {message}"
+        );
     }
 
     #[test]

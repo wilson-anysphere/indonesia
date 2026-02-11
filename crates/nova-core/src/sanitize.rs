@@ -311,6 +311,151 @@ pub fn sanitize_toml_error_message(message: &str) -> String {
     sanitized
     }
 
+    fn sanitize_toml_error_debug_output(message: &str) -> Option<String> {
+        // `toml::de::Error`'s `Debug` output includes the full input TOML source as
+        // `raw: Some("...")`, which can leak secrets when logged with `?err` (e.g. via `tracing`).
+        //
+        // Sanitize that debug representation by:
+        // - sanitizing the `message: "..."` field (unescape, sanitize, then re-escape), and
+        // - redacting the embedded `raw: Some("...")` text entirely.
+        //
+        // We keep this best-effort and intentionally narrow so we don't accidentally rewrite
+        // unrelated debug output.
+        if !message.contains("TomlError {") {
+            return None;
+        }
+        if !message.contains("raw: Some(\"") {
+            return None;
+        }
+        if !message.contains("message: \"") {
+            return None;
+        }
+
+        fn find_unescaped_quote_end(text: &str) -> Option<usize> {
+            let bytes = text.as_bytes();
+            for (idx, &b) in bytes.iter().enumerate() {
+                if b != b'"' {
+                    continue;
+                }
+
+                let mut backslashes = 0usize;
+                let mut k = idx;
+                while k > 0 && bytes[k - 1] == b'\\' {
+                    backslashes += 1;
+                    k -= 1;
+                }
+                if backslashes % 2 == 0 {
+                    return Some(idx);
+                }
+            }
+            None
+        }
+
+        fn unescape_rust_debug_string(value: &str) -> String {
+            let mut out = String::with_capacity(value.len());
+            let mut chars = value.chars();
+            while let Some(ch) = chars.next() {
+                if ch != '\\' {
+                    out.push(ch);
+                    continue;
+                }
+
+                let Some(esc) = chars.next() else {
+                    out.push('\\');
+                    break;
+                };
+
+                match esc {
+                    'n' => out.push('\n'),
+                    'r' => out.push('\r'),
+                    't' => out.push('\t'),
+                    '\\' => out.push('\\'),
+                    '"' => out.push('"'),
+                    '\'' => out.push('\''),
+                    '0' => out.push('\0'),
+                    'x' => {
+                        let hi = chars.next();
+                        let lo = chars.next();
+                        let Some((hi, lo)) = hi.zip(lo) else {
+                            continue;
+                        };
+                        let Some(hi) = hi.to_digit(16) else {
+                            continue;
+                        };
+                        let Some(lo) = lo.to_digit(16) else {
+                            continue;
+                        };
+                        let byte = ((hi << 4) | lo) as u8;
+                        out.push(byte as char);
+                    }
+                    'u' => {
+                        if chars.next() != Some('{') {
+                            continue;
+                        }
+
+                        let mut hex = String::new();
+                        while let Some(ch) = chars.next() {
+                            if ch == '}' {
+                                break;
+                            }
+                            hex.push(ch);
+                        }
+
+                        if let Ok(codepoint) = u32::from_str_radix(hex.trim(), 16) {
+                            if let Some(ch) = char::from_u32(codepoint) {
+                                out.push(ch);
+                            }
+                        }
+                    }
+                    other => out.push(other),
+                }
+            }
+            out
+        }
+
+        let mut out = message.to_string();
+
+        // Sanitize `message: "..."` fields in-place.
+        let mut search_start = 0usize;
+        const MESSAGE_PREFIX: &str = "message: \"";
+        while let Some(rel) = out[search_start..].find(MESSAGE_PREFIX) {
+            let prefix_idx = search_start + rel;
+            let start_quote = prefix_idx + MESSAGE_PREFIX.len().saturating_sub(1);
+            let after_start = &out[start_quote + 1..];
+            let Some(end_rel) = find_unescaped_quote_end(after_start) else {
+                return Some(sanitize_inner(message));
+            };
+            let end_quote = start_quote + 1 + end_rel;
+            let escaped = &out[start_quote + 1..end_quote];
+            let unescaped = unescape_rust_debug_string(escaped);
+            let sanitized = sanitize_inner(&unescaped);
+            let escaped_sanitized = format!("{sanitized:?}");
+            out.replace_range(start_quote..=end_quote, &escaped_sanitized);
+            search_start = start_quote + escaped_sanitized.len();
+        }
+
+        // Redact `raw: Some("...")` source blocks entirely.
+        search_start = 0;
+        const RAW_PREFIX: &str = "raw: Some(\"";
+        while let Some(rel) = out[search_start..].find(RAW_PREFIX) {
+            let prefix_idx = search_start + rel;
+            let start_quote = prefix_idx + RAW_PREFIX.len().saturating_sub(1);
+            let after_start = &out[start_quote + 1..];
+            let Some(end_rel) = find_unescaped_quote_end(after_start) else {
+                return Some(sanitize_inner(message));
+            };
+            let end_quote = start_quote + 1 + end_rel;
+            out.replace_range(start_quote + 1..end_quote, "<redacted>");
+            search_start = start_quote + 1 + "<redacted>".len() + 1;
+        }
+
+        Some(out)
+    }
+
+    if let Some(sanitized) = sanitize_toml_error_debug_output(message) {
+        return sanitized;
+    }
+
     if !message.contains('\n') && contains_escaped_snippet_block(message) {
         // Preserve the original single-line formatting by re-escaping any newlines introduced by
         // unescaping and stripping snippet blocks.
@@ -574,6 +719,32 @@ mod tests {
         assert!(
             !sanitized.contains('\n'),
             "expected TOML sanitizer not to inject actual newlines when input used escapes: {sanitized:?}"
+        );
+    }
+
+    #[test]
+    fn sanitize_toml_error_message_redacts_raw_toml_text_in_debug_output() {
+        let secret_suffix = "nova-core-toml-debug-secret";
+        let message = format!(
+            "TomlError {{ message: \"invalid array\\nexpected `]`\", raw: Some(\"flag = [1,\\napi_key = \\\\\\\"{secret_suffix}\\\\\\\"\\n\"), keys: [], span: Some(11..12) }}"
+        );
+        assert!(
+            message.contains(secret_suffix),
+            "expected raw TomlError debug output to contain secret so this test catches leaks: {message}"
+        );
+
+        let sanitized = sanitize_toml_error_message(&message);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected TOML sanitizer to omit raw TOML source from debug output: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("invalid array"),
+            "expected TOML sanitizer to preserve debug output message field: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("raw: Some(\"<redacted>\")"),
+            "expected TOML sanitizer to redact the embedded raw TOML source in debug output: {sanitized}"
         );
     }
 }
