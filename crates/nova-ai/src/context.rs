@@ -849,6 +849,38 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         {
             return true;
         }
+        if prev == b';'
+            && percent_encoded_byte_ending_at(bytes, start).is_some_and(percent_encoded_byte_is_path_like)
+        {
+            return true;
+        }
+        // HTML numeric entities use `;` as a terminator, which is treated as a query-token
+        // boundary. That means mixed percent escapes like `%&#50;u0046home` can cause the second hex
+        // digit escape (`u0046`) to become part of the identifier token. Detect this by looking for
+        // a percent marker + first digit that ends right at `start` and a second digit that begins
+        // at `start`.
+        if prev == b';' {
+            if let Some((lo, _)) = parse_obfuscated_hex_digit(bytes, start) {
+                let scan_start = start.saturating_sub(128);
+                let mut i = start;
+                while i > scan_start {
+                    i -= 1;
+                    let Some(digits_start) = percent_marker_end(bytes, i) else {
+                        continue;
+                    };
+                    let Some((hi, hi_end)) = parse_obfuscated_hex_digit(bytes, digits_start) else {
+                        continue;
+                    };
+                    if hi_end != start {
+                        continue;
+                    }
+                    let value = (hi << 4) | lo;
+                    if percent_encoded_byte_is_path_like(value) {
+                        return true;
+                    }
+                }
+            }
+        }
         // Unicode escape sequences like `\u{002F}` can encode path separators without embedding an
         // actual `/` or `\` byte adjacent to the identifier. Treat identifiers that immediately
         // follow such escapes as path-like so path segments (especially the final segment) do not
@@ -4210,6 +4242,89 @@ fn parse_obfuscated_hex_digit(bytes: &[u8], idx: usize) -> Option<(u8, usize)> {
         }
     }
 
+    // HTML numeric entities can also encode the hex digits of percent-encoded bytes (e.g.
+    // `%u0032&#70;home` == `%2Fhome`). Support the common semicolon-terminated forms so mixed escape
+    // strategies can't leak path fragments into semantic-search queries.
+    if b == b'&' {
+        // Prefer direct numeric entities (`&#70;`, `&#x46;`) because the obfuscated numeric-reference
+        // parser treats entities that decode to ASCII hex digits (e.g. `&#70;` → `F`) as nested
+        // digit escapes.
+        if bytes.get(idx + 1) == Some(&b'#') {
+            let mut j = idx + 2;
+            let base = match bytes.get(j) {
+                Some(b'x') | Some(b'X') => {
+                    j += 1;
+                    16u32
+                }
+                _ => 10u32,
+            };
+            if j < bytes.len() {
+                let mut value = 0u32;
+                let mut significant = 0usize;
+                while j < bytes.len() && significant < 8 {
+                    let b = bytes[j];
+                    let digit = if base == 16 {
+                        let Some(v) = hex_value(b) else {
+                            break;
+                        };
+                        v as u32
+                    } else if b.is_ascii_digit() {
+                        (b - b'0') as u32
+                    } else {
+                        break;
+                    };
+                    if significant == 0 && digit == 0 {
+                        j += 1;
+                        continue;
+                    }
+                    value = value
+                        .checked_mul(base)
+                        .and_then(|v| v.checked_add(digit))
+                        .unwrap_or(u32::MAX);
+                    significant += 1;
+                    j += 1;
+                }
+
+                // Fail closed: ignore sequences with more than 8 significant digits.
+                if significant == 8
+                    && j < bytes.len()
+                    && ((base == 16 && hex_value(bytes[j]).is_some())
+                        || (base == 10 && bytes[j].is_ascii_digit()))
+                {
+                    return None;
+                }
+
+                if significant > 0 && value <= u32::from(u8::MAX) {
+                    let ch = value as u8;
+                    if let Some(v) = hex_value(ch) {
+                        let mut next = j;
+                        if bytes.get(next) == Some(&b';') {
+                            next += 1;
+                        }
+                        return Some((v, next));
+                    }
+                }
+            }
+        }
+
+        // Fall back to obfuscated numeric references like `&amp;#70;` and scan a few entity
+        // delimiters to support nested entities (`&amp;#&#55;&#48;;`).
+        let scan_end = (idx + 64).min(bytes.len());
+        for end in idx + 1..scan_end {
+            if bytes[end] != b';' {
+                continue;
+            }
+            if let Some(value) = html_entity_obfuscated_numeric_reference_value(bytes, end) {
+                if value <= u32::from(u8::MAX) {
+                    let ch = value as u8;
+                    if let Some(v) = hex_value(ch) {
+                        return Some((v, end + 1));
+                    }
+                }
+            }
+        }
+    }
+
     if b == b'\\' {
         if bytes.get(idx + 1).is_some_and(|b| *b == b'u' || *b == b'U') {
             if let Some((value, next)) = parse_unicode_escape_value(bytes, idx + 1) {
@@ -4261,6 +4376,341 @@ fn percent_encoded_byte_after_obfuscated_digits(bytes: &[u8], idx: usize) -> Opt
     let (hi, cursor) = parse_obfuscated_hex_digit(bytes, idx)?;
     let (lo, cursor) = parse_obfuscated_hex_digit(bytes, cursor)?;
     Some(((hi << 4) | lo, cursor))
+}
+
+fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
+    fn hex_value(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    fn parse_unicode_escape(bytes: &[u8], idx: usize) -> Option<(u32, usize)> {
+        let bytes_len = bytes.len();
+        if idx >= bytes_len {
+            return None;
+        }
+
+        let b = bytes[idx];
+        if b == b'U' {
+            if idx + 9 > bytes_len {
+                return None;
+            }
+            let mut value = 0u32;
+            for &b in &bytes[idx + 1..idx + 9] {
+                value = (value << 4) | hex_value(b)? as u32;
+            }
+            return Some((value, idx + 9));
+        }
+
+        if b != b'u' {
+            return None;
+        }
+
+        let mut j = idx + 1;
+        while j < bytes_len && bytes[j] == b'u' {
+            j += 1;
+        }
+        if j >= bytes_len {
+            return None;
+        }
+
+        if bytes[j] == b'{' {
+            let mut value = 0u32;
+            let mut significant = 0usize;
+            let mut k = j + 1;
+            let scan_end = (k + 1024).min(bytes_len);
+            while k < scan_end && significant < 8 {
+                if bytes[k] == b'}' {
+                    break;
+                }
+                let hex = hex_value(bytes[k])?;
+                if significant == 0 && hex == 0 {
+                    k += 1;
+                    continue;
+                }
+                value = (value << 4) | hex as u32;
+                significant += 1;
+                k += 1;
+            }
+            if significant == 0 {
+                return None;
+            }
+            if k < bytes_len && bytes[k] == b'}' {
+                return Some((value, k + 1));
+            }
+            None
+        } else {
+            if j + 4 > bytes_len {
+                return None;
+            }
+            let mut value = 0u32;
+            for &b in &bytes[j..j + 4] {
+                value = (value << 4) | hex_value(b)? as u32;
+            }
+            Some((value, j + 4))
+        }
+    }
+
+    fn parse_hex_escape(bytes: &[u8], idx: usize) -> Option<(u32, usize)> {
+        let bytes_len = bytes.len();
+        if idx >= bytes_len {
+            return None;
+        }
+
+        let b = bytes[idx];
+        if b != b'x' && b != b'X' {
+            return None;
+        }
+
+        if bytes.get(idx + 1).is_some_and(|b| *b == b'{') {
+            let mut value = 0u32;
+            let mut significant = 0usize;
+            let mut j = idx + 2;
+            let scan_end = (j + 1024).min(bytes_len);
+            while j < scan_end && significant < 8 {
+                if bytes[j] == b'}' {
+                    break;
+                }
+                let hex = hex_value(bytes[j])?;
+                if significant == 0 && hex == 0 {
+                    j += 1;
+                    continue;
+                }
+                value = (value << 4) | hex as u32;
+                significant += 1;
+                j += 1;
+            }
+            if significant == 0 {
+                return None;
+            }
+            if j < bytes_len && bytes[j] == b'}' {
+                return Some((value, j + 1));
+            }
+            return None;
+        }
+
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        let mut j = idx + 1;
+        while j < bytes_len && significant < 8 {
+            let Some(hex) = hex_value(bytes[j]) else {
+                break;
+            };
+            if significant == 0 && hex == 0 {
+                j += 1;
+                continue;
+            }
+            value = (value << 4) | hex as u32;
+            significant += 1;
+            j += 1;
+        }
+        if significant == 0 {
+            None
+        } else if significant == 8 && j < bytes_len && bytes[j].is_ascii_hexdigit() {
+            // Fail closed: ignore sequences with more than 8 significant digits.
+            None
+        } else {
+            Some((value, j))
+        }
+    }
+
+    fn parse_backslash_hex_escape(bytes: &[u8], idx: usize) -> Option<(u32, usize)> {
+        let bytes_len = bytes.len();
+        if idx >= bytes_len || bytes[idx] != b'\\' {
+            return None;
+        }
+
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        let mut j = idx + 1;
+        while j < bytes_len && significant < 6 {
+            let Some(hex) = hex_value(bytes[j]) else {
+                break;
+            };
+            if significant == 0 && hex == 0 {
+                j += 1;
+                continue;
+            }
+            value = (value << 4) | hex as u32;
+            significant += 1;
+            j += 1;
+        }
+        if significant == 0 {
+            None
+        } else {
+            Some((value, j))
+        }
+    }
+
+    fn parse_backslash_octal_escape(bytes: &[u8], idx: usize) -> Option<(u32, usize)> {
+        let bytes_len = bytes.len();
+        if idx >= bytes_len || bytes[idx] != b'\\' {
+            return None;
+        }
+
+        let mut value = 0u32;
+        let mut digits = 0usize;
+        let mut j = idx + 1;
+        while j < bytes_len && digits < 3 {
+            let b = bytes[j];
+            if !(b'0'..=b'7').contains(&b) {
+                break;
+            }
+            value = (value << 3) | (b - b'0') as u32;
+            digits += 1;
+            j += 1;
+        }
+        if digits == 0 {
+            None
+        } else {
+            Some((value, j))
+        }
+    }
+
+    let b = *bytes.get(idx)?;
+    if b == b'%' {
+        return Some(idx + 1);
+    }
+
+    if b == b'u' || b == b'U' {
+        if let Some((value, next)) = parse_unicode_escape(bytes, idx) {
+            if value == 0x25 {
+                return Some(next);
+            }
+        }
+    }
+
+    if b == b'x' || b == b'X' {
+        if let Some((value, next)) = parse_hex_escape(bytes, idx) {
+            if value == 0x25 {
+                return Some(next);
+            }
+        }
+    }
+
+    if b == b'\\' {
+        if bytes.get(idx + 1).is_some_and(|b| matches!(*b, b'u' | b'U')) {
+            if let Some((value, next)) = parse_unicode_escape(bytes, idx + 1) {
+                if value == 0x25 {
+                    return Some(next);
+                }
+            }
+        }
+        if bytes.get(idx + 1).is_some_and(|b| matches!(*b, b'x' | b'X')) {
+            if let Some((value, next)) = parse_hex_escape(bytes, idx + 1) {
+                if value == 0x25 {
+                    return Some(next);
+                }
+            }
+        }
+        if let Some((value, next)) = parse_backslash_octal_escape(bytes, idx) {
+            if value == 37 {
+                return Some(next);
+            }
+        }
+        if let Some((value, next)) = parse_backslash_hex_escape(bytes, idx) {
+            if value == 0x25 {
+                return Some(next);
+            }
+        }
+    }
+
+    if b == b'&' {
+        let scan_end = (idx + 128).min(bytes.len());
+        for j in idx + 1..scan_end {
+            if bytes[j] != b';' {
+                continue;
+            }
+            if html_entity_is_percent(bytes, j)
+                || html_entity_obfuscated_numeric_reference_value(bytes, j) == Some(37)
+            {
+                return Some(j + 1);
+            }
+        }
+
+        // Semicolon-less named percent entities (`&percnt...`).
+        if bytes.get(idx + 1..idx + 7).is_some_and(|frag| frag.eq_ignore_ascii_case(b"percnt")) {
+            let mut next = idx + 7;
+            if bytes.get(next).is_some_and(|b| *b == b';') {
+                next += 1;
+            }
+            return Some(next);
+        }
+        if bytes.get(idx + 1..idx + 8).is_some_and(|frag| frag.eq_ignore_ascii_case(b"percent")) {
+            let mut next = idx + 8;
+            if bytes.get(next).is_some_and(|b| *b == b';') {
+                next += 1;
+            }
+            return Some(next);
+        }
+
+        // Semicolon-less numeric percent entities (`&#37...` / `&#x25...`).
+        if bytes.get(idx + 1) == Some(&b'#') {
+            let mut j = idx + 2;
+            let base = match bytes.get(j) {
+                Some(b'x') | Some(b'X') => {
+                    j += 1;
+                    16u32
+                }
+                _ => 10u32,
+            };
+            let mut value = 0u32;
+            let mut significant = 0usize;
+            while j < bytes.len() && significant < 8 {
+                let b = bytes[j];
+                let digit = if base == 16 {
+                    let Some(v) = hex_value(b) else {
+                        break;
+                    };
+                    v as u32
+                } else if b.is_ascii_digit() {
+                    (b - b'0') as u32
+                } else {
+                    break;
+                };
+                if significant == 0 && digit == 0 {
+                    j += 1;
+                    continue;
+                }
+                value = value
+                    .checked_mul(base)
+                    .and_then(|v| v.checked_add(digit))
+                    .unwrap_or(u32::MAX);
+                significant += 1;
+                j += 1;
+                if value == 37 {
+                    return Some(j);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn percent_encoded_byte_ending_at(bytes: &[u8], end: usize) -> Option<u8> {
+    let scan_start = end.saturating_sub(256);
+    let mut i = end;
+    while i > scan_start {
+        i -= 1;
+        let Some(digits_start) = percent_marker_end(bytes, i) else {
+            continue;
+        };
+        if digits_start >= bytes.len() {
+            continue;
+        }
+        let Some((value, next)) = percent_encoded_byte_after_obfuscated_digits(bytes, digits_start) else {
+            continue;
+        };
+        if next == end {
+            return Some(value);
+        }
+    }
+    None
 }
 
 fn percent_encoded_path_separator_len(bytes: &[u8]) -> Option<usize> {
@@ -7843,6 +8293,21 @@ fn related_symbols_from_references(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn percent_encoded_byte_ending_at_supports_mixed_digit_encodings() {
+        let s = "%u0032&#70;credentials";
+        let start = s.find("credentials").expect("segment present");
+        assert_eq!(percent_encoded_byte_ending_at(s.as_bytes(), start), Some(b'/'));
+
+        let s = "u0025u0032&#70;credentials";
+        let start = s.find("credentials").expect("segment present");
+        assert_eq!(percent_encoded_byte_ending_at(s.as_bytes(), start), Some(b'/'));
+
+        let s = "&percnt;u0032&#70;credentials";
+        let start = s.find("credentials").expect("segment present");
+        assert_eq!(percent_encoded_byte_ending_at(s.as_bytes(), start), Some(b'/'));
+    }
 
     #[test]
     fn context_builder_enforces_budget_and_privacy() {

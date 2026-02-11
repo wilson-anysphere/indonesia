@@ -2162,6 +2162,54 @@ fn related_code_query_skips_escaped_percent_encoded_path_only_selections_with_es
 }
 
 #[test]
+fn related_code_query_skips_escaped_percent_encoded_path_only_selections_with_mixed_hex_digit_encodings()
+{
+    struct PanicSearch<'a> {
+        sep: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for escaped percent-encoded path selections with mixed hex digit encodings (sep={}); got query={query}",
+                self.sep
+            );
+        }
+    }
+
+    for sep in [
+        // Literal `%` followed by a mix of unicode escapes and numeric entities for the hex digits.
+        "%u0032&#70;",  // %2F
+        "%&#50;u0046",  // %2F
+        "%u0035&#67;",  // %5C
+        "%&#53;u0043",  // %5C
+        // Unicode-escaped percent marker (`u0025`) with mixed digit encodings.
+        "u0025u0032&#70;", // %2F
+        "u0025&#50;u0046", // %2F
+        "u0025u0035&#67;", // %5C
+        "u0025&#53;u0043", // %5C
+        // Hex-escaped percent marker (`x25`) with mixed digit encodings.
+        "x25u0032&#70;", // %2F
+        "x25&#50;u0046", // %2F
+        "x25u0035&#67;", // %5C
+        "x25&#53;u0043", // %5C
+        // HTML percent entities with mixed digit encodings.
+        "&percnt;u0032&#70;",    // %2F
+        "&#37;u0032&#70;",       // %2F
+        "&amp;#37;u0032&#70;",   // %2F
+        "&amp;percnt;u0032&#70;", // %2F
+    ] {
+        let search = PanicSearch { sep };
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for escaped percent-encoded path-only focal code with mixed hex digit encodings"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_unicode_escaped_path_only_selections_without_backslashes() {
     struct PanicSearch<'a> {
         focal_code: &'a str,
