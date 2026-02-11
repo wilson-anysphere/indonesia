@@ -12143,7 +12143,7 @@ fn infer_receiver_type_of_expr_ending_at(
         return None;
     }
 
-    let end = skip_whitespace_backwards(text, expr_end);
+    let end = skip_trivia_backwards(text, expr_end);
     if end == 0 {
         return None;
     }
@@ -12162,7 +12162,7 @@ fn infer_receiver_type_of_expr_ending_at(
 
         let close_bracket = end - 1;
         let open_bracket = find_matching_open_bracket(bytes, close_bracket)?;
-        let array_expr_end = skip_whitespace_backwards(text, open_bracket);
+        let array_expr_end = skip_trivia_backwards(text, open_bracket);
         if array_expr_end == 0 {
             return None;
         }
@@ -12236,7 +12236,7 @@ fn infer_receiver_type_of_expr_ending_at(
     if bytes.get(end - 1) == Some(&b'}') {
         let close_brace = end - 1;
         let open_brace = find_matching_open_brace(bytes, close_brace)?;
-        let before_open = skip_whitespace_backwards(text, open_brace);
+        let before_open = skip_trivia_backwards(text, open_brace);
         if before_open == 0 {
             return None;
         }

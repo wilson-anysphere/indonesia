@@ -1734,6 +1734,57 @@ class A {
 }
 
 #[test]
+fn completion_resolves_call_chain_receiver_with_trailing_block_comment_before_chained_call() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  Foo bar() { return this; }
+  void baz() {}
+}
+
+class A {
+  void m() {
+    new Foo()/*comment*/.bar().<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"baz"),
+        "expected completion list to contain Foo.baz for call-chain receiver `new Foo()/*comment*/.bar()`; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_call_chain_receiver_with_trailing_line_comment_before_chained_call() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  Foo bar() { return this; }
+  void baz() {}
+}
+
+class A {
+  void m() {
+    new Foo() // comment
+      .bar().<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"baz"),
+        "expected completion list to contain Foo.baz for call-chain receiver with line comment before `.bar()`; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_resolves_new_expression_receiver_with_trailing_line_comment() {
     let (db, file, pos) = fixture(
         r#"

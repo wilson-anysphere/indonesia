@@ -1502,6 +1502,57 @@ class A {
     }
 
     #[test]
+    fn call_chain_receiver_with_trailing_block_comment_before_chained_call_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class Foo {
+  Foo bar() { return this; }
+  void baz() {}
+}
+
+class A {
+  void m() {
+    new Foo()/*comment*/.bar().<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Foo"),
+            "expected receiver type to contain `Foo`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "baz"));
+    }
+
+    #[test]
+    fn call_chain_receiver_with_trailing_line_comment_before_chained_call_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class Foo {
+  Foo bar() { return this; }
+  void baz() {}
+}
+
+class A {
+  void m() {
+    new Foo() // comment
+      .bar().<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Foo"),
+            "expected receiver type to contain `Foo`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "baz"));
+    }
+
+    #[test]
     fn constructor_call_receiver_with_trailing_line_comment_is_semantic() {
         let ctx = ctx_for(
             r#"
