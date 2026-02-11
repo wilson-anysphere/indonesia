@@ -2230,6 +2230,47 @@ fn related_code_query_skips_hex_escaped_path_only_selections_without_backslashes
 }
 
 #[test]
+fn related_code_query_skips_braced_escaped_path_only_selections_without_backslashes() {
+    struct PanicSearch<'a> {
+        focal_code: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for braced escaped path selections without backslashes; focal_code={}; got query={query}",
+                self.focal_code
+            );
+        }
+    }
+
+    for focal_code in [
+        // Braced unicode escapes without the leading `\\`, e.g. `srcu{002F}main` (from `src\\u{002F}main`).
+        "homeu{002F}useru{002F}secretu{002F}credentials",
+        "srcu{002F}mainu{002F}java",
+        "homeu{005C}useru{005C}secretu{005C}credentials",
+        "srcu{005C}mainu{005C}java",
+        // Braced hex escapes without the leading `\\`, e.g. `srcx{2F}main` (from `src\\x{2F}main`).
+        "homex{2F}userx{2F}secretx{2F}credentials",
+        "srcx{2F}mainx{2F}java",
+        "homex{5C}userx{5C}secretx{5C}credentials",
+        "srcx{5C}mainx{5C}java",
+        // Mixed case.
+        "srcX{2F}mainX{2F}java",
+        "srcX{5C}mainX{5C}java",
+        // Long zero padding inside the braces.
+        "homeu{0000002F}useru{0000002F}secretu{0000002F}credentials",
+    ] {
+        let search = PanicSearch { focal_code };
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for braced escaped path-only focal code without backslashes"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_escaped_percent_encoded_unicode_separator_path_only_selections() {
     struct PanicSearch;
 

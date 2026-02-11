@@ -865,6 +865,28 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         if next == b'/' || next == b'\\' {
             return true;
         }
+        // Braced unicode/hex escapes can encode path separators without a leading backslash. When
+        // the backslash is stripped, the escape marker (`u`/`x`) becomes part of the preceding
+        // identifier (e.g. `srcu{002F}main`). Treat identifiers immediately followed by such
+        // braced escapes as path-like so path-only selections cannot trigger semantic search via
+        // low-signal query tokens like `srcu`.
+        if next == b'{' {
+            let mut j = end + 1;
+            let scan_end = (j + 1024).min(bytes.len());
+            while j < scan_end {
+                let b = bytes[j];
+                if b == b'}' {
+                    if braced_unicode_escape_is_path_separator(bytes, j) {
+                        return true;
+                    }
+                    break;
+                }
+                if !b.is_ascii_hexdigit() {
+                    break;
+                }
+                j += 1;
+            }
+        }
         // `user@host` (and similar) tokens can leak usernames and hostnames when the selection is a
         // log/config snippet rather than Java code. Skip identifiers immediately followed by `@`
         // (e.g. `alice` in `alice@localhost`).
