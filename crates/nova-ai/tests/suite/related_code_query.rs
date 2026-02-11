@@ -458,6 +458,7 @@ fn related_code_query_avoids_html_entity_percent_encoded_path_segments() {
         // Nested HTML escaping of the percent entity itself.
         "&amp;#37;2F",
         "&amp;#00000000037;2F",
+        "&amp;amp;amp;amp;#37;2F",
         "&amp;percnt;2F",
         // Nested percent-encoding (`%252F`) with HTML entity percent sign.
         "&#37;252F",
@@ -519,6 +520,7 @@ fn related_code_query_avoids_html_entity_percent_encoded_path_segments_without_s
         // Nested HTML escaping of the percent entity itself.
         "&amp;#372F",
         "&amp;#000000000372F",
+        "&amp;amp;amp;amp;#372F",
         "&amp;percnt2F",
         // Backslash separator (`%5C`).
         "&#375C",
@@ -1191,6 +1193,7 @@ fn related_code_query_avoids_named_html_entity_path_segments_without_semicolons(
         "&amp;amp;slash",
         "&amp;amp;bsol",
         "&amp;amp;Backslash",
+        "&amp;amp;amp;amp;sol",
     ] {
         let search = CapturingSearch::default();
         let focal_code = format!(
@@ -1248,12 +1251,14 @@ fn related_code_query_avoids_double_escaped_html_entity_path_segments() {
         "&amp;amp;#x00000000002F;",
         "&amp;amp;#00000000092;",
         "&amp;amp;#x00000000005C;",
+        "&amp;amp;amp;amp;#47;",
         "&amp;sol;",
         "&amp;bsol;",
         "&amp;Backslash;",
         "&amp;amp;sol;",
         "&amp;amp;bsol;",
         "&amp;amp;Backslash;",
+        "&amp;amp;amp;amp;sol;",
     ] {
         let search = CapturingSearch::default();
         let focal_code = format!(
@@ -1675,6 +1680,7 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections() {
         "&percnt;2Fhome&percnt;2Fuser&percnt;2Fsecret&percnt;2Fcredentials",
         "&amp;#37;2Fhome&amp;#37;2Fuser&amp;#37;2Fsecret&amp;#37;2Fcredentials",
         "&amp;#00000000037;2Fhome&amp;#00000000037;2Fuser&amp;#00000000037;2Fsecret&amp;#00000000037;2Fcredentials",
+        "&amp;amp;amp;amp;#37;2Fhome&amp;amp;amp;amp;#37;2Fuser&amp;amp;amp;amp;#37;2Fsecret&amp;amp;amp;amp;#37;2Fcredentials",
         "&amp;percnt;2Fhome&amp;percnt;2Fuser&amp;percnt;2Fsecret&amp;percnt;2Fcredentials",
         "&#37;252Fhome&#37;252Fuser&#37;252Fsecret&#37;252Fcredentials",
         "&amp;#37;252Fhome&amp;#37;252Fuser&amp;#37;252Fsecret&amp;#37;252Fcredentials",
@@ -1710,6 +1716,7 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_wit
         "&percnt2Fhome&percnt2Fuser&percnt2Fsecret&percnt2Fcredentials",
         "&amp;#372Fhome&amp;#372Fuser&amp;#372Fsecret&amp;#372Fcredentials",
         "&amp;#000000000372Fhome&amp;#000000000372Fuser&amp;#000000000372Fsecret&amp;#000000000372Fcredentials",
+        "&amp;amp;amp;amp;#372Fhome&amp;amp;amp;amp;#372Fuser&amp;amp;amp;amp;#372Fsecret&amp;amp;amp;amp;#372Fcredentials",
         "&amp;percnt2Fhome&amp;percnt2Fuser&amp;percnt2Fsecret&amp;percnt2Fcredentials",
         "&#375Chome&#375Cuser&#375Csecret&#375Ccredentials",
         "&#x255Chome&#x255Cuser&#x255Csecret&#x255Ccredentials",
@@ -2191,6 +2198,7 @@ fn related_code_query_skips_named_html_entity_path_only_selections_without_semic
         "&amp;amp;slashhome&amp;amp;slashuser&amp;amp;slashsecret&amp;amp;slashcredentials",
         "&amp;amp;bsolhome&amp;amp;bsoluser&amp;amp;bsolsecret&amp;amp;bsolcredentials",
         "&amp;amp;Backslashhome&amp;amp;Backslashuser&amp;amp;Backslashsecret&amp;amp;Backslashcredentials",
+        "&amp;amp;amp;amp;solhome&amp;amp;amp;amp;soluser&amp;amp;amp;amp;solsecret&amp;amp;amp;amp;solcredentials",
     ] {
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
         assert!(
@@ -2220,12 +2228,14 @@ fn related_code_query_skips_double_escaped_html_entity_path_only_selections() {
         "&amp;amp;#x2F;home&amp;amp;#x2F;user&amp;amp;#x2F;secret&amp;amp;#x2F;credentials",
         "&amp;amp;#92;home&amp;amp;#92;user&amp;amp;#92;secret&amp;amp;#92;credentials",
         "&amp;amp;#x5C;home&amp;amp;#x5C;user&amp;amp;#x5C;secret&amp;amp;#x5C;credentials",
+        "&amp;amp;amp;amp;#47;home&amp;amp;amp;amp;#47;user&amp;amp;amp;amp;#47;secret&amp;amp;amp;amp;#47;credentials",
         "&amp;sol;home&amp;sol;user&amp;sol;secret&amp;sol;credentials",
         "&amp;bsol;home&amp;bsol;user&amp;bsol;secret&amp;bsol;credentials",
         "&amp;Backslash;home&amp;Backslash;user&amp;Backslash;secret&amp;Backslash;credentials",
         "&amp;amp;sol;home&amp;amp;sol;user&amp;amp;sol;secret&amp;amp;sol;credentials",
         "&amp;amp;bsol;home&amp;amp;bsol;user&amp;amp;bsol;secret&amp;amp;bsol;credentials",
         "&amp;amp;Backslash;home&amp;amp;Backslash;user&amp;amp;Backslash;secret&amp;amp;Backslash;credentials",
+        "&amp;amp;amp;amp;sol;home&amp;amp;amp;amp;sol;user&amp;amp;amp;amp;sol;secret&amp;amp;amp;amp;sol;credentials",
     ] {
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
         assert!(

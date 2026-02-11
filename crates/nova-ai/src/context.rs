@@ -1549,7 +1549,7 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
         // We also support multiple layers (e.g. `&amp;amp;#47;`) by stripping a few `amp;` prefixes.
         let mut rest = name;
         let mut stripped = false;
-        for _ in 0..3 {
+        for _ in 0..8 {
             if rest.len() >= 4
                 && rest[..3].eq_ignore_ascii_case(b"amp")
                 && rest[3] == b';'
@@ -1710,7 +1710,7 @@ fn html_entity_is_percent(bytes: &[u8], end_semicolon: usize) -> bool {
         // Handle nested escapes like `&amp;#37;` or `&amp;percnt;` by stripping `amp;` prefixes.
         let mut rest = name;
         let mut stripped = false;
-        for _ in 0..3 {
+        for _ in 0..8 {
             if rest.len() >= 4 && rest[..3].eq_ignore_ascii_case(b"amp") && rest[3] == b';' {
                 rest = &rest[4..];
                 stripped = true;
@@ -3133,7 +3133,7 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
         }
 
         let mut j = i + 1;
-        for _ in 0..3 {
+        for _ in 0..8 {
             if j + 3 < bytes.len()
                 && bytes[j..j + 3].eq_ignore_ascii_case(b"amp")
                 && bytes[j + 3] == b';'
@@ -3294,7 +3294,7 @@ fn token_contains_html_entity_percent_encoded_path_separator(tok: &str) -> bool 
         }
 
         let mut j = i + 1;
-        for _ in 0..3 {
+        for _ in 0..8 {
             if j + 3 < bytes.len()
                 && bytes[j..j + 3].eq_ignore_ascii_case(b"amp")
                 && bytes[j + 3] == b';'
