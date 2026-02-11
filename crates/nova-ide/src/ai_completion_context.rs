@@ -929,6 +929,89 @@ class Test {
     }
 
     #[test]
+    fn static_receiver_field_hiding_blocks_inherited_static_field_inference() {
+        let ctx = ctx_for(
+            r#"
+class Base {
+  static String X = "x";
+}
+
+class Sub extends Base {
+  String X = "y";
+}
+
+class Test {
+  void m() {
+    Sub.X.<cursor>
+  }
+}
+"#,
+        );
+
+        assert!(
+            !ctx.available_methods.iter().any(|m| m == "length"),
+            "expected invalid `Sub.X` (hidden by instance field) to not infer String members; got receiver_type={:?} methods={:?}",
+            ctx.receiver_type,
+            ctx.available_methods
+        );
+    }
+
+    #[test]
+    fn static_receiver_field_hiding_blocks_inherited_interface_constant_inference() {
+        let ctx = ctx_for(
+            r#"
+interface I {
+  String S = "x";
+}
+
+class A implements I {
+  int S = 0;
+}
+
+class Test {
+  void m() {
+    A.S.<cursor>
+  }
+}
+"#,
+        );
+
+        assert!(
+            !ctx.available_methods.iter().any(|m| m == "length"),
+            "expected invalid `A.S` (hidden by instance field) to not infer String members; got receiver_type={:?} methods={:?}",
+            ctx.receiver_type,
+            ctx.available_methods
+        );
+    }
+
+    #[test]
+    fn static_receiver_inherited_interface_constant_is_resolved() {
+        let ctx = ctx_for(
+            r#"
+interface Base {
+  String S = "x";
+}
+
+interface Sub extends Base {}
+
+class Test {
+  void m() {
+    Sub.S.<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "length"));
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
     fn static_receiver_excludes_interface_static_methods() {
         let ctx = ctx_for(
             r#"

@@ -10686,21 +10686,22 @@ pub(crate) fn infer_receiver_type_for_member_access(
                         class_def
                             .fields
                             .iter()
-                            .find(|field| {
-                                field.name == field_name
-                                    && match call_kind {
-                                        CallKind::Static => field.is_static,
-                                        CallKind::Instance => true,
-                                    }
-                            })
-                            .map(|field| field.ty.clone()),
+                            .find(|field| field.name == field_name)
+                            .map(|field| (field.ty.clone(), field.is_static)),
                         class_def.super_class.clone(),
                         class_def.interfaces.clone(),
                     )
                 };
 
                 if let Some(field_ty) = field_ty {
-                    return Some(field_ty);
+                    // Field hiding applies even across static/instance boundaries: a non-static
+                    // field declared in a subclass hides a static field of the same name in a
+                    // superclass. When the receiver is a type (`CallKind::Static`), stop at the
+                    // nearest declaration and only accept it if it is static.
+                    if call_kind == CallKind::Static && !field_ty.1 {
+                        return None;
+                    }
+                    return Some(field_ty.0);
                 }
 
                 interfaces.extend(ifaces);
@@ -10730,20 +10731,17 @@ pub(crate) fn infer_receiver_type_for_member_access(
                         iface_def
                             .fields
                             .iter()
-                            .find(|field| {
-                                field.name == field_name
-                                    && match call_kind {
-                                        CallKind::Static => field.is_static,
-                                        CallKind::Instance => true,
-                                    }
-                            })
-                            .map(|field| field.ty.clone()),
+                            .find(|field| field.name == field_name)
+                            .map(|field| (field.ty.clone(), field.is_static)),
                         iface_def.interfaces.clone(),
                     )
                 };
 
                 if let Some(field_ty) = field_ty {
-                    return Some(field_ty);
+                    if call_kind == CallKind::Static && !field_ty.1 {
+                        return None;
+                    }
+                    return Some(field_ty.0);
                 }
 
                 for super_iface in ifaces {
