@@ -3644,6 +3644,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "unicode-ident",
  "url",
  "walkdir",
 ]

@@ -401,120 +401,93 @@ pub fn deanonymize_java_like_code(
         return code.to_string();
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum State {
-        Normal,
-        LineComment,
-        BlockComment,
-        String,
-        Char,
-    }
+    let mut out = String::with_capacity(code.len());
+    let mut chars = code.chars().peekable();
 
-    let bytes = code.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0usize;
-    let mut state = State::Normal;
-
-    while i < bytes.len() {
-        match state {
-            State::Normal => match bytes[i] {
-                b'/' if bytes.get(i + 1) == Some(&b'/') => {
-                    out.extend_from_slice(b"//");
-                    i += 2;
-                    state = State::LineComment;
-                }
-                b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                    out.extend_from_slice(b"/*");
-                    i += 2;
-                    state = State::BlockComment;
-                }
-                b'"' => {
-                    out.push(b'"');
-                    i += 1;
-                    state = State::String;
-                }
-                b'\'' => {
-                    out.push(b'\'');
-                    i += 1;
-                    state = State::Char;
-                }
-                b if is_ident_start(b as char) => {
-                    let start = i;
-                    i += 1;
-                    while i < bytes.len() && is_ident_continue(bytes[i] as char) {
-                        i += 1;
+    while let Some(ch) = chars.next() {
+        match ch {
+            // Line comment
+            '/' if chars.peek() == Some(&'/') => {
+                chars.next();
+                out.push('/');
+                out.push('/');
+                while let Some(c) = chars.next() {
+                    out.push(c);
+                    if c == '\n' || c == '\r' {
+                        break;
                     }
-
-                    let ident = &code[start..i];
-                    if let Some(original) = reverse_identifiers.get(ident) {
-                        out.extend_from_slice(original.as_bytes());
+                }
+            }
+            // Block comment
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                out.push('/');
+                out.push('*');
+                while let Some(c) = chars.next() {
+                    out.push(c);
+                    if c == '*' && chars.peek() == Some(&'/') {
+                        out.push('/');
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            // String literal
+            '"' => {
+                out.push('"');
+                while let Some(c) = chars.next() {
+                    out.push(c);
+                    match c {
+                        '\\' => {
+                            if let Some(escaped) = chars.next() {
+                                out.push(escaped);
+                            }
+                        }
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+            }
+            // Char literal
+            '\'' => {
+                out.push('\'');
+                while let Some(c) = chars.next() {
+                    out.push(c);
+                    match c {
+                        '\\' => {
+                            if let Some(escaped) = chars.next() {
+                                out.push(escaped);
+                            }
+                        }
+                        '\'' => break,
+                        _ => {}
+                    }
+                }
+            }
+            // Identifier token
+            c if is_ident_start(c) => {
+                let mut ident = String::new();
+                ident.push(c);
+                while let Some(&next) = chars.peek() {
+                    if is_ident_continue(next) {
+                        ident.push(next);
+                        chars.next();
                     } else {
-                        out.extend_from_slice(ident.as_bytes());
+                        break;
                     }
                 }
-                other => {
-                    out.push(other);
-                    i += 1;
-                }
-            },
-            State::LineComment => {
-                let b = bytes[i];
-                out.push(b);
-                i += 1;
-                if b == b'\n' || b == b'\r' {
-                    state = State::Normal;
-                }
-            }
-            State::BlockComment => {
-                if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
-                    out.extend_from_slice(b"*/");
-                    i += 2;
-                    state = State::Normal;
+
+                if let Some(original) = reverse_identifiers.get(&ident) {
+                    out.push_str(original);
                 } else {
-                    out.push(bytes[i]);
-                    i += 1;
+                    out.push_str(&ident);
                 }
             }
-            State::String => {
-                if bytes[i] == b'\\' {
-                    out.push(b'\\');
-                    i += 1;
-                    if i < bytes.len() {
-                        out.push(bytes[i]);
-                        i += 1;
-                    }
-                } else if bytes[i] == b'"' {
-                    out.push(b'"');
-                    i += 1;
-                    state = State::Normal;
-                } else {
-                    out.push(bytes[i]);
-                    i += 1;
-                }
-            }
-            State::Char => {
-                if bytes[i] == b'\\' {
-                    out.push(b'\\');
-                    i += 1;
-                    if i < bytes.len() {
-                        out.push(bytes[i]);
-                        i += 1;
-                    }
-                } else if bytes[i] == b'\'' {
-                    out.push(b'\'');
-                    i += 1;
-                    state = State::Normal;
-                } else {
-                    out.push(bytes[i]);
-                    i += 1;
-                }
-            }
+            other => out.push(other),
         }
     }
 
-    // The output is a byte-for-byte copy of the input except where we splice in `reverse_identifiers`
-    // values. Both are valid UTF-8, so this conversion should never fail.
-    String::from_utf8(out).unwrap_or_else(|_| code.to_string())
+    out
 }
 
 /// Apply de-anonymization to all user-visible fields of a multi-token completion.
@@ -549,11 +522,26 @@ pub fn deanonymize_additional_edit(
     }
 }
 fn is_ident_start(c: char) -> bool {
-    c == '_' || c == '$' || c.is_ascii_alphabetic()
+    if c.is_ascii() {
+        // Preserve the ASCII identifier rules used before Unicode-aware anonymization:
+        // - allow Java-specific leading `_` and `$`
+        // - allow ASCII letters
+        c == '_' || c == '$' || c.is_ascii_alphabetic()
+    } else {
+        // Conservative Unicode identifier support. Java allows a broad set of Unicode characters in
+        // identifiers; `XID_Start` is a widely-used subset that avoids treating punctuation/emoji as
+        // identifier starts.
+        unicode_ident::is_xid_start(c)
+    }
 }
 
 fn is_ident_continue(c: char) -> bool {
-    is_ident_start(c) || c.is_ascii_digit()
+    if c.is_ascii() {
+        // Preserve existing ASCII behavior exactly (ASCII letters + `_`/`$` + digits).
+        is_ident_start(c) || c.is_ascii_digit()
+    } else {
+        unicode_ident::is_xid_continue(c)
+    }
 }
 
 fn should_anonymize_identifier(ident: &str) -> bool {
@@ -1306,5 +1294,81 @@ class Example {
                 path: "com.example.Foo".to_string()
             }]
         );
+    }
+
+    #[test]
+    fn anonymizes_unicode_identifiers_and_deanonymizes_completion_round_trip() {
+        let code = r#"
+import java.util.List;
+
+class Café {
+    int π;
+
+    void число(List<String> 变量) {
+        int сумма = π + 变量.size();
+        System.out.println(сумма);
+    }
+}
+"#;
+
+        let mut anonymizer = CodeAnonymizer::new(CodeAnonymizerOptions {
+            anonymize_identifiers: true,
+            redact_sensitive_strings: false,
+            redact_numeric_literals: false,
+            strip_or_redact_comments: false,
+        });
+
+        let anonymized = anonymizer.anonymize(code);
+
+        // None of the original Unicode identifiers should leak into the anonymized output.
+        for original in ["Café", "π", "число", "变量", "сумма"] {
+            assert!(
+                !anonymized.contains(original),
+                "unicode identifier {original:?} leaked into anonymized output: {anonymized}"
+            );
+        }
+        // Our sample contains no other Unicode characters, so anonymization should yield ASCII.
+        assert!(
+            anonymized.is_ascii(),
+            "expected anonymized output to contain no Unicode chars, got: {anonymized}"
+        );
+
+        // Placeholders should appear.
+        let forward = anonymizer.identifier_map().clone();
+        assert_eq!(forward.len(), 5, "{forward:?}");
+        for i in 0..forward.len() {
+            assert!(
+                anonymized.contains(&format!("id_{i}")),
+                "expected anonymized output to contain id_{i}: {anonymized}"
+            );
+        }
+
+        // Forward+reverse maps should round-trip via completion de-anonymization.
+        let reverse = build_reverse_identifier_map(&forward);
+
+        let cafe = forward.get("Café").expect("Café mapped").clone();
+        let method = forward.get("число").expect("число mapped").clone();
+        let param = forward.get("变量").expect("变量 mapped").clone();
+
+        let mut insert_text = String::new();
+        insert_text.push_str(&cafe);
+        insert_text.push('.');
+        insert_text.push_str(&method);
+        insert_text.push_str("(${1:");
+        insert_text.push_str(&param);
+        insert_text.push_str("});");
+
+        let mut completion = MultiTokenCompletion {
+            label: format!("call {cafe}.{method}"),
+            insert_text,
+            format: MultiTokenInsertTextFormat::Snippet,
+            additional_edits: vec![],
+            confidence: 0.5,
+        };
+
+        deanonymize_multi_token_completion(&mut completion, &reverse);
+
+        assert_eq!(completion.label, "call Café.число");
+        assert_eq!(completion.insert_text, "Café.число(${1:变量});");
     }
 }
