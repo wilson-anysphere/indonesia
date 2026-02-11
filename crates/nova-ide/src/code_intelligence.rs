@@ -22458,12 +22458,18 @@ pub(crate) fn receiver_before_double_colon(text: &str, double_colon_offset: usiz
 
         // Arrays: `Foo[]::new`.
         if ch == ']' {
-            start -= 1;
-            if start > 0 && bytes.get(start - 1) == Some(&b'[') {
-                start -= 1;
-                continue;
+            let close_bracket = start - 1;
+            if let Some(open_bracket) = find_matching_open_bracket(bytes, close_bracket) {
+                // Treat as an array type suffix when the bracket pair is empty (whitespace/comments
+                // only). Otherwise this is likely an indexing expression (`arr[0]::...`), which we
+                // don't attempt to parse here (callers fall back to expression typing).
+                if skip_trivia_backwards(text, close_bracket) == open_bracket + 1 {
+                    start = open_bracket;
+                    continue;
+                }
             }
-            break;
+
+            return String::new();
         }
 
         // Parameterized types: `Foo<String>::bar`.

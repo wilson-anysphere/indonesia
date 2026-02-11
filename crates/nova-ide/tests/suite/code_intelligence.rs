@@ -2020,6 +2020,66 @@ class A {
 }
 
 #[test]
+fn completion_resolves_method_reference_class_literal_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    java.util.function.Supplier<String> sup = String.class::<|>;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"getName"),
+        "expected completion list to contain Class.getName for `String.class::`; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_method_reference_array_class_literal_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    java.util.function.Supplier<String> sup = String[].class::<|>;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"getName"),
+        "expected completion list to contain Class.getName for `String[].class::`; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_method_reference_array_class_literal_receiver_with_whitespace() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    java.util.function.Supplier<String> sup = String [ ] . class::<|>;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"getName"),
+        "expected completion list to contain Class.getName for `String [ ] . class::`; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_resolves_method_reference_qualified_this_field_chain_receiver() {
     let (db, file, pos) = fixture(
         r#"
