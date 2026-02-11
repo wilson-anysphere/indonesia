@@ -208,6 +208,11 @@ where
         // `---`/`+++` headers point at an excluded path.
         if unified_header_count == 1 {
             if let Some((old, new)) = extract_git_section_file_header_paths(section_lines)? {
+                if !has_rename_or_copy_metadata {
+                    if let Some(suffix) = common_path_suffix(&old, &new) {
+                        candidates.push(suffix);
+                    }
+                }
                 candidates.push(old);
                 candidates.push(new);
             }

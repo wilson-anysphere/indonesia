@@ -694,6 +694,42 @@ index 4444444,5555555..6666666
 }
 
 #[test]
+fn git_diff_combined_cc_header_with_custom_prefixes_is_filtered() {
+    // `--src-prefix/--dst-prefix` can affect combined diff `---/+++` headers. Ensure we still
+    // match repo-relative excluded_paths by considering the common suffix of the old/new paths.
+    let excluded_path = "src/secrets/merge.txt";
+
+    let excluded_section = r#"diff --cc old/src/secrets/merge.txt
+index 1111111,2222222..3333333
+--- old/src/secrets/merge.txt
++++ new/src/secrets/merge.txt
+@@@ -1,1 -1,1 +1,1 @@@
+-OLD
++MERGE_SECRET
+"#;
+
+    let allowed_section = r#"diff --git a/src/Ok.java b/src/Ok.java
+index 7777777..8888888 100644
+--- a/src/Ok.java
++++ b/src/Ok.java
+@@ -1 +1 @@
+-class Ok {}
++class Ok { int x = 29; }
+"#;
+
+    let diff = format!("{excluded_section}{allowed_section}");
+    let filtered = filter_diff_for_excluded_paths_for_tests(&diff, |path| {
+        path == Path::new(excluded_path)
+    });
+
+    let expected = format!("{}{allowed_section}", sentinel_line("\n"));
+    assert_eq!(filtered, expected);
+    assert_eq!(filtered.matches(OMITTED_SENTINEL).count(), 1);
+    assert!(!filtered.contains("MERGE_SECRET"));
+    assert!(filtered.contains(allowed_section));
+}
+
+#[test]
 fn git_diff_combined_diff_combined_header_is_supported() {
     let excluded_path = "src/secrets/combined.txt";
 
