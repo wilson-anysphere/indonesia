@@ -11,14 +11,47 @@ pub enum DapError {
     #[error("io error: {0}")]
     Io(#[from] io::Error),
 
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
+    #[error("json error: {message}")]
+    Json { message: String },
 
     #[error("dap protocol error: {0}")]
     Protocol(String),
 }
 
 pub type Result<T> = std::result::Result<T, DapError>;
+
+impl From<serde_json::Error> for DapError {
+    fn from(err: serde_json::Error) -> Self {
+        // `serde_json::Error` display strings can include user-provided scalar values (e.g.
+        // `invalid type: string "..."`). Avoid echoing those values because DAP payloads can
+        // include secrets (launch args/env, evaluated expressions, etc).
+        let message = sanitize_json_error_message(&err.to_string());
+        Self::Json { message }
+    }
+}
+
+fn sanitize_json_error_message(message: &str) -> String {
+    // Conservatively redact all double-quoted substrings. This keeps the error actionable (it
+    // retains the overall structure + line/column info) without echoing potentially-sensitive
+    // content embedded in strings.
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let Some(end) = rest.find('"') else {
+            // Unterminated quote: append the remainder and stop.
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
@@ -308,5 +341,28 @@ mod tests {
             }
             other => panic!("expected io error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn dap_error_json_does_not_echo_string_values() {
+        let secret = "dap-super-secret-token";
+        let err = serde_json::from_value::<Request>(serde_json::json!({
+            "seq": secret,
+            "type": "request",
+            "command": "initialize",
+            "arguments": {}
+        }))
+        .expect_err("expected type error");
+
+        let dap_err = DapError::from(err);
+        let message = dap_err.to_string();
+        assert!(
+            !message.contains(secret),
+            "expected DapError json message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected DapError json message to include redaction marker: {message}"
+        );
     }
 }
