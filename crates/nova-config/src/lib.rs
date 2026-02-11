@@ -1931,6 +1931,72 @@ fn sanitize_bugreport_log_line(line: &str) -> String {
     }
 }
 
+fn sanitize_bugreport_log_text(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::with_capacity(text.len());
+    for chunk in text.split_inclusive('\n') {
+        if let Some(line) = chunk.strip_suffix('\n') {
+            let line = line.trim_end_matches('\r');
+            out.push_str(&sanitize_bugreport_log_line(line));
+            out.push('\n');
+        } else {
+            let line = chunk.trim_end_matches('\r');
+            out.push_str(&sanitize_bugreport_log_line(line));
+        }
+    }
+    out
+}
+
+struct SanitizingMakeWriter<M> {
+    inner: M,
+}
+
+impl<'a, M> MakeWriter<'a> for SanitizingMakeWriter<M>
+where
+    M: MakeWriter<'a>,
+{
+    type Writer = SanitizingWriter<M::Writer>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        SanitizingWriter {
+            inner: self.inner.make_writer(),
+            bytes: Vec::new(),
+        }
+    }
+}
+
+struct SanitizingWriter<W: Write> {
+    inner: W,
+    bytes: Vec<u8>,
+}
+
+impl<W: Write> Write for SanitizingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.bytes.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<W: Write> Drop for SanitizingWriter<W> {
+    fn drop(&mut self) {
+        if self.bytes.is_empty() {
+            return;
+        }
+
+        let text = String::from_utf8_lossy(&self.bytes);
+        let sanitized = sanitize_bugreport_log_text(&text);
+        let _ = self.inner.write_all(sanitized.as_bytes());
+        let _ = self.inner.flush();
+    }
+}
+
 impl LogBuffer {
     pub fn new(capacity: usize) -> Self {
         Self {
@@ -2129,6 +2195,13 @@ fn init_tracing_inner(logging: &LoggingConfig, ai: Option<&AiConfig>) -> Arc<Log
         }
         if let Some(file) = base_file {
             make_writer = BoxMakeWriter::new(make_writer.and(MutexFileMakeWriter { file }));
+        }
+
+        if !logging.json {
+            // Best-effort: sanitize serde_json-style diagnostics before writing them to stderr/file
+            // sinks. This keeps logs safe by default without affecting the structured JSON logging
+            // mode (which must remain valid JSON).
+            make_writer = BoxMakeWriter::new(SanitizingMakeWriter { inner: make_writer });
         }
 
         let base_layer: Box<dyn tracing_subscriber::Layer<_> + Send + Sync> = if logging.json {
