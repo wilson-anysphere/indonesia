@@ -16,6 +16,8 @@ pub trait CacheStore {
     fn fetch(&self, url: &str, dest: &Path) -> Result<()>;
 }
 
+const URL_REDACTION: &str = "<redacted>";
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LocalStore;
 
@@ -29,7 +31,7 @@ impl CacheStore for LocalStore {
 
         if path.is_dir() {
             return Err(CacheError::UnsupportedFetchUrl {
-                url: url.to_string(),
+                url: sanitize_fetch_url(url),
             });
         }
 
@@ -46,8 +48,17 @@ pub struct HttpStore;
 
 impl CacheStore for HttpStore {
     fn fetch(&self, url: &str, dest: &Path) -> Result<()> {
-        let response = ureq::get(url).call().map_err(|err| CacheError::Http {
-            message: err.to_string(),
+        let safe_url = sanitize_fetch_url(url);
+        let response = ureq::get(url).call().map_err(|err| {
+            let message = match err {
+                ureq::Error::Status(code, _response) => {
+                    format!("server returned status {code} for {safe_url}")
+                }
+                ureq::Error::Transport(transport) => {
+                    format!("transport error for {safe_url}: {transport}")
+                }
+            };
+            CacheError::Http { message }
         })?;
 
         crate::util::atomic_write_with(dest, |out| {
@@ -66,7 +77,7 @@ pub struct S3Store;
 impl CacheStore for S3Store {
     fn fetch(&self, url: &str, dest: &Path) -> Result<()> {
         let (bucket, key) = parse_s3_url(url).ok_or_else(|| CacheError::UnsupportedFetchUrl {
-            url: url.to_string(),
+            url: sanitize_fetch_url(url),
         })?;
 
         let max_download_bytes = s3_max_download_bytes_from_env()?;
@@ -299,12 +310,109 @@ pub fn store_for_url(url: &str) -> Result<Box<dyn CacheStore>> {
         #[cfg(not(feature = "s3"))]
         {
             return Err(CacheError::UnsupportedFetchUrl {
-                url: url.to_string(),
+                url: sanitize_fetch_url(url),
             });
         }
     }
 
     Ok(Box::new(LocalStore))
+}
+
+fn sanitize_fetch_url(url: &str) -> String {
+    // Treat any `scheme://...` substring as a URL. Cache package URLs can be pre-signed (S3, etc.)
+    // and often contain credentials in query parameters; never echo those values in errors.
+    let Some(scheme_idx) = url.find("://") else {
+        return url.to_owned();
+    };
+
+    let (scheme, rest) = url.split_at(scheme_idx + 3);
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(authority_end);
+
+    let authority = if let Some(at_pos) = authority.rfind('@') {
+        let host = &authority[at_pos + 1..];
+        format!("{URL_REDACTION}@{host}")
+    } else {
+        authority.to_owned()
+    };
+
+    let tail = sanitize_url_tail(tail);
+    format!("{scheme}{authority}{tail}")
+}
+
+fn sanitize_url_tail(tail: &str) -> String {
+    let (before_fragment, has_fragment) = match tail.find('#') {
+        Some(pos) => (&tail[..pos], true),
+        None => (tail, false),
+    };
+
+    let sanitized = match before_fragment.find('?') {
+        Some(q_pos) => {
+            let (before_q, after_q) = before_fragment.split_at(q_pos + 1);
+            let query = &after_q;
+            let sanitized_query = sanitize_query(query);
+            format!("{before_q}{sanitized_query}")
+        }
+        None => before_fragment.to_owned(),
+    };
+
+    if has_fragment {
+        format!("{sanitized}#{URL_REDACTION}")
+    } else {
+        sanitized
+    }
+}
+
+fn sanitize_query(query: &str) -> String {
+    let mut out = String::new();
+    for (idx, part) in query.split('&').enumerate() {
+        if idx > 0 {
+            out.push('&');
+        }
+        if part.is_empty() {
+            continue;
+        }
+
+        match part.split_once('=') {
+            Some((key, _value)) => {
+                out.push_str(key);
+                out.push('=');
+                // Be conservative: query parameters often contain secrets under arbitrary keys.
+                out.push_str(URL_REDACTION);
+            }
+            None => {
+                out.push_str(part);
+                out.push('=');
+                out.push_str(URL_REDACTION);
+            }
+        }
+    }
+    out
+}
+
+#[cfg(all(test, not(feature = "s3")))]
+mod redaction_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_fetch_url_errors_redact_query_values_and_userinfo() {
+        let secret = "super-secret-token";
+        let url = format!("s3://user:pass@bucket/key?X-Amz-Signature={secret}&foo=bar#fragment");
+
+        let err = match store_for_url(&url) {
+            Ok(_) => panic!("expected s3 to be unsupported in tests"),
+            Err(err) => err,
+        };
+        let message = err.to_string();
+        assert!(
+            !message.contains(secret),
+            "CacheError should not echo URL query secrets: {message}"
+        );
+        assert!(
+            message.contains(URL_REDACTION),
+            "CacheError should include redaction marker: {message}"
+        );
+    }
 }
 
 #[cfg(all(test, feature = "s3"))]
