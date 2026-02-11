@@ -2591,6 +2591,53 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_wit
 }
 
 #[test]
+fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_with_escaped_hex_digits() {
+    struct PanicSearch<'a> {
+        sep: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for HTML entity percent-encoded path selections with escaped hex digits (sep={}); got query={query}",
+                self.sep
+            );
+        }
+    }
+
+    for sep in [
+        // `%2F` where the `%` is an HTML entity and the hex digits are unicode escapes.
+        "&#37;u0032u0046",
+        "&#x25;u0032u0046",
+        "&percnt;u0032u0046",
+        "&amp;#37;u0032u0046",
+        "&amp;percnt;u0032u0046",
+        // `%5C` where the `%` is an HTML entity and the hex digits are unicode escapes.
+        "&#37;u0035u0043",
+        "&#x25;u0035u0043",
+        "&percnt;u0035u0043",
+        "&amp;#37;u0035u0043",
+        "&amp;percnt;u0035u0043",
+        // Digit escapes via `xNN` sequences.
+        "&#37;x32x46",
+        "&#37;x35x43",
+        // Braced digit escapes.
+        "&#37;u{0032}u{0046}",
+        "&#37;u{0035}u{0043}",
+        "&#37;x{32}x{46}",
+        "&#37;x{35}x{43}",
+    ] {
+        let search = PanicSearch { sep };
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for HTML entity percent-encoded path-only focal code with escaped hex digits"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_without_semicolons() {
     struct PanicSearch;
 

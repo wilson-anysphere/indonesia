@@ -856,6 +856,30 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         if prev == b'}' && braced_unicode_escape_is_path_separator(bytes, start - 1) {
             return true;
         }
+        // HTML percent entities (`&#37;`, `&percnt;`, etc) treat the trailing semicolon as a
+        // boundary, but the hex digits can themselves be emitted via braced escapes (e.g.
+        // `&#37;u{0032}u{0046}home` == `%2Fhome`). Scan backwards for a percent entity whose
+        // following (obfuscated) hex byte ends immediately before the identifier.
+        if prev == b'}' {
+            let scan_start = start.saturating_sub(128);
+            let mut i = start;
+            while i > scan_start {
+                i -= 1;
+                if bytes[i] != b';' {
+                    continue;
+                }
+                if html_entity_is_percent(bytes, i)
+                    || html_entity_obfuscated_numeric_reference_value(bytes, i) == Some(37)
+                {
+                    if let Some((_value, next)) = percent_encoded_byte_after_obfuscated_digits(bytes, i + 1)
+                    {
+                        if next == start {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
     }
     if end < bytes.len() {
         if unicode_path_separator_at(bytes, end) {
@@ -1708,9 +1732,12 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                                     return true;
                                 }
                                 if value == 37
-                                    && bytes
+                                    && (bytes
                                         .get(j + 1..j + 3)
-                                        .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
+                                        .is_some_and(|prefix| {
+                                            prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit()
+                                        })
+                                        || percent_encoded_byte_after_obfuscated_digits(bytes, j + 1).is_some())
                                 {
                                     return true;
                                 }
@@ -1742,9 +1769,12 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                             return true;
                         }
                         if html_entity_is_percent(bytes, j)
-                            && bytes
+                            && (bytes
                                 .get(j + 1..j + 3)
-                                .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
+                                .is_some_and(|prefix| {
+                                    prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit()
+                                })
+                                || percent_encoded_byte_after_obfuscated_digits(bytes, j + 1).is_some())
                         {
                             return true;
                         }
@@ -1820,7 +1850,9 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 let mut j = bounds.end.saturating_add(1);
                 let scan_end = j.saturating_add(64).min(bytes.len());
                 while j <= scan_end {
-                    if percent_encoded_byte_before(bytes, j).is_some() {
+                    if percent_encoded_byte_before(bytes, j).is_some()
+                        || percent_encoded_byte_after_obfuscated_digits(bytes, j).is_some()
+                    {
                         return true;
                     }
                     j += 1;
@@ -1838,7 +1870,9 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 let mut j = end;
                 let scan_end = j.saturating_add(64).min(bytes.len());
                 while j <= scan_end {
-                    if percent_encoded_byte_before(bytes, j).is_some() {
+                    if percent_encoded_byte_before(bytes, j).is_some()
+                        || percent_encoded_byte_after_obfuscated_digits(bytes, j).is_some()
+                    {
                         return true;
                     }
                     j += 1;
@@ -1875,6 +1909,13 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                     .get(..2)
                     .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
                 {
+                    return true;
+                }
+
+                // The hex digits can themselves be escaped (e.g. `&#37;u0032u0046home`, aka
+                // `%2Fhome`). Treat these as path-like so obfuscated percent-encoded paths do not
+                // leak into semantic-search queries.
+                if percent_encoded_byte_after_obfuscated_digits(bytes, bounds.start).is_some() {
                     return true;
                 }
             }
@@ -4042,6 +4083,22 @@ fn parse_obfuscated_hex_digit(bytes: &[u8], idx: usize) -> Option<(u8, usize)> {
             return None;
         }
 
+        // Prefer fixed-width `xNN` escapes when they decode to an ASCII hex digit. This avoids
+        // consuming following identifier characters that are also hex digits (e.g.
+        // `x46credentials` should be interpreted as `F` + `credentials`, not as the codepoint
+        // `0x46c...`).
+        if idx + 3 <= bytes_len {
+            if let (Some(hi), Some(lo)) = (hex_value(bytes[idx + 1]), hex_value(bytes[idx + 2])) {
+                let value = ((hi as u32) << 4) | (lo as u32);
+                if value <= u32::from(u8::MAX) {
+                    let ch = value as u8;
+                    if hex_value(ch).is_some() {
+                        return Some((value, idx + 3));
+                    }
+                }
+            }
+        }
+
         let mut value = 0u32;
         let mut significant = 0usize;
         let mut j = idx + 1;
@@ -4093,6 +4150,21 @@ fn parse_obfuscated_hex_digit(bytes: &[u8], idx: usize) -> Option<(u8, usize)> {
         if idx >= bytes_len || bytes[idx] != b'\\' {
             return None;
         }
+
+        // Like the non-backslash `xNN` form above, prefer fixed-width `\\NN` escapes when they
+        // decode to an ASCII hex digit to avoid greedily consuming following identifier chars.
+        if idx + 3 <= bytes_len {
+            if let (Some(hi), Some(lo)) = (hex_value(bytes[idx + 1]), hex_value(bytes[idx + 2])) {
+                let value = ((hi as u32) << 4) | (lo as u32);
+                if value <= u32::from(u8::MAX) {
+                    let ch = value as u8;
+                    if hex_value(ch).is_some() {
+                        return Some((value, idx + 3));
+                    }
+                }
+            }
+        }
+
         let mut value = 0u32;
         let mut digits = 0usize;
         let mut j = idx + 1;
