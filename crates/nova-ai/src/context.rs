@@ -1204,6 +1204,16 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                             }
                             continue;
                         }
+                        if fragment.len() > 3 && fragment[..3].eq_ignore_ascii_case(b"amp") {
+                            fragment = &fragment[3..];
+                            if fragment.first().is_some_and(|b| *b == b';') {
+                                fragment = &fragment[1..];
+                            }
+                            if fragment.is_empty() {
+                                return false;
+                            }
+                            continue;
+                        }
                         break;
                     }
 
@@ -1394,10 +1404,29 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                     false
                 }
 
-                if html_numeric_fragment_is_path_separator(bytes, j)
-                    || html_named_fragment_is_path_separator(bytes, j)
-                    || html_percent_fragment_is_percent_encoded_separator(bytes, j)
-                {
+                fn html_fragment_is_path_separator(bytes: &[u8], mut start: usize) -> bool {
+                    for _ in 0..8 {
+                        if start + 2 < bytes.len()
+                            && bytes[start..start + 3].eq_ignore_ascii_case(b"amp")
+                        {
+                            start += 3;
+                            if start < bytes.len() && bytes[start] == b';' {
+                                start += 1;
+                            }
+                            if start >= bytes.len() {
+                                return false;
+                            }
+                            continue;
+                        }
+                        break;
+                    }
+
+                    html_numeric_fragment_is_path_separator(bytes, start)
+                        || html_named_fragment_is_path_separator(bytes, start)
+                        || html_percent_fragment_is_percent_encoded_separator(bytes, start)
+                }
+
+                if html_fragment_is_path_separator(bytes, j) {
                     return true;
                 }
                 // Allow a few nested escapes like `&amp;amp;#47;` by scanning for the *next* entity
@@ -1718,6 +1747,16 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
         for _ in 0..8 {
             if fragment.len() >= 4 && fragment[..3].eq_ignore_ascii_case(b"amp") && fragment[3] == b';' {
                 fragment = &fragment[4..];
+                if fragment.is_empty() {
+                    return false;
+                }
+                continue;
+            }
+            if fragment.len() > 3 && fragment[..3].eq_ignore_ascii_case(b"amp") {
+                fragment = &fragment[3..];
+                if fragment.first().is_some_and(|b| *b == b';') {
+                    fragment = &fragment[1..];
+                }
                 if fragment.is_empty() {
                     return false;
                 }
@@ -3797,6 +3836,16 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
                 && bytes[start + 3] == b';'
             {
                 start += 4;
+                if start >= bytes.len() {
+                    return false;
+                }
+                continue;
+            }
+            if start + 2 < bytes.len() && bytes[start..start + 3].eq_ignore_ascii_case(b"amp") {
+                start += 3;
+                if start < bytes.len() && bytes[start] == b';' {
+                    start += 1;
+                }
                 if start >= bytes.len() {
                     return false;
                 }
