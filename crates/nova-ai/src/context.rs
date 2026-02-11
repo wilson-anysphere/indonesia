@@ -1958,6 +1958,19 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
             // `&num;47;...`, which decodes to `#47;...` after one pass and then to `/...` after a
             // second HTML-decode pass).
             if after.is_some_and(|b| *b == b';') && html_entity_is_number_sign(bytes, bounds.end) {
+                // The number sign entity can also prefix an obfuscated percent marker (e.g.
+                // `&num;u007825u0032u0046...`), which eventually decodes to a percent-encoded path
+                // separator. Treat these as path-like so artifacts like `num` do not become
+                // semantic-search query tokens.
+                if percent_marker_end(bytes, bounds.end + 1)
+                    .and_then(|digits_start| {
+                        percent_encoded_byte_after_obfuscated_digits(bytes, digits_start)
+                    })
+                    .is_some_and(|(value, _)| percent_encoded_byte_is_path_like(value))
+                {
+                    return true;
+                }
+
                 if bytes
                     .get(bounds.end + 1..)
                     .is_some_and(numeric_fragment_after_hash_is_path_separator)
@@ -4891,6 +4904,15 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
             }
 
             if let Some(mut j) = number_sign_fragment_end(bytes, idx) {
+                // The number sign entity can be followed by an obfuscated percent marker directly,
+                // for example `u0026&num;u007825u0032u0046...` (aka `&num;x25...` after one decode
+                // pass) which ultimately decodes to `%2F...`. Detect and treat these as percent
+                // markers so low-signal fragments like `u0026` / `num` cannot become semantic-search
+                // queries.
+                if let Some(end) = percent_marker_end(bytes, j) {
+                    return Some(end);
+                }
+
                 let base = match bytes.get(j) {
                     Some(b'x') | Some(b'X') => {
                         j += 1;
