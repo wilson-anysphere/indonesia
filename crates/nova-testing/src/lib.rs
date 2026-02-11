@@ -153,8 +153,8 @@ pub enum NovaTestingError {
     XmlAttr(#[from] quick_xml::events::attributes::AttrError),
     #[error("utf-8 error: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
-    #[error("serde json error: {0}")]
-    SerdeJson(#[from] serde_json::Error),
+    #[error("serde json error: {message}")]
+    SerdeJson { message: String },
     #[error("unsupported build tool for project at {0}")]
     UnsupportedBuildTool(String),
     #[error("failed to execute build tool: {0}")]
@@ -162,3 +162,59 @@ pub enum NovaTestingError {
 }
 
 pub type Result<T> = std::result::Result<T, NovaTestingError>;
+
+impl From<serde_json::Error> for NovaTestingError {
+    fn from(err: serde_json::Error) -> Self {
+        // `serde_json::Error` display strings can include user-provided scalar values (e.g.
+        // `invalid type: string "..."`). Test runner payloads can include command output and
+        // environment-derived values; avoid echoing string values in errors.
+        let message = sanitize_json_error_message(&err.to_string());
+        Self::SerdeJson { message }
+    }
+}
+
+fn sanitize_json_error_message(message: &str) -> String {
+    // Conservatively redact all double-quoted substrings. This keeps the error actionable (it
+    // retains the overall structure + line/column info) without echoing potentially-sensitive
+    // content embedded in strings.
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let Some(end) = rest.find('"') else {
+            // Unterminated quote: append the remainder and stop.
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nova_testing_error_json_does_not_echo_string_values() {
+        let secret = "nova-testing-super-secret-token";
+        let err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+
+        let testing_err = NovaTestingError::from(err);
+        let message = testing_err.to_string();
+        assert!(
+            !message.contains(secret),
+            "expected NovaTestingError json message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected NovaTestingError json message to include redaction marker: {message}"
+        );
+    }
+}

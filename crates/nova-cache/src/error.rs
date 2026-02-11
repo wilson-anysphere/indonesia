@@ -11,8 +11,8 @@ pub enum CacheError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
+    #[error("json error: {message}")]
+    Json { message: String },
 
     #[error("bincode error: {0}")]
     Bincode(#[from] bincode::Error),
@@ -69,4 +69,60 @@ pub enum CacheError {
     #[cfg(feature = "s3")]
     #[error("s3 fetch failed: {message}")]
     S3 { message: String },
+}
+
+impl From<serde_json::Error> for CacheError {
+    fn from(err: serde_json::Error) -> Self {
+        // `serde_json::Error` display strings can include user-provided scalar values (e.g.
+        // `invalid type: string "..."`). Cache metadata can contain user paths and other sensitive
+        // inputs; avoid echoing string values in error messages.
+        let message = sanitize_json_error_message(&err.to_string());
+        Self::Json { message }
+    }
+}
+
+fn sanitize_json_error_message(message: &str) -> String {
+    // Conservatively redact all double-quoted substrings. This keeps the error actionable (it
+    // retains the overall structure + line/column info) without echoing potentially-sensitive
+    // content embedded in strings.
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let Some(end) = rest.find('"') else {
+            // Unterminated quote: append the remainder and stop.
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_error_json_does_not_echo_string_values() {
+        let secret = "nova-cache-super-secret-token";
+        let err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+
+        let cache_err = CacheError::from(err);
+        let message = cache_err.to_string();
+        assert!(
+            !message.contains(secret),
+            "expected CacheError json message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected CacheError json message to include redaction marker: {message}"
+        );
+    }
 }

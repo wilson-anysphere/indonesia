@@ -81,8 +81,8 @@ pub enum IndexPersistenceError {
     #[error(transparent)]
     Storage(#[from] nova_storage::StorageError),
 
-    #[error(transparent)]
-    Json(#[from] serde_json::Error),
+    #[error("{message}")]
+    Json { message: String },
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -94,10 +94,66 @@ pub enum IndexPersistenceError {
     ShardVectorLenMismatch { expected: usize, found: usize },
 }
 
+impl From<serde_json::Error> for IndexPersistenceError {
+    fn from(err: serde_json::Error) -> Self {
+        // `serde_json::Error` display strings can include user-provided scalar values (e.g.
+        // `invalid type: string "..."`). Persisted index manifests may contain user-controlled
+        // values; avoid echoing string values in errors.
+        let message = sanitize_json_error_message(&err.to_string());
+        Self::Json { message }
+    }
+}
+
+fn sanitize_json_error_message(message: &str) -> String {
+    // Conservatively redact all double-quoted substrings. This keeps the error actionable (it
+    // retains the overall structure + line/column info) without echoing potentially-sensitive
+    // content embedded in strings.
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let Some(end) = rest.find('"') else {
+            // Unterminated quote: append the remainder and stop.
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 #[derive(Clone, Debug)]
 pub struct LoadedIndexes {
     pub indexes: ProjectIndexes,
     pub invalidated_files: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn index_persistence_error_json_does_not_echo_string_values() {
+        let secret = "nova-index-secret-token";
+        let err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+
+        let index_err = IndexPersistenceError::from(err);
+        let message = index_err.to_string();
+        assert!(
+            !message.contains(secret),
+            "expected IndexPersistenceError json message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected IndexPersistenceError json message to include redaction marker: {message}"
+        );
+    }
 }
 
 #[derive(Debug)]
