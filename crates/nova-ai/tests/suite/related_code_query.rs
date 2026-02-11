@@ -2106,6 +2106,40 @@ fn related_code_query_skips_escaped_percent_encoded_path_only_selections_with_he
 }
 
 #[test]
+fn related_code_query_skips_unicode_escaped_path_only_selections_without_backslashes() {
+    struct PanicSearch<'a> {
+        focal_code: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for unicode-escaped path selections without backslashes; focal_code={}; got query={query}",
+                self.focal_code
+            );
+        }
+    }
+
+    for focal_code in [
+        // Common relative-path shapes where the `\\u` is stripped from the escape sequence.
+        "homeu002Fuseru002Fsecretu002Fcredentials",
+        "srcu002Fmainu002Fjava",
+        "homeu005Cuseru005Csecretu005Ccredentials",
+        "srcu005Cmainu005Cjava",
+        // Multiple-`u` variants seen in some language escape formats.
+        "homeuu002Fuseruuu002Fsecretuuuu002Fcredentials",
+        "homeuu005Cuseruuu005Csecretuuuu005Ccredentials",
+    ] {
+        let search = PanicSearch { focal_code };
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for unicode-escaped path-only focal code without backslashes"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_escaped_percent_encoded_unicode_separator_path_only_selections() {
     struct PanicSearch;
 

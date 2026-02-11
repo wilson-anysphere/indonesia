@@ -4849,11 +4849,6 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
             continue;
         }
 
-        if i > 0 && bytes[i - 1].is_ascii_alphanumeric() {
-            i += 1;
-            continue;
-        }
-
         let mut j = i + 1;
         // Some languages (notably Java) allow multiple `u` characters in a unicode escape
         // (e.g. `\uu002F`). Treat these as escape sequences so obfuscated paths cannot leak into
