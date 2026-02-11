@@ -36,6 +36,29 @@ impl From<url::ParseError> for AiError {
 
 impl fmt::Display for AiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fn sanitize_json_error_message(message: &str) -> String {
+            // `serde_json::Error` display strings can include user-provided scalar values (e.g.
+            // `invalid type: string "..."`). Conservatively redact quoted substrings so secrets/code
+            // from provider responses cannot leak through user-facing errors.
+            let mut out = String::with_capacity(message.len());
+            let mut rest = message;
+            while let Some(start) = rest.find('"') {
+                // Include the opening quote.
+                out.push_str(&rest[..start + 1]);
+                rest = &rest[start + 1..];
+
+                let Some(end) = rest.find('"') else {
+                    // Unterminated quote: append the remainder and stop.
+                    out.push_str(rest);
+                    return out;
+                };
+                out.push_str("<redacted>\"");
+                rest = &rest[end + 1..];
+            }
+            out.push_str(rest);
+            out
+        }
+
         fn sanitize(text: &str) -> String {
             // `reqwest::Error` display strings frequently embed request URLs. Some endpoints
             // encode credentials as URL query parameters (e.g. `?key=`). Use the same
@@ -51,6 +74,7 @@ impl fmt::Display for AiError {
             }
             AiError::Json(err) => {
                 let sanitized = sanitize(&err.to_string());
+                let sanitized = sanitize_json_error_message(&sanitized);
                 write!(f, "json error: {sanitized}")
             }
             AiError::Url(err) => write!(f, "url error: {err}"),
@@ -70,6 +94,24 @@ impl fmt::Display for AiError {
 
 impl fmt::Debug for AiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fn sanitize_json_error_message(message: &str) -> String {
+            let mut out = String::with_capacity(message.len());
+            let mut rest = message;
+            while let Some(start) = rest.find('"') {
+                out.push_str(&rest[..start + 1]);
+                rest = &rest[start + 1..];
+
+                let Some(end) = rest.find('"') else {
+                    out.push_str(rest);
+                    return out;
+                };
+                out.push_str("<redacted>\"");
+                rest = &rest[end + 1..];
+            }
+            out.push_str(rest);
+            out
+        }
+
         fn sanitize(text: &str) -> String {
             crate::audit::sanitize_error_for_tracing(text)
         }
@@ -84,7 +126,10 @@ impl fmt::Debug for AiError {
                 .finish(),
             AiError::Json(err) => f
                 .debug_struct("AiError::Json")
-                .field("message", &sanitize(&err.to_string()))
+                .field(
+                    "message",
+                    &sanitize_json_error_message(&sanitize(&err.to_string())),
+                )
                 .finish(),
             AiError::Url(err) => f.debug_tuple("AiError::Url").field(err).finish(),
             AiError::InvalidConfig(msg) => f
@@ -171,6 +216,29 @@ mod tests {
         assert!(
             ai_err.source().is_none(),
             "AiError::Http should not expose reqwest::Error via source()"
+        );
+    }
+
+    #[test]
+    fn ai_error_json_display_does_not_echo_string_values() {
+        let secret = "super-secret-token";
+        let err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+
+        let ai_err = AiError::from(err);
+        assert!(
+            matches!(ai_err, AiError::Json(_)),
+            "expected AiError::Json, got {ai_err:?}"
+        );
+
+        let message = ai_err.to_string();
+        assert!(
+            !message.contains(secret),
+            "AiError json display leaked secret token: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected AiError json display to include redaction marker: {message}"
         );
     }
 }
