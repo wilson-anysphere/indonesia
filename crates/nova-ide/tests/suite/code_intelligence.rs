@@ -2399,6 +2399,35 @@ class A {
 }
 
 #[test]
+fn completion_resolves_method_reference_static_field_accessed_via_instance() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  void baz() {}
+}
+
+class Holder {
+  static Foo foo = new Foo();
+}
+
+class A {
+  void m() {
+    Holder h = new Holder();
+    Runnable r = h.foo::<|>;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"baz"),
+        "expected completion list to contain Foo.baz for `h.foo::` where `foo` is static; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_resolves_method_reference_qualified_this_field_chain_receiver() {
     let (db, file, pos) = fixture(
         r#"

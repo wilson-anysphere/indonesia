@@ -10370,19 +10370,12 @@ fn method_reference_completions(
         }
 
         for part in parts.into_iter().skip(root_end + 1) {
-            ensure_type_fields_loaded(types, &ty);
-            let class_id = class_id_of_type(types, &ty)?;
-            let class_def = types.class(class_id)?;
-
-            let field = class_def.fields.iter().find(|field| {
-                field.name == part
-                    && match kind {
-                        CallKind::Static => field.is_static,
-                        CallKind::Instance => !field.is_static,
-                    }
-            })?;
-
-            ty = field.ty.clone();
+            // Mirror the dotted-chain field lookup behavior used by dot completions:
+            // - static receivers (`Type.field`) may only access static fields
+            // - instance receivers (`expr.field`) may access both instance and static fields
+            //   (discouraged but legal in Java: `instance.STATIC_FIELD`)
+            let field_ty = resolve_field_type_in_store(types, &ty, part, kind)?;
+            ty = ensure_local_class_receiver(types, analysis, field_ty);
             // Accessing a field produces a value receiver, even if the field itself is static.
             kind = CallKind::Instance;
         }
