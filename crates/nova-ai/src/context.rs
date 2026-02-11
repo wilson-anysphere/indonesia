@@ -909,16 +909,22 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 || token_contains_percent_encoded_path_separator(token)
                 || token_contains_unicode_escaped_path_separator(token)
                 || token_contains_hex_escaped_path_separator(token)
+                || token_contains_html_entity_path_separator(token)
                 || token_contains_obvious_secret_fragment(token)
                 || token_contains_sensitive_assignment(token)
             {
                 return true;
             }
 
-            let before = bounds.start.checked_sub(1).and_then(|idx| bytes.get(idx));
+            let before_idx = bounds.start.checked_sub(1);
+            let before = before_idx.and_then(|idx| bytes.get(idx));
             let after = bytes.get(bounds.end);
-            let before_is_sep = before.is_some_and(|b| *b == b'/' || *b == b'\\');
-            let after_is_sep = after.is_some_and(|b| *b == b'/' || *b == b'\\');
+
+            let before_is_sep = before.is_some_and(|b| *b == b'/' || *b == b'\\')
+                || before_idx.is_some_and(|idx| braced_unicode_escape_is_path_separator(bytes, idx))
+                || before_idx.is_some_and(|idx| html_entity_is_path_separator(bytes, idx));
+            let after_is_sep = after.is_some_and(|b| *b == b'/' || *b == b'\\')
+                || html_entity_is_path_separator(bytes, bounds.end);
             if before_is_sep || after_is_sep {
                 return true;
             }
@@ -1009,6 +1015,80 @@ fn braced_unicode_escape_is_path_separator(bytes: &[u8], end_brace: usize) -> bo
     }
 
     matches!(value, 0x2F | 0x5C)
+}
+
+fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
+    fn hex_value(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    if end_semicolon >= bytes.len() || bytes[end_semicolon] != b';' {
+        return false;
+    }
+
+    let mut amp = None;
+    let mut i = end_semicolon;
+    let mut scanned = 0usize;
+    while i > 0 && scanned < 16 {
+        i -= 1;
+        scanned += 1;
+        if bytes[i] == b'&' {
+            amp = Some(i);
+            break;
+        }
+    }
+
+    let Some(amp) = amp else {
+        return false;
+    };
+    if amp + 2 >= end_semicolon {
+        return false;
+    }
+    if bytes[amp + 1] != b'#' {
+        return false;
+    }
+
+    let mut j = amp + 2;
+    let base = match bytes.get(j) {
+        Some(b'x') | Some(b'X') => {
+            j += 1;
+            16u32
+        }
+        _ => 10u32,
+    };
+    if j >= end_semicolon {
+        return false;
+    }
+
+    let digits = &bytes[j..end_semicolon];
+    if digits.len() > 8 {
+        return false;
+    }
+
+    let mut value = 0u32;
+    for &b in digits {
+        let digit = if base == 16 {
+            let Some(v) = hex_value(b) else {
+                return false;
+            };
+            v as u32
+        } else if b.is_ascii_digit() {
+            (b - b'0') as u32
+        } else {
+            return false;
+        };
+        value = value
+            .checked_mul(base)
+            .and_then(|v| v.checked_add(digit))
+            .unwrap_or(u32::MAX);
+    }
+
+    matches!(value, 47 | 92)
 }
 
 fn identifier_looks_like_ipv6_segment(text: &str, start: usize, end: usize, tok: &str) -> bool {
@@ -1144,6 +1224,9 @@ fn related_code_query_fallback(focal_code: &str) -> String {
             continue;
         }
         if token_contains_hex_escaped_path_separator(raw_tok) {
+            continue;
+        }
+        if token_contains_html_entity_path_separator(raw_tok) {
             continue;
         }
 
@@ -1993,6 +2076,16 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
         i += 1;
     }
 
+    false
+}
+
+fn token_contains_html_entity_path_separator(tok: &str) -> bool {
+    let bytes = tok.as_bytes();
+    for (idx, b) in bytes.iter().enumerate() {
+        if *b == b';' && html_entity_is_path_separator(bytes, idx) {
+            return true;
+        }
+    }
     false
 }
 

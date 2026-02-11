@@ -373,6 +373,46 @@ fn related_code_query_avoids_hex_escaped_path_segments() {
 }
 
 #[test]
+fn related_code_query_avoids_html_entity_path_segments() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+    for sep in ["&#47;", "&#x2F;", "&#92;", "&#x5C;"] {
+        let search = CapturingSearch::default();
+        let focal_code = format!(
+            "{sep}home{sep}user{sep}my-{private_segment}-project{sep}src{sep}main{sep}java\nreturn foo.bar();\n"
+        );
+
+        let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+        let query = search
+            .last_query
+            .lock()
+            .expect("lock poisoned")
+            .clone()
+            .expect("query captured");
+
+        assert!(
+            !query.contains(private_segment),
+            "query should not include HTML entity path fragments: {query}"
+        );
+        assert!(
+            query.contains("foo") || query.contains("bar"),
+            "expected query to retain non-path identifiers, got: {query}"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_does_not_drop_identifiers_due_to_inline_string_paths() {
     #[derive(Default)]
     struct CapturingSearch {
@@ -706,6 +746,31 @@ fn related_code_query_skips_hex_escaped_path_only_selections() {
         assert!(
             req.related_code.is_empty(),
             "expected no related code for hex-escaped path-only focal code"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_html_entity_path_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for HTML entity path selections");
+        }
+    }
+
+    let search = PanicSearch;
+    for focal_code in [
+        "&#47;home&#47;user&#47;secret&#47;credentials",
+        "&#x2F;home&#x2F;user&#x2F;secret&#x2F;credentials",
+        "&#92;home&#92;user&#92;secret&#92;credentials",
+        "&#x5C;home&#x5C;user&#x5C;secret&#x5C;credentials",
+    ] {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for HTML entity path-only focal code"
         );
     }
 }
