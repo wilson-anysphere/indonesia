@@ -740,6 +740,26 @@ fn related_code_query_skips_mac_address_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_delimited_number_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for delimited-number-only related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    for focal_code in ["123-45-6789", "+1-202-555-0143"] {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for delimited-number-only focal code"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_numeric_literal_only_selections() {
     struct PanicSearch;
 

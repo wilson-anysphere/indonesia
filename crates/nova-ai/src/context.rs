@@ -1066,6 +1066,11 @@ fn related_code_query_fallback(focal_code: &str) -> String {
         if looks_like_numeric_literal_token(tok) {
             continue;
         }
+        // Avoid sending phone/SSN-like delimited number tokens (e.g. `123-45-6789`,
+        // `1-202-555-0143`). These are low-signal for semantic search and can leak PII.
+        if looks_like_delimited_number_token(tok) {
+            continue;
+        }
         // Network endpoints (IPv6, host:port) are similarly low-signal and can leak infrastructure
         // metadata.
         if looks_like_ipv6_address_token(tok) || looks_like_host_port_token(tok) {
@@ -1230,6 +1235,29 @@ fn looks_like_numeric_literal_token(tok: &str) -> bool {
     }
 
     i == bytes.len()
+}
+
+fn looks_like_delimited_number_token(tok: &str) -> bool {
+    let bytes = tok.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+
+    let mut digits = 0usize;
+    let mut separators = 0usize;
+    for &b in bytes {
+        if b.is_ascii_digit() {
+            digits += 1;
+            continue;
+        }
+        if matches!(b, b'+' | b'-' | b'.' | b'(' | b')') {
+            separators += 1;
+            continue;
+        }
+        return false;
+    }
+
+    digits >= 6 && separators > 0
 }
 
 fn looks_like_host_port_token(tok: &str) -> bool {
