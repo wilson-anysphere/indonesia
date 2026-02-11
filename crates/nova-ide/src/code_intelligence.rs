@@ -7780,15 +7780,16 @@ fn dotted_qualifier_prefix(text: &str, segment_start: usize) -> (usize, String) 
     let bytes = text.as_bytes();
     let mut start = segment_start;
     let mut cursor = segment_start;
+    let mut segments_rev: Vec<(usize, usize)> = Vec::new();
 
     while cursor > 0 {
-        let before = skip_whitespace_backwards(text, cursor);
+        let before = skip_trivia_backwards(text, cursor);
         if before == 0 || bytes.get(before - 1) != Some(&b'.') {
             break;
         }
         let dot_pos = before - 1;
         // Support whitespace on either side of the dot (`Foo . Bar` / `Foo. Bar`).
-        let seg_end = skip_whitespace_backwards(text, dot_pos);
+        let seg_end = skip_trivia_backwards(text, dot_pos);
         let mut seg_start = seg_end;
         while seg_start > 0 {
             let ch = bytes[seg_start - 1] as char;
@@ -7801,15 +7802,21 @@ fn dotted_qualifier_prefix(text: &str, segment_start: usize) -> (usize, String) 
         if seg_start == seg_end {
             break;
         }
+        segments_rev.push((seg_start, seg_end));
         start = seg_start;
         cursor = seg_start;
     }
 
-    let qualifier_raw = &text[start..segment_start];
-    let qualifier_prefix: String = qualifier_raw
-        .chars()
-        .filter(|ch| !ch.is_ascii_whitespace())
-        .collect();
+    let mut qualifier_prefix = String::new();
+    for (idx, (seg_start, seg_end)) in segments_rev.into_iter().rev().enumerate() {
+        if idx > 0 {
+            qualifier_prefix.push('.');
+        }
+        qualifier_prefix.push_str(text.get(seg_start..seg_end).unwrap_or(""));
+    }
+    if !qualifier_prefix.is_empty() {
+        qualifier_prefix.push('.');
+    }
     (start, qualifier_prefix)
 }
 
@@ -22022,14 +22029,95 @@ pub(crate) fn skip_whitespace_backwards(text: &str, mut offset: usize) -> usize 
 }
 
 pub(crate) fn skip_trivia_backwards(text: &str, mut offset: usize) -> usize {
-    // Best-effort: skip whitespace and trailing block comments (`/* ... */`).
+    // Best-effort: skip whitespace and trailing comments (`/* ... */` and `// ...`).
     //
-    // We intentionally do *not* attempt to skip line comments here; detecting `//` reliably without
-    // a full lexer is tricky (e.g. `//` inside string literals like URLs) and this helper is used
-    // in hot completion paths. Block comments are a common way to insert trivia between tokens
-    // inside expressions.
+    // This is intentionally lightweight and deterministic, but still attempts to avoid false
+    // positives from comment-like sequences in string/char literals (e.g. `http://...`) by
+    // scanning the current line and tracking whether `//` occurs outside quotes.
     let bytes = text.as_bytes();
     offset = offset.min(bytes.len());
+
+    fn trailing_line_comment_start(text: &str, line_start: usize, line_end: usize) -> Option<usize> {
+        let bytes = text.as_bytes();
+        let mut i = line_start;
+        let line_end = line_end.min(bytes.len());
+
+        let mut in_string = false;
+        let mut in_char = false;
+        let mut in_block_comment = false;
+
+        while i + 1 < line_end {
+            if in_block_comment {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    in_block_comment = false;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+                continue;
+            }
+
+            if in_string {
+                if bytes[i] == b'\\' {
+                    i = (i + 2).min(line_end);
+                    continue;
+                }
+                if bytes[i] == b'"' {
+                    in_string = false;
+                }
+                i += 1;
+                continue;
+            }
+
+            if in_char {
+                if bytes[i] == b'\\' {
+                    i = (i + 2).min(line_end);
+                    continue;
+                }
+                if bytes[i] == b'\'' {
+                    in_char = false;
+                }
+                i += 1;
+                continue;
+            }
+
+            // Not in a literal/comment.
+            if bytes[i] == b'/' {
+                match bytes.get(i + 1) {
+                    Some(b'/') => return Some(i),
+                    Some(b'*') => {
+                        in_block_comment = true;
+                        i += 2;
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+
+            if bytes[i] == b'"' {
+                // Best-effort: treat Java text-block delimiters (`"""`) as an opaque token so we
+                // can still detect `//` comments after a closing delimiter line.
+                if i + 2 < line_end && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
+                    i += 3;
+                    continue;
+                }
+                in_string = true;
+                i += 1;
+                continue;
+            }
+
+            if bytes[i] == b'\'' {
+                in_char = true;
+                i += 1;
+                continue;
+            }
+
+            i += 1;
+        }
+
+        None
+    }
+
     loop {
         while offset > 0 && (bytes[offset - 1] as char).is_ascii_whitespace() {
             offset -= 1;
@@ -22042,6 +22130,19 @@ pub(crate) fn skip_trivia_backwards(text: &str, mut offset: usize) -> usize {
                 offset = open_idx;
                 continue;
             }
+        }
+
+        // Line comment: if the current line contains a `//` outside of string/char literals, treat
+        // everything after it as trivia and skip it.
+        let line_start = text
+            .get(..offset)
+            .unwrap_or("")
+            .rfind('\n')
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+        if let Some(comment_start) = trailing_line_comment_start(text, line_start, offset) {
+            offset = comment_start;
+            continue;
         }
 
         break;

@@ -1371,6 +1371,78 @@ class A {
     }
 
     #[test]
+    fn constructor_call_receiver_with_trailing_line_comment_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class Foo {
+  void bar() {}
+}
+
+class A {
+  void m() {
+    new Foo() // comment
+      .<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Foo"),
+            "expected receiver type to contain `Foo`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "bar"));
+    }
+
+    #[test]
+    fn ident_receiver_with_trailing_line_comment_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class Foo {
+  void bar() {}
+}
+
+class A {
+  void m() {
+    Foo f = new Foo();
+    f // comment
+      .<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Foo"),
+            "expected receiver type to contain `Foo`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "bar"));
+    }
+
+    #[test]
+    fn string_literal_receiver_with_url_across_lines_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class A {
+  void m() {
+    "http://example.com"
+      .<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "length"));
+    }
+
+    #[test]
     fn constructor_call_receiver_with_leading_block_comment_after_dot_is_semantic() {
         let ctx = ctx_for(
             r#"

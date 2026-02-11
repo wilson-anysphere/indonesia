@@ -1606,6 +1606,78 @@ class A {
 }
 
 #[test]
+fn completion_resolves_new_expression_receiver_with_trailing_line_comment() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  void bar() {}
+}
+
+class A {
+  void m() {
+    new Foo() // comment
+      .<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"bar"),
+        "expected completion list to contain Foo.bar for `new Foo() //comment\\n  .` receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_ident_receiver_with_trailing_line_comment() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  void bar() {}
+}
+
+class A {
+  void m() {
+    Foo f = new Foo();
+    f // comment
+      .<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"bar"),
+        "expected completion list to contain Foo.bar for `f //comment\\n  .` receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_string_literal_receiver_with_url_across_lines() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    "http://example.com"
+      .<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain String.length for URL string receiver across lines; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_resolves_new_expression_receiver_with_leading_block_comment_after_dot() {
     let (db, file, pos) = fixture(
         r#"
