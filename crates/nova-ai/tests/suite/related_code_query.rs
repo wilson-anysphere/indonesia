@@ -817,6 +817,25 @@ fn related_code_query_skips_jwt_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_base64_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for base64-only related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=";
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for base64-only focal code"
+    );
+}
+
+#[test]
 fn related_code_query_skips_high_entropy_token_only_selections() {
     struct PanicSearch;
 

@@ -887,6 +887,7 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 || looks_like_uuid_token(token)
                 || looks_like_jwt_token(token)
                 || token_contains_long_hex_run(token)
+                || looks_like_base64_token(token)
                 || looks_like_high_entropy_token(token)
                 || looks_like_user_at_host_token(token)
                 || token_contains_obvious_secret_fragment(token)
@@ -1469,6 +1470,23 @@ fn looks_like_jwt_token(tok: &str) -> bool {
     }
 
     is_base64url_segment(first) && is_base64url_segment(second) && is_base64url_segment(third)
+}
+
+fn looks_like_base64_token(tok: &str) -> bool {
+    let token = tok
+        .trim_matches(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=')));
+    if token.len() < 32 {
+        return false;
+    }
+    if !token
+        .bytes()
+        .any(|b| matches!(b, b'+' | b'/' | b'='))
+    {
+        return false;
+    }
+    token
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
 }
 
 fn looks_like_high_entropy_token(tok: &str) -> bool {
