@@ -1071,6 +1071,66 @@ class A {
 }
 
 #[test]
+fn completion_resolves_call_chain_dotted_field_chain_method_call_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class Inner {
+  String s() { return "x"; }
+}
+
+class B {
+  Inner inner = new Inner();
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    b().inner.s().<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain String.length for call-chain dotted-field receiver method call; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_dotted_field_chain_method_call_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class Inner {
+  String s() { return "x"; }
+}
+
+class B {
+  Inner inner = new Inner();
+}
+
+class A {
+  B b = new B();
+
+  void m() {
+    b.inner.s().<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain String.length for dotted-field receiver method call; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_at_eof_after_whitespace_is_deterministic() {
     let (db, file, pos) = fixture(
         r#"

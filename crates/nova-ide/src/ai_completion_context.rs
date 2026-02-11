@@ -845,6 +845,37 @@ class A {
     }
 
     #[test]
+    fn call_chain_dotted_field_chain_method_call_receiver_type_and_methods_are_semantic() {
+        let ctx = ctx_for(
+            r#"
+class Inner {
+  String s() { return "x"; }
+}
+
+class B {
+  Inner inner = new Inner();
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    b().inner.s().<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "length"));
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
     fn dotted_field_chain_receiver_type_and_methods_are_semantic() {
         let ctx = ctx_for(
             r#"
@@ -857,6 +888,37 @@ class A {
 
   void m() {
     this.b.s.<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "length"));
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
+    fn dotted_field_chain_method_call_receiver_type_and_methods_are_semantic() {
+        let ctx = ctx_for(
+            r#"
+class Inner {
+  String s() { return "x"; }
+}
+
+class B {
+  Inner inner = new Inner();
+}
+
+class A {
+  B b = new B();
+
+  void m() {
+    this.b.inner.s().<cursor>
   }
 }
 "#,

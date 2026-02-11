@@ -11509,13 +11509,6 @@ fn infer_call_receiver_lexical(
     call: &CallExpr,
     budget: u8,
 ) -> (Type, CallKind) {
-    if let Some(receiver) = call.receiver.as_deref() {
-        let (mut receiver_ty, call_kind) =
-            infer_receiver(types, analysis, file_ctx, receiver, call.name_span.start);
-        receiver_ty = ensure_local_class_receiver(types, analysis, receiver_ty);
-        return (receiver_ty, call_kind);
-    }
-
     let Some(name_idx) = analysis
         .tokens
         .iter()
@@ -11528,12 +11521,74 @@ fn infer_call_receiver_lexical(
     // expression before the dot.
     if name_idx >= 1 && analysis.tokens[name_idx - 1].kind == TokenKind::Symbol('.') {
         let dot_offset = analysis.tokens[name_idx - 1].span.start;
-        let receiver = receiver_before_dot(text, dot_offset);
+
+        // Best-effort recovery for receivers that start after a call expression, e.g.
+        // `foo().bar.baz()` / `b().inner.s()` (the call parser only records `bar` / `inner` as the
+        // receiver token).
+        if let Some(receiver_ty) = infer_call_chain_field_access_receiver_type_in_store(
+            types, analysis, file_ctx, text, dot_offset, budget,
+        ) {
+            let receiver_ty = ensure_local_class_receiver(types, analysis, receiver_ty);
+            return (receiver_ty, CallKind::Instance);
+        }
+
+        // Prefer parsing the full dotted qualifier (e.g. `obj.field`, `pkg.Type`) rather than the
+        // single-token receiver returned by `receiver_before_dot` (which only supports
+        // `this`/`super` qualification).
+        let (_start, qualifier_prefix) = dotted_qualifier_prefix(text, call.name_span.start);
+        let receiver = qualifier_prefix
+            .strip_suffix('.')
+            .unwrap_or(qualifier_prefix.as_str())
+            .to_string();
+        let receiver = if receiver.is_empty() {
+            receiver_before_dot(text, dot_offset)
+        } else {
+            receiver
+        };
+
         if !receiver.is_empty() {
-            let (mut receiver_ty, call_kind) =
+            let (mut receiver_ty, mut call_kind) =
                 infer_receiver(types, analysis, file_ctx, &receiver, dot_offset);
             receiver_ty = ensure_local_class_receiver(types, analysis, receiver_ty);
-            return (receiver_ty, call_kind);
+
+            // Best-effort dotted field chain support for receivers like `obj.field`, where
+            // `infer_receiver` treats the full dotted expression as a type reference.
+            if receiver.contains('.')
+                && receiver
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.')
+                && class_id_of_type(types, &receiver_ty).is_none()
+            {
+                let parts: Vec<&str> = receiver.split('.').filter(|p| !p.is_empty()).collect();
+                if parts.len() >= 2 {
+                    let (mut ty, mut kind) =
+                        infer_receiver(types, analysis, file_ctx, parts[0], dot_offset);
+                    ty = ensure_local_class_receiver(types, analysis, ty);
+                    if !matches!(ty, Type::Unknown | Type::Error) {
+                        let mut ok = true;
+                        for part in parts.into_iter().skip(1) {
+                            let Some(field_ty) =
+                                resolve_field_type_in_store(types, &ty, part, kind)
+                            else {
+                                ok = false;
+                                break;
+                            };
+
+                            ty = ensure_local_class_receiver(types, analysis, field_ty);
+                            kind = CallKind::Instance;
+                        }
+
+                        if ok && !matches!(ty, Type::Unknown | Type::Error) {
+                            receiver_ty = ty;
+                            call_kind = CallKind::Instance;
+                        }
+                    }
+                }
+            }
+
+            if !matches!(receiver_ty, Type::Unknown | Type::Error) {
+                return (receiver_ty, call_kind);
+            }
         }
 
         // Handle common complex receivers like `new Foo().bar()`.
@@ -21693,6 +21748,43 @@ class A {
             .find("(b().s).")
             .expect("expected `(b().s).` in fixture")
             + "(b().s)".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert!(
+            ty.as_deref().unwrap_or_default().contains("String"),
+            "expected receiver type to contain `String`, got {ty:?}"
+        );
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_call_return_type_for_call_chain_field_receiver_method_call(
+    ) {
+        let java = r#"
+class Inner {
+  String s() { return "x"; }
+}
+
+class B {
+  Inner inner = new Inner();
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    b().inner.s().
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("s().")
+            .expect("expected `s().` in fixture")
+            + "s()".len();
 
         let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
         assert!(
