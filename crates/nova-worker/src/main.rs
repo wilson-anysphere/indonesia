@@ -241,11 +241,7 @@ fn sanitize_anyhow_error_message(err: &anyhow::Error) -> String {
     // `invalid type: string "..."`). Avoid echoing those values to stderr in the worker's
     // top-level error report.
     let message = format!("{err:#}");
-    if err.chain().any(contains_serde_json_error) {
-        sanitize_json_error_message(&message)
-    } else {
-        message
-    }
+    sanitize_error_message_text(&message, err.chain().any(contains_serde_json_error))
 }
 
 fn contains_serde_json_error(err: &(dyn std::error::Error + 'static)) -> bool {
@@ -272,6 +268,73 @@ fn contains_serde_json_error(err: &(dyn std::error::Error + 'static)) -> bool {
 
 fn sanitize_json_error_message(message: &str) -> String {
     nova_core::sanitize_json_error_message(message)
+}
+
+fn sanitize_toml_error_message(message: &str) -> String {
+    nova_core::sanitize_toml_error_message(message)
+}
+
+fn looks_like_serde_json_error_message(message: &str) -> bool {
+    message.contains("invalid type:")
+        || message.contains("invalid value:")
+        || message.contains("unknown field")
+        || message.contains("unknown variant")
+}
+
+fn looks_like_toml_error_message(message: &str) -> bool {
+    if message.contains("TOML parse error") {
+        return true;
+    }
+
+    if message.contains("TomlError {") && message.contains("raw: Some(") {
+        return true;
+    }
+
+    if message.contains("invalid semver version") || message.contains("unknown capability") {
+        return true;
+    }
+
+    if message.contains('|') || message.contains("-->") {
+        for line in message.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("-->") || trimmed.starts_with('|') {
+                return true;
+            }
+
+            let mut chars = trimmed.chars();
+            let mut saw_digit = false;
+            while let Some(ch) = chars.next() {
+                if ch.is_ascii_digit() {
+                    saw_digit = true;
+                    continue;
+                }
+                if saw_digit && ch.is_whitespace() {
+                    continue;
+                }
+                if saw_digit && ch == '|' {
+                    return true;
+                }
+                break;
+            }
+        }
+    }
+
+    // Best-effort: escaped newline snippet blocks (e.g. from debug output).
+    if message.contains("\\n") && (message.contains("\\n|") || message.contains("\\n1 |")) {
+        return true;
+    }
+
+    false
+}
+
+fn sanitize_error_message_text(message: &str, contains_serde_json: bool) -> String {
+    if looks_like_toml_error_message(message) {
+        sanitize_toml_error_message(message)
+    } else if contains_serde_json || looks_like_serde_json_error_message(message) {
+        sanitize_json_error_message(message)
+    } else {
+        message.to_owned()
+    }
 }
 
 async fn handle_request(
@@ -410,17 +473,9 @@ fn internal_error(err: anyhow::Error) -> ProtoRpcError {
     let details = format!("{err:#}");
     ProtoRpcError {
         code: RpcErrorCode::Internal,
-        message: if contains_serde_json {
-            sanitize_json_error_message(&message)
-        } else {
-            message
-        },
+        message: sanitize_error_message_text(&message, contains_serde_json),
         retryable: false,
-        details: Some(if contains_serde_json {
-            sanitize_json_error_message(&details)
-        } else {
-            details
-        }),
+        details: Some(sanitize_error_message_text(&details, contains_serde_json)),
     }
 }
 
@@ -1183,6 +1238,56 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_anyhow_error_message_does_not_echo_toml_snippet_blocks() {
+        let secret_suffix = "nova-worker-toml-snippet-secret";
+        let message = format!(
+            "TOML parse error at line 1, column 10\n1 | api_key = \"{secret_suffix}\"\n  |          ^\ninvalid type: string \"{secret_suffix}\", expected boolean"
+        );
+        assert!(
+            message.contains(secret_suffix),
+            "expected raw message to include secret so this test catches leaks: {message}"
+        );
+
+        let err = anyhow::Error::msg(message);
+        let sanitized = sanitize_anyhow_error_message(&err);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected sanitized error message to omit TOML snippet contents: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains("api_key ="),
+            "expected sanitized error message to strip snippet source lines: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected sanitized error message to include redaction marker: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn sanitize_anyhow_error_message_does_not_echo_toml_debug_raw_source() {
+        let secret_suffix = "nova-worker-toml-debug-secret";
+        let debug = format!(
+            "TomlError {{ message: \"invalid array\\nexpected `]`\", raw: Some(\"flag = [1,\\napi_key = \\\\\\\"{secret_suffix}\\\\\\\"\\n\"), keys: [], span: Some(11..12) }}"
+        );
+        assert!(
+            debug.contains(secret_suffix),
+            "expected raw debug message to include secret so this test catches leaks: {debug}"
+        );
+
+        let err = anyhow::Error::msg(debug);
+        let sanitized = sanitize_anyhow_error_message(&err);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected sanitized error message to omit TOML debug raw source: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("raw: Some(\"<redacted>\")"),
+            "expected sanitized error message to redact raw TOML source in TomlError debug output: {sanitized}"
+        );
+    }
+
+    #[test]
     fn internal_error_does_not_echo_serde_json_string_values() {
         use anyhow::Context as _;
 
@@ -1208,6 +1313,33 @@ mod tests {
         assert!(
             message.contains("<redacted>"),
             "expected internal RPC error to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn internal_error_does_not_echo_toml_snippet_blocks() {
+        let secret_suffix = "nova-worker-internal-toml-snippet-secret";
+        let message = format!(
+            "TOML parse error at line 1, column 10\n1 | api_key = \"{secret_suffix}\"\n  |          ^\ninvalid type: string \"{secret_suffix}\", expected boolean"
+        );
+        assert!(
+            message.contains(secret_suffix),
+            "expected raw message to include secret so this test catches leaks: {message}"
+        );
+
+        let rpc_err = internal_error(anyhow::Error::msg(message));
+        let combined = format!(
+            "{} {}",
+            rpc_err.message,
+            rpc_err.details.unwrap_or_default()
+        );
+        assert!(
+            !combined.contains(secret_suffix),
+            "expected internal RPC error to omit TOML snippet contents: {combined}"
+        );
+        assert!(
+            combined.contains("<redacted>"),
+            "expected internal RPC error to include redaction marker: {combined}"
         );
     }
 
