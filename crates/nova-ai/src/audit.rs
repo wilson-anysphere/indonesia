@@ -28,13 +28,13 @@ fn sanitize_text(text: &str) -> String {
         Lazy::new(|| Regex::new(r"(?i)(basic\s+)[A-Za-z0-9\-._=+/]{16,}").expect("valid regex"));
     static HEADER_VALUE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?i)(['"]?\b(?:authorization|x-[a-z0-9-]*api[-_]?key|api[-_]?key|access[_-]?token|token)\b['"]?)\s*:\s*([^\r\n]+)"#,
+            r#"(?i)(['"]?(?:[a-z0-9]+[-_])*(?:authorization|api[-_]?key|access[_-]?token|token|password|passwd|passphrase|secret)(?:[-_][a-z0-9]+)*['"]?)\s*:\s*([^\r\n]+)"#,
         )
         .expect("valid regex")
     });
     static ASSIGNMENT_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r"(?i)\b(authorization|x-[a-z0-9-]*api[-_]?key|api[-_]?key|access[_-]?token|token)\b\s*=\s*([^\s\r\n]+)",
+            r"(?i)\b((?:[a-z0-9]+[-_])*(?:authorization|api[-_]?key|access[_-]?token|token|password|passwd|passphrase|secret)(?:[-_][a-z0-9]+)*)\b\s*=\s*([^\s\r\n]+)",
         )
         .expect("valid regex")
     });
@@ -339,6 +339,20 @@ sk-proj-012345678901234567890123456789"#;
             "output should not retain query/fragment: {out}"
         );
         assert!(out.contains("https://example.com/path"), "{out}");
+    }
+
+    #[test]
+    fn sanitize_text_redacts_password_and_secret_assignments() {
+        let password = "hunter2";
+        let secret = "super-secret";
+        let input = format!(
+            "db_password={password}\nclient_secret={secret}\npassword: {password}\nsecret: {secret}\n"
+        );
+
+        let out = sanitize_prompt_for_audit(&input);
+        assert!(!out.contains(password), "{out}");
+        assert!(!out.contains(secret), "{out}");
+        assert!(out.contains("[REDACTED]"), "{out}");
     }
 
     #[test]
