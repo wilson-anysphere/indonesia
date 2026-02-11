@@ -2140,6 +2140,40 @@ fn related_code_query_skips_unicode_escaped_path_only_selections_without_backsla
 }
 
 #[test]
+fn related_code_query_skips_hex_escaped_path_only_selections_without_backslashes() {
+    struct PanicSearch<'a> {
+        focal_code: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for hex-escaped path selections without backslashes; focal_code={}; got query={query}",
+                self.focal_code
+            );
+        }
+    }
+
+    for focal_code in [
+        // Common relative-path shapes where the leading `\\x` is stripped from the escape sequence.
+        "homex2Fuserx2Fsecretx2Fcredentials",
+        "srcx2Fmainx2Fjava",
+        "homex5Cuserx5Csecretx5Ccredentials",
+        "srcx5Cmainx5Cjava",
+        // Mixed case.
+        "srcX2FmainX2Fjava",
+        "srcX5CmainX5Cjava",
+    ] {
+        let search = PanicSearch { focal_code };
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for hex-escaped path-only focal code without backslashes"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_escaped_percent_encoded_unicode_separator_path_only_selections() {
     struct PanicSearch;
 

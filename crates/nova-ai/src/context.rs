@@ -4968,6 +4968,13 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
         return false;
     }
 
+    // Hex-escaped path separators sometimes appear in logs without the leading backslash (e.g.
+    // `srcx2Fmainx2Fjava` when `\x2F` escapes are stripped). Be conservative: treat a token as
+    // path-like when we see multiple separator escapes, even if the `x` is embedded inside an
+    // identifier. Requiring multiple occurrences avoids false positives for common identifiers
+    // like `Matrix2f` that include a single `x2f` substring.
+    let mut embedded_separator_count = 0usize;
+
     let mut i = 0usize;
     while i + 2 < bytes.len() {
         let b = bytes[i];
@@ -4976,10 +4983,7 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
             continue;
         }
 
-        if i > 0 && bytes[i - 1].is_ascii_alphanumeric() {
-            i += 1;
-            continue;
-        }
+        let embedded = i > 0 && bytes[i - 1].is_ascii_alphanumeric();
 
         if bytes.get(i + 1).is_some_and(|b| *b == b'{') {
             let mut value = 0u32;
@@ -5003,14 +5007,26 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
 
             if significant > 0 && j < bytes.len() && bytes[j] == b'}' {
                 if html_entity_codepoint_is_path_separator(value) {
-                    return true;
+                    if !embedded {
+                        return true;
+                    }
+                    embedded_separator_count += 1;
+                    if embedded_separator_count >= 2 {
+                        return true;
+                    }
                 }
                 if value == 37
                     && bytes
                         .get(j + 1..j + 3)
                         .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
                 {
-                    return true;
+                    if !embedded {
+                        return true;
+                    }
+                    embedded_separator_count += 1;
+                    if embedded_separator_count >= 2 {
+                        return true;
+                    }
                 }
             }
         } else {
@@ -5029,14 +5045,28 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
                 significant += 1;
                 j += 1;
                 if html_entity_codepoint_is_path_separator(value) {
-                    return true;
+                    if !embedded {
+                        return true;
+                    }
+                    embedded_separator_count += 1;
+                    if embedded_separator_count >= 2 {
+                        return true;
+                    }
+                    break;
                 }
                 if value == 37
                     && bytes
                         .get(j..j + 2)
                         .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
                 {
-                    return true;
+                    if !embedded {
+                        return true;
+                    }
+                    embedded_separator_count += 1;
+                    if embedded_separator_count >= 2 {
+                        return true;
+                    }
+                    break;
                 }
             }
         }
