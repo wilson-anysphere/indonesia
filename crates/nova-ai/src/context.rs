@@ -833,6 +833,16 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         if prev == b'/' || prev == b'\\' {
             return true;
         }
+        if percent_encoded_byte_before(bytes, start).is_some_and(percent_encoded_byte_is_path_like) {
+            return true;
+        }
+        if bytes
+            .get(start)
+            .is_some_and(|b| b.is_ascii_hexdigit())
+            && percent_encoded_byte_before(bytes, start + 1).is_some_and(percent_encoded_byte_is_path_like)
+        {
+            return true;
+        }
         if prev == b';'
             && html_entity_obfuscated_numeric_reference_value(bytes, start - 1)
                 .is_some_and(html_entity_codepoint_is_path_separator)
@@ -1676,6 +1686,19 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                     .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
                 {
                     return true;
+                }
+
+                // Some inputs encode the hex digits themselves as numeric entities, e.g.
+                // `&percnt;&#50;&#70;home` (aka `%2Fhome`). Scan forward a little to see if a
+                // percent-encoded byte (with entity-encoded digits) starts immediately after the
+                // percent entity and treat the identifier as path-like when it does.
+                let mut j = bounds.end.saturating_add(1);
+                let scan_end = j.saturating_add(64).min(bytes.len());
+                while j <= scan_end {
+                    if percent_encoded_byte_before(bytes, j).is_some() {
+                        return true;
+                    }
+                    j += 1;
                 }
             }
 
@@ -3275,6 +3298,144 @@ fn html_entity_is_percent(bytes: &[u8], end_semicolon: usize) -> bool {
     }
 
     value == 37
+}
+
+fn percent_encoded_byte_is_path_like(value: u8) -> bool {
+    value == b'/' || value == b'\\' || value >= 0x80
+}
+
+fn percent_encoded_byte_before(bytes: &[u8], idx: usize) -> Option<u8> {
+    fn hex_value(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    fn html_numeric_entity_value(bytes: &[u8], end_semicolon: usize) -> Option<(usize, u32)> {
+        if end_semicolon >= bytes.len() || bytes[end_semicolon] != b';' {
+            return None;
+        }
+
+        let mut amp = None;
+        let mut i = end_semicolon;
+        let mut scanned = 0usize;
+        while i > 0 && scanned < 256 {
+            i -= 1;
+            scanned += 1;
+            if bytes[i] == b'&' {
+                amp = Some(i);
+                break;
+            }
+        }
+
+        let amp = amp?;
+        if amp + 2 >= end_semicolon || bytes[amp + 1] != b'#' {
+            return None;
+        }
+
+        let mut j = amp + 2;
+        let base = match bytes.get(j) {
+            Some(b'x') | Some(b'X') => {
+                j += 1;
+                16u32
+            }
+            _ => 10u32,
+        };
+        if j >= end_semicolon {
+            return None;
+        }
+
+        let mut digits = &bytes[j..end_semicolon];
+        while digits.first().is_some_and(|b| *b == b'0') {
+            digits = &digits[1..];
+        }
+        if digits.is_empty() || digits.len() > 8 {
+            return None;
+        }
+
+        let mut value = 0u32;
+        for &b in digits {
+            let digit = if base == 16 {
+                hex_value(b)? as u32
+            } else if b.is_ascii_digit() {
+                (b - b'0') as u32
+            } else {
+                return None;
+            };
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+        }
+
+        Some((amp, value))
+    }
+
+    fn parse_hex_digit(bytes: &[u8], cursor: &mut usize) -> Option<u8> {
+        if *cursor == 0 {
+            return None;
+        }
+
+        let b = bytes[*cursor - 1];
+        if let Some(v) = hex_value(b) {
+            *cursor -= 1;
+            return Some(v);
+        }
+
+        if b != b';' {
+            return None;
+        }
+
+        if let Some((amp, value)) = html_numeric_entity_value(bytes, *cursor - 1) {
+            if value <= u32::from(u8::MAX) {
+                let ch = value as u8;
+                if let Some(v) = hex_value(ch) {
+                    *cursor = amp;
+                    return Some(v);
+                }
+            }
+        }
+
+        if let Some(value) = html_entity_obfuscated_numeric_reference_value(bytes, *cursor - 1) {
+            if value <= u32::from(u8::MAX) {
+                let ch = value as u8;
+                if let Some(v) = hex_value(ch) {
+                    // Conservative: treat the terminating `;` as a hex digit even if we cannot
+                    // reliably determine the entity start.
+                    *cursor = (*cursor).saturating_sub(1);
+                    return Some(v);
+                }
+            }
+        }
+
+        None
+    }
+
+    let mut cursor = idx.min(bytes.len());
+
+    let lo = parse_hex_digit(bytes, &mut cursor)?;
+    let hi = parse_hex_digit(bytes, &mut cursor)?;
+
+    if cursor == 0 {
+        return None;
+    }
+
+    let marker = bytes[cursor - 1];
+    if marker == b'%' {
+        return Some((hi << 4) | lo);
+    }
+    if marker == b';' {
+        if html_entity_is_percent(bytes, cursor - 1)
+            || html_entity_obfuscated_numeric_reference_value(bytes, cursor - 1) == Some(37)
+        {
+            return Some((hi << 4) | lo);
+        }
+    }
+
+    None
 }
 
 fn percent_encoded_path_separator_len(bytes: &[u8]) -> Option<usize> {
@@ -5027,15 +5188,12 @@ fn token_contains_html_entity_percent_encoded_path_separator(tok: &str) -> bool 
         return false;
     }
 
-    for (idx, b) in bytes.iter().enumerate() {
-        if *b != b';' {
+    for i in 1..=bytes.len() {
+        let b = bytes[i - 1];
+        if !(b.is_ascii_hexdigit() || b == b';') {
             continue;
         }
-        if html_entity_obfuscated_numeric_reference_value(bytes, idx) == Some(37)
-            && bytes
-                .get(idx + 1..idx + 3)
-                .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
-        {
+        if percent_encoded_byte_before(bytes, i).is_some_and(percent_encoded_byte_is_path_like) {
             return true;
         }
     }

@@ -2318,6 +2318,47 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_wit
 }
 
 #[test]
+fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_with_hex_digit_entities()
+{
+    struct PanicSearch<'a> {
+        sep: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for HTML entity percent-encoded path selections with hex digit entities (sep={}); got query={query}",
+                self.sep
+            );
+        }
+    }
+
+    for sep in [
+        // Percent entity followed by digit entities for `%2F` / `%5C`.
+        "&#37;&#50;&#70;",
+        "&#37;&#50;&#102;",
+        "&#37;&#53;&#67;",
+        "&#37;&#53;&#99;",
+        // Mixed literal + entity hex digits.
+        "&#37;2&#70;",
+        "&#37;&#50;F",
+        "&#37;5&#67;",
+        "&#37;&#53;C",
+        // Named percent entity.
+        "&percnt;&#50;&#70;",
+        "&percnt;&#53;&#67;",
+    ] {
+        let search = PanicSearch { sep };
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for HTML entity percent-encoded path-only focal code with hex digit entities"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_without_semicolons() {
     struct PanicSearch;
 
