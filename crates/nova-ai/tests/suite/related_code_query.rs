@@ -2124,9 +2124,13 @@ fn related_code_query_skips_escaped_percent_encoded_path_only_selections_with_es
         // `%2F` with each hex digit escaped via unicode escapes.
         "u0025u0032u0046",
         "u0025u0032u0066",
+        // `%2F` where the unicode escape prefix (`u`) for the percent marker is itself emitted via
+        // a unicode escape (`u0075` == 'u'), yielding `u00750025...` across multiple decode passes.
+        "u00750025u0032u0046",
         // `%5C` with each hex digit escaped via unicode escapes.
         "u0025u0035u0043",
         "u0025u0035u0063",
+        "u00750025u0035u0043",
         // `%2F` and `%5C` with each hex digit escaped via `xNN` sequences.
         "x25x32x46",
         "x25x32x66",
@@ -2157,6 +2161,33 @@ fn related_code_query_skips_escaped_percent_encoded_path_only_selections_with_es
         assert!(
             req.related_code.is_empty(),
             "expected no related code for escaped percent-encoded path-only focal code with escaped hex digits"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_nested_unicode_escape_percent_marker_short_paths() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for nested unicode-escape percent markers in short path selections; got query={query}"
+            );
+        }
+    }
+
+    let search = PanicSearch;
+    for focal_code in [
+        // `u0075` decodes to `u`, yielding `u00252Fsrc` and then `%2Fsrc` across decode passes.
+        "u00750025u0032u0046src",
+        // Same pattern for `%5C`.
+        "u00750025u0035u0043src",
+    ] {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for short path-only focal code with nested unicode percent markers"
         );
     }
 }

@@ -5358,6 +5358,25 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
             if value == 0x25 {
                 return Some(next);
             }
+            if matches!(value, 0x55 | 0x75) {
+                // The unicode escape prefix (`u`/`U`) can itself be emitted via another escape
+                // sequence (e.g. `u00750025...` == `u0025...` after decoding). Treat these as
+                // percent markers so nested unicode escapes cannot leak into semantic-search
+                // queries.
+                if let Some(end) = marker_end_after_unicode_escape_u_prefix(bytes, next, value == 0x55)
+                    .or_else(|| {
+                        // Fail closed: accept `U0025`-style forms even when the escape uses
+                        // 4-digit digits after an uppercase prefix.
+                        if value == 0x55 {
+                            marker_end_after_unicode_escape_u_prefix(bytes, next, false)
+                        } else {
+                            None
+                        }
+                    })
+                {
+                    return Some(end);
+                }
+            }
             if matches!(value, 0x58 | 0x78) {
                 if let Some(end) = marker_end_after_hex_escape_x_prefix(bytes, next) {
                     return Some(end);
@@ -5385,6 +5404,21 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
             if value == 0x25 {
                 return Some(next);
             }
+            if matches!(value, 0x55 | 0x75) {
+                // Hex escapes can also be used to emit a unicode escape prefix (`x{75}0025...`),
+                // which eventually decodes to `%...` across multiple passes.
+                if let Some(end) = marker_end_after_unicode_escape_u_prefix(bytes, next, value == 0x55)
+                    .or_else(|| {
+                        if value == 0x55 {
+                            marker_end_after_unicode_escape_u_prefix(bytes, next, false)
+                        } else {
+                            None
+                        }
+                    })
+                {
+                    return Some(end);
+                }
+            }
             if matches!(value, 0x58 | 0x78) {
                 if let Some(end) = marker_end_after_hex_escape_x_prefix(bytes, next) {
                     return Some(end);
@@ -5409,6 +5443,20 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
                 if value == 0x25 {
                     return Some(next);
                 }
+                if matches!(value, 0x55 | 0x75) {
+                    if let Some(end) =
+                        marker_end_after_unicode_escape_u_prefix(bytes, next, value == 0x55)
+                            .or_else(|| {
+                                if value == 0x55 {
+                                    marker_end_after_unicode_escape_u_prefix(bytes, next, false)
+                                } else {
+                                    None
+                                }
+                            })
+                    {
+                        return Some(end);
+                    }
+                }
                 if matches!(value, 0x58 | 0x78) {
                     if let Some(end) = marker_end_after_hex_escape_x_prefix(bytes, next) {
                         return Some(end);
@@ -5431,6 +5479,20 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
                 if value == 0x25 {
                     return Some(next);
                 }
+                if matches!(value, 0x55 | 0x75) {
+                    if let Some(end) =
+                        marker_end_after_unicode_escape_u_prefix(bytes, next, value == 0x55)
+                            .or_else(|| {
+                                if value == 0x55 {
+                                    marker_end_after_unicode_escape_u_prefix(bytes, next, false)
+                                } else {
+                                    None
+                                }
+                            })
+                    {
+                        return Some(end);
+                    }
+                }
                 if matches!(value, 0x58 | 0x78) {
                     if let Some(end) = marker_end_after_hex_escape_x_prefix(bytes, next) {
                         return Some(end);
@@ -5452,6 +5514,19 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
             if value == 37 {
                 return Some(next);
             }
+            if matches!(value, 0x55 | 0x75) {
+                if let Some(end) =
+                    marker_end_after_unicode_escape_u_prefix(bytes, next, value == 0x55).or_else(|| {
+                        if value == 0x55 {
+                            marker_end_after_unicode_escape_u_prefix(bytes, next, false)
+                        } else {
+                            None
+                        }
+                    })
+                {
+                    return Some(end);
+                }
+            }
             if matches!(value, 0x58 | 0x78) {
                 if let Some(end) = marker_end_after_hex_escape_x_prefix(bytes, next) {
                     return Some(end);
@@ -5471,6 +5546,19 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
         if let Some((value, next)) = parse_backslash_hex_escape(bytes, idx) {
             if value == 0x25 {
                 return Some(next);
+            }
+            if matches!(value, 0x55 | 0x75) {
+                if let Some(end) =
+                    marker_end_after_unicode_escape_u_prefix(bytes, next, value == 0x55).or_else(|| {
+                        if value == 0x55 {
+                            marker_end_after_unicode_escape_u_prefix(bytes, next, false)
+                        } else {
+                            None
+                        }
+                    })
+                {
+                    return Some(end);
+                }
             }
             if matches!(value, 0x58 | 0x78) {
                 if let Some(end) = marker_end_after_hex_escape_x_prefix(bytes, next) {
