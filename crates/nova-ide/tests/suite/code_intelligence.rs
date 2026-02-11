@@ -1131,6 +1131,33 @@ class A {
 }
 
 #[test]
+fn completion_resolves_call_chain_receiver_with_explicit_method_type_args() {
+    let (db, file, pos) = fixture(
+        r#"
+class B {
+  <T> B id() { return this; }
+  String s() { return "x"; }
+}
+
+class A {
+  B b = new B();
+
+  void m() {
+    b.<String>id().s().<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain String.length for call chain with explicit method type args; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_at_eof_after_whitespace_is_deterministic() {
     let (db, file, pos) = fixture(
         r#"

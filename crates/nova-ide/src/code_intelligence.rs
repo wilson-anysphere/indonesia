@@ -11519,8 +11519,47 @@ fn infer_call_receiver_lexical(
 
     // If this call is qualified (`<expr>.<name>(...)`), try to infer the receiver type from the
     // expression before the dot.
-    if name_idx >= 1 && analysis.tokens[name_idx - 1].kind == TokenKind::Symbol('.') {
-        let dot_offset = analysis.tokens[name_idx - 1].span.start;
+    //
+    // Also support explicit method type arguments (`foo.<T>bar(...)`), where the dot is before the
+    // `<...>` list rather than directly before the method name.
+    let dot_offset = if name_idx >= 1 && analysis.tokens[name_idx - 1].kind == TokenKind::Symbol('.')
+    {
+        Some(analysis.tokens[name_idx - 1].span.start)
+    } else if name_idx >= 1 && analysis.tokens[name_idx - 1].kind == TokenKind::Symbol('>') {
+        // Scan backwards to find the matching `<` for the `<...>` type-argument list and ensure it
+        // is preceded by a dot.
+        let mut depth = 0i32;
+        let mut open_idx = None;
+        let mut i = name_idx;
+        while i > 0 {
+            i -= 1;
+            match analysis.tokens[i].kind {
+                TokenKind::Symbol('>') => depth += 1,
+                TokenKind::Symbol('<') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        open_idx = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        open_idx
+            .and_then(|idx| idx.checked_sub(1))
+            .filter(|dot_idx| {
+                analysis
+                    .tokens
+                    .get(*dot_idx)
+                    .is_some_and(|t| t.kind == TokenKind::Symbol('.'))
+            })
+            .map(|dot_idx| analysis.tokens[dot_idx].span.start)
+    } else {
+        None
+    };
+
+    if let Some(dot_offset) = dot_offset {
 
         // Best-effort recovery for receivers that start after a call expression, e.g.
         // `foo().bar.baz()` / `b().inner.s()` (the call parser only records `bar` / `inner` as the
@@ -21773,6 +21812,39 @@ class A {
 
   void m() {
     b().inner.s().
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("s().")
+            .expect("expected `s().` in fixture")
+            + "s()".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert!(
+            ty.as_deref().unwrap_or_default().contains("String"),
+            "expected receiver type to contain `String`, got {ty:?}"
+        );
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_generic_invocation_call_chain() {
+        let java = r#"
+class B {
+  <T> B id() { return this; }
+  String s() { return "x"; }
+}
+
+class A {
+  B b = new B();
+
+  void m() {
+    b.<String>id().s().
   }
 }
 "#;
