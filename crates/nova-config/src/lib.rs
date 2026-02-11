@@ -1820,10 +1820,13 @@ fn log_line_contains_serde_json_error(line: &str) -> bool {
 
 fn log_line_contains_toml_error_scalar(line: &str) -> bool {
     // Some TOML diagnostics quote user-provided scalar values using single quotes (notably semver
-    // parsing failures, e.g. `invalid semver version '...'`). Those values can be sensitive (API
-    // keys, tokens, etc) and may make their way into tracing logs, which are later included in bug
-    // report bundles.
-    line.contains("invalid semver version")
+    // parsing failures, e.g. `invalid semver version '...'`). Custom deserializers may also build
+    // diagnostics that echo invalid scalar values in single quotes (for example
+    // `unknown capability '...'`).
+    //
+    // Those values can be sensitive (API keys, tokens, etc) and may make their way into tracing
+    // logs, which are later included in bug report bundles.
+    line.contains("invalid semver version") || line.contains("unknown capability")
 }
 
 fn log_line_looks_like_toml_snippet(line: &str) -> bool {
@@ -1863,7 +1866,7 @@ fn log_line_looks_like_toml_snippet(line: &str) -> bool {
 fn json_log_line_contains_toml_error_scalar(line: &str) -> bool {
     // JSON log lines are single-line objects; scalar error phrases are still visible as plain
     // substrings.
-    line.contains("invalid semver version")
+    line.contains("invalid semver version") || line.contains("unknown capability")
 }
 
 fn json_log_line_contains_toml_snippet(line: &str) -> bool {
@@ -2203,6 +2206,45 @@ mod bugreport_log_sanitization_tests {
         );
         serde_json::from_str::<serde_json::Value>(&sanitized)
             .expect("expected sanitized snippet JSON log line to remain valid JSON");
+    }
+
+    #[test]
+    fn sanitize_bugreport_log_line_redacts_single_quoted_unknown_capability_values() {
+        let secret_suffix = "nova-config-unknown-capability-secret";
+        let message = format!("unknown capability 'prefix\\'{secret_suffix}'");
+        assert!(
+            message.contains(secret_suffix),
+            "expected raw unknown-capability message to include the secret so this test catches leaks: {message}"
+        );
+
+        let sanitized = sanitize_bugreport_log_line(&message);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected log sanitizer to omit single-quoted scalar values from TOML-like errors: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected log sanitizer to include redaction marker: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn sanitize_bugreport_log_line_redacts_unknown_capability_values_in_json_log_lines() {
+        let secret_suffix = "nova-config-unknown-capability-json-secret";
+        let message = format!("unknown capability 'prefix\\'{secret_suffix}'");
+        let line = serde_json::json!({ "message": message }).to_string();
+        assert!(
+            line.contains(secret_suffix),
+            "expected raw JSON log line to include the secret so this test catches leaks: {line}"
+        );
+
+        let sanitized = sanitize_bugreport_log_line(&line);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected JSON log sanitizer to omit single-quoted scalar values from TOML-like errors: {sanitized}"
+        );
+        serde_json::from_str::<serde_json::Value>(&sanitized)
+            .expect("expected sanitized unknown-capability JSON log line to remain valid JSON");
     }
 }
 
