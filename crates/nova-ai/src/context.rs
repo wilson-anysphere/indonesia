@@ -795,8 +795,10 @@ fn related_code_query_fallback(focal_code: &str) -> String {
         if tok.contains('=') {
             continue;
         }
-        // Avoid sending obvious secret/token strings as semantic-search queries.
-        if looks_like_secret_token(tok) {
+        // Avoid sending obvious secret/token strings as semantic-search queries. This is
+        // intentionally conservative: if we see a secret-like substring (e.g. a JSON token that
+        // includes `"apiKey":"sk-..."`), skip the entire whitespace token.
+        if token_contains_secret_fragment(tok) {
             continue;
         }
         if tok
@@ -888,6 +890,20 @@ fn truncate_utf8_to_bytes(s: &str, max_bytes: usize) -> &str {
 
 fn clean_query_word(tok: &str) -> &str {
     tok.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
+}
+
+fn token_contains_secret_fragment(tok: &str) -> bool {
+    fn is_token_char(c: char) -> bool {
+        c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '=' | '+' | '/' | '.')
+    }
+
+    if tok.is_empty() {
+        return false;
+    }
+
+    tok.split(|c: char| !is_token_char(c))
+        .filter(|segment| !segment.is_empty())
+        .any(looks_like_secret_token)
 }
 
 fn looks_like_secret_token(tok: &str) -> bool {

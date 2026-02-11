@@ -491,6 +491,25 @@ fn related_code_query_skips_obvious_secret_tokens_in_fallback() {
 }
 
 #[test]
+fn related_code_query_skips_secret_values_embedded_in_json_tokens() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for secret-containing JSON tokens");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = r#""apiKey":"sk-verysecretstringthatislong""#;
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for secret-containing focal code"
+    );
+}
+
+#[test]
 fn related_code_query_skips_empty_queries() {
     struct PanicSearch;
 
