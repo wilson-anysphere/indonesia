@@ -8,6 +8,80 @@ use std::time::SystemTime;
 
 pub type BazelBuildTaskId = u64;
 
+fn sanitize_anyhow_error_message(err: &anyhow::Error) -> String {
+    if err.chain().any(|source| source.is::<serde_json::Error>()) {
+        sanitize_json_error_message(&err.to_string())
+    } else {
+        err.to_string()
+    }
+}
+
+fn sanitize_json_error_message(message: &str) -> String {
+    // `serde_json::Error` display strings can include user-provided scalar values (for example:
+    // `invalid type: string "..."` or `unknown field `...``). Avoid echoing those values in error
+    // messages because Bazel BSP payloads can include secrets (arguments, env, etc).
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let mut end = None;
+        let bytes = rest.as_bytes();
+        for (idx, &b) in bytes.iter().enumerate() {
+            if b != b'"' {
+                continue;
+            }
+
+            // Treat quotes preceded by an odd number of backslashes as escaped.
+            let mut backslashes = 0usize;
+            let mut k = idx;
+            while k > 0 && bytes[k - 1] == b'\\' {
+                backslashes += 1;
+                k -= 1;
+            }
+            if backslashes % 2 == 0 {
+                end = Some(idx);
+                break;
+            }
+        }
+
+        let Some(end) = end else {
+            // Unterminated quote: redact the remainder and stop.
+            out.push_str("<redacted>");
+            rest = "";
+            break;
+        };
+
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+
+    // `serde` wraps unknown fields/variants in backticks:
+    // `unknown field `secret`, expected ...`
+    //
+    // Redact only the first backticked segment so we keep the expected value list actionable.
+    if let Some(start) = out.find('`') {
+        let after_start = &out[start.saturating_add(1)..];
+        let end = if let Some(end_rel) = after_start.rfind("`, expected") {
+            Some(start.saturating_add(1).saturating_add(end_rel))
+        } else if let Some(end_rel) = after_start.rfind('`') {
+            Some(start.saturating_add(1).saturating_add(end_rel))
+        } else {
+            None
+        };
+        if let Some(end) = end {
+            if start + 1 <= end && end <= out.len() {
+                out.replace_range(start + 1..end, "<redacted>");
+            }
+        }
+    }
+
+    out
+}
+
 /// Coarse-grained state for Bazel build tasks.
 ///
 /// Re-exported from `nova-build-model` so clients can share a single schema across build systems.
@@ -408,7 +482,11 @@ fn run_build(
                     Some("cancelled".to_string()),
                 );
             }
-            (BazelBuildTaskState::Failure, None, Some(err.to_string()))
+            (
+                BazelBuildTaskState::Failure,
+                None,
+                Some(sanitize_anyhow_error_message(&err)),
+            )
         }
     }
 }
@@ -486,6 +564,68 @@ mod tests {
                 program: "bsp-from-file".to_string(),
                 args: vec!["--arg".to_string()],
             }]
+        );
+    }
+
+    #[test]
+    fn run_build_errors_do_not_echo_serde_json_string_values() {
+        #[derive(Debug)]
+        struct FailingExecutor {
+            secret: String,
+        }
+
+        impl BazelBuildExecutor for FailingExecutor {
+            fn compile(
+                &self,
+                _config: &BazelBspConfig,
+                _workspace_root: &Path,
+                _targets: &[String],
+                _cancellation: CancellationToken,
+            ) -> Result<BspCompileOutcome> {
+                let err = serde_json::from_value::<bool>(serde_json::json!(self.secret.clone()))
+                    .expect_err("expected type mismatch");
+                Err(anyhow::Error::new(err))
+            }
+        }
+
+        let secret_suffix = "nova-build-bazel-super-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
+        let raw_err = serde_json::from_value::<bool>(serde_json::json!(secret.clone()))
+            .expect_err("expected type mismatch");
+        let raw_message = raw_err.to_string();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw serde_json error message to include the string value so this test catches leaks: {raw_message}"
+        );
+
+        let root = tempdir().unwrap();
+        let inner = Inner {
+            workspace_root: root.path().to_path_buf(),
+            executor: Arc::new(FailingExecutor { secret }),
+            state: Mutex::new(State::default()),
+            wake: Condvar::new(),
+        };
+
+        let request = BazelBuildRequest {
+            targets: vec!["//:t".to_string()],
+            bsp_config: Some(BazelBspConfig {
+                program: "bsp".to_string(),
+                args: Vec::new(),
+            }),
+        };
+
+        let cancellation = CancellationToken::new();
+        let (state, outcome, error) = run_build(&inner, &request, cancellation);
+        assert_eq!(state, BazelBuildTaskState::Failure);
+        assert!(outcome.is_none());
+        let message = error.expect("expected error message");
+        assert!(
+            !message.contains(secret_suffix),
+            "expected orchestrator error to omit serde_json string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected orchestrator error to include redaction marker: {message}"
         );
     }
 }
