@@ -1105,7 +1105,9 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
             // focal selection is HTML-escaped content (e.g. `&amp;#47;home...`). This keeps
             // path-only selections from producing a low-signal query like `amp`.
             if after.is_some_and(|b| *b == b';')
-                && (token.eq_ignore_ascii_case("&amp") || token.eq_ignore_ascii_case("amp"))
+                && (token.eq_ignore_ascii_case("&amp")
+                    || token.eq_ignore_ascii_case("amp")
+                    || html_entity_is_ampersand(bytes, bounds.end))
             {
                 fn html_numeric_fragment_is_path_separator(bytes: &[u8], start: usize) -> bool {
                     fn hex_value(b: u8) -> Option<u8> {
@@ -1538,6 +1540,81 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
         }
     }
 
+    fn fragment_is_path_separator(mut fragment: &[u8]) -> bool {
+        let is_named_separator = |bytes: &[u8]| {
+            bytes.eq_ignore_ascii_case(b"sol")
+                || bytes.eq_ignore_ascii_case(b"slash")
+                || bytes.eq_ignore_ascii_case(b"dsol")
+                || bytes.eq_ignore_ascii_case(b"bsol")
+                || bytes.eq_ignore_ascii_case(b"backslash")
+                || bytes.eq_ignore_ascii_case(b"frasl")
+                || bytes.eq_ignore_ascii_case(b"setminus")
+                || bytes.eq_ignore_ascii_case(b"setmn")
+                || bytes.eq_ignore_ascii_case(b"smallsetminus")
+                || bytes.eq_ignore_ascii_case(b"ssetmn")
+        };
+
+        let parse_numeric = |bytes: &[u8]| -> Option<u32> {
+            if bytes.first().is_some_and(|b| *b == b'#') {
+                let mut j = 1usize;
+                let base = match bytes.get(j) {
+                    Some(b'x') | Some(b'X') => {
+                        j += 1;
+                        16u32
+                    }
+                    _ => 10u32,
+                };
+                if j >= bytes.len() {
+                    return None;
+                }
+                let mut digits = &bytes[j..];
+                while digits.first().is_some_and(|b| *b == b'0') {
+                    digits = &digits[1..];
+                }
+                if digits.is_empty() || digits.len() > 8 {
+                    return None;
+                }
+                let mut value = 0u32;
+                for &b in digits {
+                    let digit = if base == 16 {
+                        hex_value(b)? as u32
+                    } else if b.is_ascii_digit() {
+                        (b - b'0') as u32
+                    } else {
+                        return None;
+                    };
+                    value = value
+                        .checked_mul(base)
+                        .and_then(|v| v.checked_add(digit))
+                        .unwrap_or(u32::MAX);
+                }
+                return Some(value);
+            }
+            None
+        };
+
+        if is_named_separator(fragment) {
+            return true;
+        }
+        if parse_numeric(fragment).is_some_and(html_entity_codepoint_is_path_separator) {
+            return true;
+        }
+
+        for _ in 0..8 {
+            if fragment.len() >= 4 && fragment[..3].eq_ignore_ascii_case(b"amp") && fragment[3] == b';' {
+                fragment = &fragment[4..];
+                if fragment.is_empty() {
+                    return false;
+                }
+                continue;
+            }
+            break;
+        }
+
+        is_named_separator(fragment)
+            || parse_numeric(fragment).is_some_and(html_entity_codepoint_is_path_separator)
+    }
+
     if end_semicolon >= bytes.len() || bytes[end_semicolon] != b';' {
         return false;
     }
@@ -1672,7 +1749,51 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
         return false;
     }
 
-    let mut digits = &bytes[j..end_semicolon];
+    let digits_full = &bytes[j..end_semicolon];
+    if let Some(inner_semicolon) = digits_full.iter().position(|b| *b == b';') {
+        // Handle nested escapes where the `&` itself is emitted as a numeric entity, e.g.
+        // `&#38;sol;` or `&#x26;#47;`. These decode to `&sol;`/`&#47;` in a first pass, so treat them
+        // as separators to avoid leaking path segments into semantic-search queries.
+        let prefix_raw = &digits_full[..inner_semicolon];
+        let fragment = &digits_full[inner_semicolon + 1..];
+        if fragment.is_empty() {
+            return false;
+        }
+
+        let mut digits = prefix_raw;
+        while digits.first().is_some_and(|b| *b == b'0') {
+            digits = &digits[1..];
+        }
+        if digits.is_empty() || digits.len() > 8 {
+            return false;
+        }
+
+        let mut value = 0u32;
+        for &b in digits {
+            let digit = if base == 16 {
+                let Some(v) = hex_value(b) else {
+                    return false;
+                };
+                v as u32
+            } else if b.is_ascii_digit() {
+                (b - b'0') as u32
+            } else {
+                return false;
+            };
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+        }
+
+        if value != 38 {
+            return false;
+        }
+
+        return fragment_is_path_separator(fragment);
+    }
+
+    let mut digits = digits_full;
     while digits.first().is_some_and(|b| *b == b'0') {
         digits = &digits[1..];
     }
@@ -1704,6 +1825,184 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
     html_entity_codepoint_is_path_separator(value)
 }
 
+fn html_entity_is_ampersand(bytes: &[u8], end_semicolon: usize) -> bool {
+    fn hex_value(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    fn fragment_is_ampersand(mut fragment: &[u8]) -> bool {
+        let parse_numeric = |bytes: &[u8]| -> Option<u32> {
+            if bytes.first().is_some_and(|b| *b == b'#') {
+                let mut j = 1usize;
+                let base = match bytes.get(j) {
+                    Some(b'x') | Some(b'X') => {
+                        j += 1;
+                        16u32
+                    }
+                    _ => 10u32,
+                };
+                if j >= bytes.len() {
+                    return None;
+                }
+                let mut digits = &bytes[j..];
+                while digits.first().is_some_and(|b| *b == b'0') {
+                    digits = &digits[1..];
+                }
+                if digits.is_empty() || digits.len() > 8 {
+                    return None;
+                }
+                let mut value = 0u32;
+                for &b in digits {
+                    let digit = if base == 16 {
+                        hex_value(b)? as u32
+                    } else if b.is_ascii_digit() {
+                        (b - b'0') as u32
+                    } else {
+                        return None;
+                    };
+                    value = value
+                        .checked_mul(base)
+                        .and_then(|v| v.checked_add(digit))
+                        .unwrap_or(u32::MAX);
+                }
+                return Some(value);
+            }
+            None
+        };
+
+        if fragment.eq_ignore_ascii_case(b"amp") || parse_numeric(fragment) == Some(38) {
+            return true;
+        }
+
+        for _ in 0..8 {
+            if fragment.len() >= 4 && fragment[..3].eq_ignore_ascii_case(b"amp") && fragment[3] == b';' {
+                fragment = &fragment[4..];
+                if fragment.is_empty() {
+                    return false;
+                }
+                continue;
+            }
+            break;
+        }
+
+        fragment.eq_ignore_ascii_case(b"amp") || parse_numeric(fragment) == Some(38)
+    }
+
+    if end_semicolon >= bytes.len() || bytes[end_semicolon] != b';' {
+        return false;
+    }
+
+    let mut amp = None;
+    let mut i = end_semicolon;
+    let mut scanned = 0usize;
+    while i > 0 && scanned < 256 {
+        i -= 1;
+        scanned += 1;
+        if bytes[i] == b'&' {
+            amp = Some(i);
+            break;
+        }
+    }
+
+    let Some(amp) = amp else {
+        return false;
+    };
+    if amp + 2 >= end_semicolon {
+        return false;
+    }
+
+    if bytes[amp + 1] != b'#' {
+        let name = &bytes[amp + 1..end_semicolon];
+        return fragment_is_ampersand(name);
+    }
+
+    let mut j = amp + 2;
+    let base = match bytes.get(j) {
+        Some(b'x') | Some(b'X') => {
+            j += 1;
+            16u32
+        }
+        _ => 10u32,
+    };
+    if j >= end_semicolon {
+        return false;
+    }
+
+    let digits_full = &bytes[j..end_semicolon];
+    if let Some(inner_semicolon) = digits_full.iter().position(|b| *b == b';') {
+        let prefix_raw = &digits_full[..inner_semicolon];
+        let fragment = &digits_full[inner_semicolon + 1..];
+        if fragment.is_empty() {
+            return false;
+        }
+
+        let mut digits = prefix_raw;
+        while digits.first().is_some_and(|b| *b == b'0') {
+            digits = &digits[1..];
+        }
+        if digits.is_empty() || digits.len() > 8 {
+            return false;
+        }
+
+        let mut value = 0u32;
+        for &b in digits {
+            let digit = if base == 16 {
+                let Some(v) = hex_value(b) else {
+                    return false;
+                };
+                v as u32
+            } else if b.is_ascii_digit() {
+                (b - b'0') as u32
+            } else {
+                return false;
+            };
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+        }
+
+        if value != 38 {
+            return false;
+        }
+
+        return fragment_is_ampersand(fragment);
+    }
+
+    let mut digits = digits_full;
+    while digits.first().is_some_and(|b| *b == b'0') {
+        digits = &digits[1..];
+    }
+    if digits.is_empty() || digits.len() > 8 {
+        return false;
+    }
+
+    let mut value = 0u32;
+    for &b in digits {
+        let digit = if base == 16 {
+            let Some(v) = hex_value(b) else {
+                return false;
+            };
+            v as u32
+        } else if b.is_ascii_digit() {
+            (b - b'0') as u32
+        } else {
+            return false;
+        };
+        value = value
+            .checked_mul(base)
+            .and_then(|v| v.checked_add(digit))
+            .unwrap_or(u32::MAX);
+    }
+
+    value == 38
+}
+
 fn html_entity_is_percent(bytes: &[u8], end_semicolon: usize) -> bool {
     fn hex_value(b: u8) -> Option<u8> {
         match b {
@@ -1712,6 +2011,68 @@ fn html_entity_is_percent(bytes: &[u8], end_semicolon: usize) -> bool {
             b'A'..=b'F' => Some(b - b'A' + 10),
             _ => None,
         }
+    }
+
+    fn fragment_is_percent(mut fragment: &[u8]) -> bool {
+        let is_named_percent = |bytes: &[u8]| {
+            bytes.eq_ignore_ascii_case(b"percnt") || bytes.eq_ignore_ascii_case(b"percent")
+        };
+
+        let parse_numeric = |bytes: &[u8]| -> Option<u32> {
+            if bytes.first().is_some_and(|b| *b == b'#') {
+                let mut j = 1usize;
+                let base = match bytes.get(j) {
+                    Some(b'x') | Some(b'X') => {
+                        j += 1;
+                        16u32
+                    }
+                    _ => 10u32,
+                };
+                if j >= bytes.len() {
+                    return None;
+                }
+                let mut digits = &bytes[j..];
+                while digits.first().is_some_and(|b| *b == b'0') {
+                    digits = &digits[1..];
+                }
+                if digits.is_empty() || digits.len() > 8 {
+                    return None;
+                }
+                let mut value = 0u32;
+                for &b in digits {
+                    let digit = if base == 16 {
+                        hex_value(b)? as u32
+                    } else if b.is_ascii_digit() {
+                        (b - b'0') as u32
+                    } else {
+                        return None;
+                    };
+                    value = value
+                        .checked_mul(base)
+                        .and_then(|v| v.checked_add(digit))
+                        .unwrap_or(u32::MAX);
+                }
+                return Some(value);
+            }
+            None
+        };
+
+        if is_named_percent(fragment) || parse_numeric(fragment) == Some(37) {
+            return true;
+        }
+
+        for _ in 0..8 {
+            if fragment.len() >= 4 && fragment[..3].eq_ignore_ascii_case(b"amp") && fragment[3] == b';' {
+                fragment = &fragment[4..];
+                if fragment.is_empty() {
+                    return false;
+                }
+                continue;
+            }
+            break;
+        }
+
+        is_named_percent(fragment) || parse_numeric(fragment) == Some(37)
     }
 
     if end_semicolon >= bytes.len() || bytes[end_semicolon] != b';' {
@@ -1822,7 +2183,52 @@ fn html_entity_is_percent(bytes: &[u8], end_semicolon: usize) -> bool {
         return false;
     }
 
-    let mut digits = &bytes[j..end_semicolon];
+    let digits_full = &bytes[j..end_semicolon];
+    if let Some(inner_semicolon) = digits_full.iter().position(|b| *b == b';') {
+        // Handle nested escapes where the `&` itself is emitted as a numeric entity, e.g.
+        // `&#38;percnt;` or `&#x26;#37;`. These decode to `&percnt;`/`&#37;` in a first pass, so
+        // treat them as percent signs to avoid leaking encoded path fragments into semantic-search
+        // queries.
+        let prefix_raw = &digits_full[..inner_semicolon];
+        let fragment = &digits_full[inner_semicolon + 1..];
+        if fragment.is_empty() {
+            return false;
+        }
+
+        let mut digits = prefix_raw;
+        while digits.first().is_some_and(|b| *b == b'0') {
+            digits = &digits[1..];
+        }
+        if digits.is_empty() || digits.len() > 8 {
+            return false;
+        }
+
+        let mut value = 0u32;
+        for &b in digits {
+            let digit = if base == 16 {
+                let Some(v) = hex_value(b) else {
+                    return false;
+                };
+                v as u32
+            } else if b.is_ascii_digit() {
+                (b - b'0') as u32
+            } else {
+                return false;
+            };
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+        }
+
+        if value != 38 {
+            return false;
+        }
+
+        return fragment_is_percent(fragment);
+    }
+
+    let mut digits = digits_full;
     while digits.first().is_some_and(|b| *b == b'0') {
         digits = &digits[1..];
     }

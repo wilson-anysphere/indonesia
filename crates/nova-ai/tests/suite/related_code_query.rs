@@ -1437,6 +1437,63 @@ fn related_code_query_avoids_named_html_entity_path_segments() {
 }
 
 #[test]
+fn related_code_query_avoids_numeric_escaped_html_entity_path_segments() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+    for sep in [
+        "&#38;sol;",
+        "&#x26;sol;",
+        "&#38;slash;",
+        "&#x26;slash;",
+        "&#38;bsol;",
+        "&#x26;bsol;",
+        "&#38;Backslash;",
+        "&#x26;Backslash;",
+        // Numeric entity variants for the nested separator itself.
+        "&#38;#47;",
+        "&#x26;#x2F;",
+        "&#38;#92;",
+        "&#x26;#x5C;",
+        // Nested escaping of the `&` plus a typical `amp;` prefix.
+        "&#38;amp;sol;",
+        "&#38;amp;#47;",
+    ] {
+        let search = CapturingSearch::default();
+        let focal_code = format!(
+            "{sep}home{sep}user{sep}my-{private_segment}-project{sep}src{sep}main{sep}java\nreturn foo.bar();\n"
+        );
+
+        let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+        let query = search
+            .last_query
+            .lock()
+            .expect("lock poisoned")
+            .clone()
+            .expect("query captured");
+
+        assert!(
+            !query.contains(private_segment),
+            "query should not include numeric-escaped HTML entity path fragments: {query}"
+        );
+        assert!(
+            query.contains("foo") || query.contains("bar"),
+            "expected query to retain non-path identifiers, got: {query}"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_avoids_named_html_entity_path_segments_without_semicolons() {
     #[derive(Default)]
     struct CapturingSearch {
@@ -2672,6 +2729,42 @@ fn related_code_query_skips_named_html_entity_path_only_selections() {
         assert!(
             req.related_code.is_empty(),
             "expected no related code for named HTML entity path-only focal code"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_numeric_escaped_html_entity_path_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for numeric-escaped HTML entity path selections");
+        }
+    }
+
+    let search = PanicSearch;
+    for sep in [
+        "&#38;sol;",
+        "&#x26;sol;",
+        "&#38;slash;",
+        "&#x26;slash;",
+        "&#38;bsol;",
+        "&#x26;bsol;",
+        "&#38;Backslash;",
+        "&#x26;Backslash;",
+        "&#38;#47;",
+        "&#x26;#x2F;",
+        "&#38;#92;",
+        "&#x26;#x5C;",
+        "&#38;amp;sol;",
+        "&#38;amp;#47;",
+    ] {
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for numeric-escaped HTML entity path-only focal code"
         );
     }
 }
