@@ -3063,7 +3063,9 @@ fn update_gradle_snapshot(
     }
 
     let json = serde_json::to_vec_pretty(&snapshot)
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        .map_err(|err| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, sanitize_serde_json_error(&err))
+        })?;
     write_file_atomic(&path, &json)
 }
 

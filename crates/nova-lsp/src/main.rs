@@ -59,6 +59,7 @@ use nova_workspace::Workspace;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
@@ -66,7 +67,42 @@ use stdio_transport::{IncomingMessage, LspClient};
 use stdio_diagnostics::PendingPublishDiagnosticsAction;
 use stdio_analysis::AnalysisState;
 
-fn main() -> std::io::Result<()> {
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("{}", sanitize_io_error_message(&err));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn sanitize_io_error_message(err: &std::io::Error) -> String {
+    // `serde_json::Error` display strings can include user-provided scalar values (e.g.
+    // `invalid type: string "..."`). Avoid echoing those values to stderr when the underlying
+    // transport or protocol layer bubbles `serde_json` failures up as `io::Error`.
+    if error_chain_contains_serde_json(err) {
+        stdio_sanitize::sanitize_json_error_message(&err.to_string())
+    } else {
+        err.to_string()
+    }
+}
+
+fn error_chain_contains_serde_json(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current: &(dyn std::error::Error + 'static) = err;
+    loop {
+        if current.is::<serde_json::Error>() {
+            return true;
+        }
+
+        let Some(source) = current.source() else {
+            return false;
+        };
+        current = source;
+    }
+}
+
+fn run() -> std::io::Result<()> {
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
         println!("{}", env!("CARGO_PKG_VERSION"));

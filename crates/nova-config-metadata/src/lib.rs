@@ -12,6 +12,76 @@ use nova_archive::Archive;
 use nova_classpath::ClasspathEntry;
 use serde::Deserialize;
 
+fn sanitize_serde_json_error(err: &serde_json::Error) -> String {
+    sanitize_json_error_message(&err.to_string())
+}
+
+fn sanitize_json_error_message(message: &str) -> String {
+    // `serde_json::Error` display strings can include user-provided scalar values (for example:
+    // `invalid type: string "..."`). These metadata files come from dependency JARs and can include
+    // arbitrary values; avoid echoing string values in errors that might surface in logs.
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let mut end = None;
+        let bytes = rest.as_bytes();
+        for (idx, &b) in bytes.iter().enumerate() {
+            if b != b'"' {
+                continue;
+            }
+
+            // Treat quotes preceded by an odd number of backslashes as escaped.
+            let mut backslashes = 0usize;
+            let mut k = idx;
+            while k > 0 && bytes[k - 1] == b'\\' {
+                backslashes += 1;
+                k -= 1;
+            }
+            if backslashes % 2 == 0 {
+                end = Some(idx);
+                break;
+            }
+        }
+
+        let Some(end) = end else {
+            // Unterminated quote: redact the remainder and stop.
+            out.push_str("<redacted>");
+            rest = "";
+            break;
+        };
+
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+
+    // `serde` wraps unknown fields/variants in backticks:
+    // `unknown field `secret`, expected ...`
+    //
+    // Redact only the first backticked segment so we keep the expected value list actionable.
+    if let Some(start) = out.find('`') {
+        let after_start = &out[start.saturating_add(1)..];
+        let end = if let Some(end_rel) = after_start.rfind("`, expected") {
+            Some(start.saturating_add(1).saturating_add(end_rel))
+        } else if let Some(end_rel) = after_start.rfind('`') {
+            Some(start.saturating_add(1).saturating_add(end_rel))
+        } else {
+            None
+        };
+        if let Some(end) = end {
+            if start + 1 <= end && end <= out.len() {
+                out.replace_range(start + 1..end, "<redacted>");
+            }
+        }
+    }
+
+    out
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeprecationMeta {
     pub level: Option<String>,
@@ -77,6 +147,7 @@ impl MetadataIndex {
 
     pub fn ingest_json_bytes(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
         let raw: RawMetadata = serde_json::from_slice(bytes)
+            .map_err(|err| anyhow::Error::msg(sanitize_serde_json_error(&err)))
             .with_context(|| "failed to parse Spring configuration metadata JSON")?;
 
         for prop in raw.properties.unwrap_or_default() {
@@ -351,6 +422,27 @@ mod tests {
         assert!(
             index.property_meta("server.port").is_some(),
             "expected metadata ingestion to ignore missing archives and still ingest metadata from existing jars"
+        );
+    }
+
+    #[test]
+    fn ingest_json_bytes_parse_errors_do_not_echo_string_values() {
+        let secret_suffix = "nova-config-metadata-super-secret";
+        let secret = format!("prefix\"{secret_suffix}");
+        let payload = serde_json::json!(secret).to_string();
+
+        let mut index = MetadataIndex::new();
+        let err = index
+            .ingest_json_bytes(payload.as_bytes())
+            .expect_err("expected parse error");
+        let message = format!("{err:#}");
+        assert!(
+            !message.contains(secret_suffix),
+            "expected config metadata parse errors to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected config metadata parse errors to include redaction marker: {message}"
         );
     }
 }
