@@ -2885,6 +2885,10 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_wit
         "u0026&#x23;37u0032u0046",     // %2F
         // Escaped ampersand starting a nested `&num;` entity (`u0026u0026num;...`).
         "u0026u0026num;37u0032u0046",  // %2F
+        // Digits for the numeric percent entity (`37`) emitted via unicode escapes after `&num;`.
+        // For example, `u0026num;u0033u0037...` decodes to `&num;37...` and then to `&#37...`.
+        "u0026num;u0033u0037u0032u0046", // %2F (37 + 2F)
+        "u0026num;u0033u0037u0035u0043", // %5C (37 + 5C)
     ] {
         let search = PanicSearch { sep };
         let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
