@@ -19,6 +19,34 @@ use tokio_util::sync::CancellationToken;
 use nova_vfs::VfsPath;
 use crate::stdio_progress::{send_progress_begin, send_progress_end};
 
+fn sanitize_json_error_message(message: &str) -> String {
+    // `serde_json::Error` display strings can include user-provided scalar values (e.g.
+    // `invalid type: string "..."`). Avoid echoing those values in JSON-RPC responses because
+    // callers may include secrets in request payloads.
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let Some(end) = rest.find('"') else {
+            // Unterminated quote: append the remainder and stop.
+            out.push_str(rest);
+            return out;
+        };
+
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn sanitize_serde_json_error(err: &serde_json::Error) -> String {
+    sanitize_json_error_message(&err.to_string())
+}
+
 pub(super) fn handle_request(
     request: Request,
     cancel: CancellationToken,
@@ -134,7 +162,7 @@ fn handle_request_json(
                     return Ok(json!({
                         "jsonrpc": "2.0",
                         "id": id,
-                        "error": { "code": -32602, "message": err.to_string() }
+                        "error": { "code": -32602, "message": sanitize_serde_json_error(&err) }
                     }));
                 }
             };
@@ -180,7 +208,7 @@ fn handle_request_json(
                     return Ok(json!({
                         "jsonrpc": "2.0",
                         "id": id,
-                        "error": { "code": -32602, "message": err.to_string() }
+                        "error": { "code": -32602, "message": sanitize_serde_json_error(&err) }
                     }));
                 }
             };
@@ -255,7 +283,7 @@ fn handle_request_json(
                     return Ok(json!({
                         "jsonrpc": "2.0",
                         "id": id,
-                        "error": { "code": -32602, "message": err.to_string() }
+                        "error": { "code": -32602, "message": sanitize_serde_json_error(&err) }
                     }));
                 }
             };
@@ -303,7 +331,7 @@ fn handle_request_json(
                     return Ok(json!({
                         "jsonrpc": "2.0",
                         "id": id,
-                        "error": { "code": -32602, "message": err.to_string() }
+                        "error": { "code": -32602, "message": sanitize_serde_json_error(&err) }
                     }));
                 }
             };
@@ -742,7 +770,7 @@ fn handle_request_json(
                     return Ok(json!({
                         "jsonrpc": "2.0",
                         "id": id,
-                        "error": { "code": -32602, "message": err.to_string() }
+                        "error": { "code": -32602, "message": sanitize_serde_json_error(&err) }
                     }));
                 }
             };
@@ -755,7 +783,7 @@ fn handle_request_json(
                 Ok(result) => match serde_json::to_value(result) {
                     Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                     Err(err) => {
-                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } })
+                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": sanitize_serde_json_error(&err) } })
                     }
                 },
                 Err(err) => {
@@ -787,7 +815,7 @@ fn handle_request_json(
                     return Ok(json!({
                         "jsonrpc": "2.0",
                         "id": id,
-                        "error": { "code": -32602, "message": err.to_string() }
+                        "error": { "code": -32602, "message": sanitize_serde_json_error(&err) }
                     }));
                 }
             };
@@ -800,7 +828,7 @@ fn handle_request_json(
                 Ok(edit) => match serde_json::to_value(edit) {
                     Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                     Err(err) => {
-                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } })
+                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": sanitize_serde_json_error(&err) } })
                     }
                 },
                 Err(err) => json!({
@@ -830,7 +858,7 @@ fn handle_request_json(
                     return Ok(json!({
                         "jsonrpc": "2.0",
                         "id": id,
-                        "error": { "code": -32602, "message": err.to_string() }
+                        "error": { "code": -32602, "message": sanitize_serde_json_error(&err) }
                     }));
                 }
             };
@@ -840,7 +868,7 @@ fn handle_request_json(
                 Ok(edit) => match serde_json::to_value(edit) {
                     Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                     Err(err) => {
-                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } })
+                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": sanitize_serde_json_error(&err) } })
                     }
                 },
                 Err(err) => {
@@ -873,7 +901,7 @@ fn handle_request_json(
                     return Ok(json!({
                         "jsonrpc": "2.0",
                         "id": id,
-                        "error": { "code": -32602, "message": err.to_string() }
+                        "error": { "code": -32602, "message": sanitize_serde_json_error(&err) }
                     }));
                 }
             };
@@ -883,7 +911,7 @@ fn handle_request_json(
                 Ok(edit) => match serde_json::to_value(edit) {
                     Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                     Err(err) => {
-                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } })
+                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": sanitize_serde_json_error(&err) } })
                     }
                 },
                 Err(err) => {
