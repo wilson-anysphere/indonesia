@@ -1066,6 +1066,15 @@ impl TypeStore {
                     is_abstract: false,
                 },
                 MethodDef {
+                    name: "trim".to_string(),
+                    type_params: vec![],
+                    params: vec![],
+                    return_type: string_ty.clone(),
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
+                MethodDef {
                     name: "isEmpty".to_string(),
                     type_params: vec![],
                     params: vec![],

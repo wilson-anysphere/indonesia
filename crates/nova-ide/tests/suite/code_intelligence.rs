@@ -1158,6 +1158,46 @@ class A {
 }
 
 #[test]
+fn completion_resolves_cast_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m(Object obj) {
+    ((String) obj).<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain String.length for cast receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_call_chain_on_cast_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m(Object obj) {
+    ((String) obj).trim().<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain String.length after trim() on cast receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_at_eof_after_whitespace_is_deterministic() {
     let (db, file, pos) = fixture(
         r#"

@@ -10875,6 +10875,11 @@ pub(crate) fn infer_receiver_type_before_dot(
         return Some(field.ty.clone());
     }
 
+    // Cast expressions like `((String) obj).<cursor>`.
+    if let Some(cast_ty) = cast_type_in_expr(inner) {
+        return Some(cast_ty.to_string());
+    }
+
     // Best-effort semantic dotted-chain support for parenthesized receivers like
     // `(this.foo.bar).<cursor>`.
     //
@@ -10918,6 +10923,56 @@ pub(crate) fn infer_receiver_type_before_dot(
     }
 
     None
+}
+
+fn cast_type_in_expr(expr: &str) -> Option<&str> {
+    fn looks_like_cast_type(ty: &str) -> bool {
+        let ty = ty.trim();
+        if ty.is_empty() {
+            return false;
+        }
+        if !ty.chars().next().is_some_and(is_ident_start) {
+            return false;
+        }
+        if ty.contains('(') || ty.contains(')') || ty.contains('{') || ty.contains('}') {
+            return false;
+        }
+        if !ty.chars().all(|ch| {
+            ch.is_ascii_alphanumeric()
+                || ch.is_ascii_whitespace()
+                || matches!(ch, '_' | '$' | '.' | '<' | '>' | ',' | '?' | '[' | ']')
+        }) {
+            return false;
+        }
+
+        // Keep this heuristic narrow: require that the type looks like a typical Java reference or
+        // primitive type (starts with uppercase or is a known primitive). This avoids treating
+        // arbitrary parenthesized expressions like `(a)+b` as casts.
+        let base = ty
+            .split('<')
+            .next()
+            .unwrap_or(ty)
+            .trim()
+            .trim_end_matches("[]")
+            .trim();
+        matches!(
+            base,
+            "boolean" | "byte" | "short" | "char" | "int" | "long" | "float" | "double"
+        ) || base.contains('.') || base.chars().any(|ch| ch.is_ascii_uppercase())
+    }
+
+    let expr = expr.trim();
+    if !expr.starts_with('(') {
+        return None;
+    }
+    let close = expr.find(')')?;
+
+    let ty = expr.get(1..close)?.trim();
+    let after = expr.get(close + 1..)?.trim_start();
+    if after.is_empty() {
+        return None;
+    }
+    looks_like_cast_type(ty).then_some(ty)
 }
 
 fn infer_expr_type_for_parenthesized_member_chain(
@@ -11738,6 +11793,15 @@ fn infer_receiver_type_of_expr_ending_at(
     let open_paren = find_matching_open_paren(bytes, end - 1)?;
     let (start, inner_end) = unwrap_paren_expr(bytes, open_paren, end - 1)?;
     let inner = text.get(start..inner_end)?.trim();
+
+    if let Some(cast_ty) = cast_type_in_expr(inner) {
+        let ty = parse_source_type_in_context(types, file_ctx, cast_ty);
+        return match ty {
+            Type::Unknown | Type::Error => None,
+            other => Some(other),
+        };
+    }
+
     let (ty, _call_kind) = infer_receiver(types, analysis, file_ctx, inner, expr_end);
     match ty {
         Type::Unknown | Type::Error => None,
@@ -19454,6 +19518,15 @@ fn add_builtin_string_methods(types: &mut TypeStore, string: ClassId) {
             is_abstract: false,
         },
         MethodDef {
+            name: "trim".to_string(),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: string_ty.clone(),
+            is_static: false,
+            is_varargs: false,
+            is_abstract: false,
+        },
+        MethodDef {
             name: "isEmpty".to_string(),
             type_params: Vec::new(),
             params: Vec::new(),
@@ -21857,6 +21930,32 @@ class A {
             .find("s().")
             .expect("expected `s().` in fixture")
             + "s()".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert!(
+            ty.as_deref().unwrap_or_default().contains("String"),
+            "expected receiver type to contain `String`, got {ty:?}"
+        );
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_cast_receiver_type() {
+        let java = r#"
+class A {
+  void m(Object obj) {
+    ((String) obj).
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("((String) obj).")
+            .expect("expected `((String) obj).` in fixture")
+            + "((String) obj)".len();
 
         let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
         assert!(
