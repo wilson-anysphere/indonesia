@@ -5,6 +5,7 @@ pub mod edit;
 pub mod id;
 pub mod name;
 pub mod path;
+pub mod sanitize;
 pub mod text;
 
 pub mod fs;
@@ -55,6 +56,7 @@ pub use edit::{apply_text_edits, normalize_text_edits, EditError, TextEdit, Work
 pub use id::*;
 pub use name::{InternedName, Name, NameInterner, SymbolName};
 pub use path::{file_uri_to_path, path_to_file_uri, AbsPathBuf, PathToUriError, UriToPathError};
+pub use sanitize::sanitize_json_error_message;
 pub use text::{LineCol, LineIndex, Position, Range, TextRange, TextSize};
 
 #[cfg(feature = "lsp")]
