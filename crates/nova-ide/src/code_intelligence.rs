@@ -11951,9 +11951,10 @@ fn constructor_type_name_for_token_idx(tokens: &[Token], name_idx: usize) -> Opt
             .get(i)
             .is_some_and(|t| t.kind == TokenKind::Ident && t.text == "new")
         {
-            let (ty_name, last_ident_idx) = parse_type_name_after_new(tokens, i + 1)?;
-            if last_ident_idx == name_idx {
-                return Some(ty_name);
+            if let Some((ty_name, last_ident_idx)) = parse_type_name_after_new(tokens, i + 1) {
+                if last_ident_idx == name_idx {
+                    return Some(ty_name);
+                }
             }
         }
     }
