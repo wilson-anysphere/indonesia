@@ -619,6 +619,8 @@ fn related_code_query_skips_unicode_escaped_path_only_selections() {
     for focal_code in [
         r"\u002Fhome\u002Fuser\u002Fsecret\u002Fcredentials",
         r"\u005Chome\u005Cuser\u005Csecret\u005Ccredentials",
+        r"\U0000002Fhome\U0000002Fuser\U0000002Fsecret\U0000002Fcredentials",
+        r"\U0000005Chome\U0000005Cuser\U0000005Csecret\U0000005Ccredentials",
     ] {
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
         assert!(

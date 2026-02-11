@@ -1775,6 +1775,17 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
             }
         }
 
+        // 8-digit escapes like `\U0000002F` (common in some languages) also decode to separators.
+        if bytes[i] == b'U'
+            && i + 8 < bytes.len()
+            && bytes[i + 1..i + 7].iter().all(|b| *b == b'0')
+        {
+            match (bytes[i + 7], bytes[i + 8]) {
+                (b'2', b'f' | b'F') | (b'5', b'c' | b'C') => return true,
+                _ => {}
+            }
+        }
+
         i += 1;
     }
 
