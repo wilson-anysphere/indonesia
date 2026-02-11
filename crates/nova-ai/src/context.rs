@@ -1646,7 +1646,16 @@ fn looks_like_obvious_secret_token(tok: &str) -> bool {
     }
 
     let lower = trimmed.to_ascii_lowercase();
-    if lower.starts_with("ghp_") && trimmed.len() >= 20 {
+    if lower.starts_with("github_pat_") && trimmed.len() >= 20 {
+        return true;
+    }
+
+    if (lower.starts_with("ghp_")
+        || lower.starts_with("gho_")
+        || lower.starts_with("ghs_")
+        || lower.starts_with("ghu_"))
+        && trimmed.len() >= 20
+    {
         return true;
     }
 
@@ -1679,7 +1688,16 @@ fn looks_like_secret_token(tok: &str) -> bool {
     }
 
     let lower = trimmed.to_ascii_lowercase();
-    if lower.starts_with("ghp_") && trimmed.len() >= 20 {
+    if lower.starts_with("github_pat_") && trimmed.len() >= 20 {
+        return true;
+    }
+
+    if (lower.starts_with("ghp_")
+        || lower.starts_with("gho_")
+        || lower.starts_with("ghs_")
+        || lower.starts_with("ghu_"))
+        && trimmed.len() >= 20
+    {
         return true;
     }
 

@@ -855,6 +855,25 @@ fn related_code_query_skips_google_api_key_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_github_pat_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for GitHub PAT related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = "github_pat_ABCDEFGHIJKLMNOPQRST";
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for GitHub PAT-only focal code"
+    );
+}
+
+#[test]
 fn related_code_query_skips_high_entropy_token_only_selections() {
     struct PanicSearch;
 
