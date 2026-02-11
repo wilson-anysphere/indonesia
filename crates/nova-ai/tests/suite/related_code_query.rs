@@ -257,28 +257,43 @@ fn related_code_query_avoids_percent_encoded_path_segments() {
         }
     }
 
-    let search = CapturingSearch::default();
     let private_segment = "NOVA_AI_PRIVATE_USER_12345";
-    let focal_code = format!(
-        "%2Fhome%2Fuser%2Fmy-{private_segment}-project%2Fsrc%2Fmain%2Fjava\nreturn foo.bar();\n"
-    );
+    for sep in [
+        // Single-encoded.
+        "%2F",
+        "%5C",
+        // Double-encoded.
+        "%252F",
+        "%255C",
+        // Triple-encoded.
+        "%25252F",
+        "%25255C",
+        // Quad-encoded.
+        "%2525252F",
+        "%2525255C",
+    ] {
+        let search = CapturingSearch::default();
+        let focal_code = format!(
+            "{sep}home{sep}user{sep}my-{private_segment}-project{sep}src{sep}main{sep}java\nreturn foo.bar();\n"
+        );
 
-    let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
-    let query = search
-        .last_query
-        .lock()
-        .expect("lock poisoned")
-        .clone()
-        .expect("query captured");
+        let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+        let query = search
+            .last_query
+            .lock()
+            .expect("lock poisoned")
+            .clone()
+            .expect("query captured");
 
-    assert!(
-        !query.contains(private_segment),
-        "query should not include percent-encoded path fragments: {query}"
-    );
-    assert!(
-        query.contains("foo") || query.contains("bar"),
-        "expected query to retain non-path identifiers, got: {query}"
-    );
+        assert!(
+            !query.contains(private_segment),
+            "query should not include percent-encoded path fragments: {query}"
+        );
+        assert!(
+            query.contains("foo") || query.contains("bar"),
+            "expected query to retain non-path identifiers, got: {query}"
+        );
+    }
 }
 
 #[test]
@@ -784,6 +799,10 @@ fn related_code_query_skips_percent_encoded_path_only_selections() {
         "%5Chome%5Cuser%5Csecret%5Ccredentials",
         "%252Fhome%252Fuser%252Fsecret%252Fcredentials",
         "%255Chome%255Cuser%255Csecret%255Ccredentials",
+        "%25252Fhome%25252Fuser%25252Fsecret%25252Fcredentials",
+        "%25255Chome%25255Cuser%25255Csecret%25255Ccredentials",
+        "%2525252Fhome%2525252Fuser%2525252Fsecret%2525252Fcredentials",
+        "%2525255Chome%2525255Cuser%2525255Csecret%2525255Ccredentials",
     ] {
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
         assert!(

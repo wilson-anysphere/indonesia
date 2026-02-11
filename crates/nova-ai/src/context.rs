@@ -2024,11 +2024,23 @@ fn token_contains_percent_encoded_path_separator(tok: &str) -> bool {
             return true;
         }
 
-        // Double-encoded separators like `%252f` decode to `%2f`.
-        if decoded == b'%' && i + 4 < bytes.len() {
-            match (bytes[i + 3], bytes[i + 4]) {
-                (b'2', b'f' | b'F') | (b'5', b'c' | b'C') => return true,
-                _ => {}
+        // Double-encoded (or more) separators like `%252f` or `%25252f` decode to `%2f`.
+        if decoded == b'%' {
+            let mut j = i + 3;
+            // Each time a `%` is percent-encoded, it becomes `%25`, leaving a suffix like:
+            // - `%252f`   (encoded `%2f` once)
+            // - `%25252f` (encoded twice)
+            // - `%2525252f` (encoded three times)
+            //
+            // Treat any run of `25` pairs followed by a separator code as a path separator.
+            while j + 1 < bytes.len() && bytes[j] == b'2' && bytes[j + 1] == b'5' {
+                j += 2;
+            }
+            if j + 1 < bytes.len() {
+                match (bytes[j], bytes[j + 1]) {
+                    (b'2', b'f' | b'F') | (b'5', b'c' | b'C') => return true,
+                    _ => {}
+                }
             }
         }
 
