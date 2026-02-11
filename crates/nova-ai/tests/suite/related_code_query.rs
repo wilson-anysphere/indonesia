@@ -360,6 +360,71 @@ fn related_code_query_avoids_percent_encoded_unicode_separator_path_segments() {
 }
 
 #[test]
+fn related_code_query_avoids_percent_encoded_html_entity_path_segments() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    fn double_encode_percent(input: &str) -> String {
+        input.replace('%', "%25")
+    }
+
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+    for sep in [
+        "%26sol%3B",          // &sol;
+        "%26sol",             // &sol (no semicolon)
+        "%26slash%3B",        // &slash; (nonstandard but seen in logs)
+        "%26slash",           // &slash (no semicolon)
+        "%26dsol%3B",         // &dsol;
+        "%26bsol%3B",         // &bsol;
+        "%26Backslash%3B",    // &Backslash;
+        "%26setminus%3B",     // &setminus;
+        "%26setmn%3B",        // &setmn;
+        "%26smallsetminus%3B", // &smallsetminus;
+        "%26ssetmn%3B",       // &ssetmn;
+        "%26frasl%3B",        // &frasl;
+        "%26%2347%3B",        // &#47;
+        "%26%23x2F%3B",       // &#x2F;
+        "%26%2347",           // &#47 (no semicolon)
+    ] {
+        let mut encoded = sep.to_string();
+        for _ in 0..3 {
+            let search = CapturingSearch::default();
+            let focal_code = format!(
+                "{encoded}home{encoded}user{encoded}my-{private_segment}-project{encoded}src{encoded}main{encoded}java\nreturn foo.bar();\n"
+            );
+
+            let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+            let query = search
+                .last_query
+                .lock()
+                .expect("lock poisoned")
+                .clone()
+                .expect("query captured");
+
+            assert!(
+                !query.contains(private_segment),
+                "query should not include percent-encoded HTML entity path fragments: {query}"
+            );
+            assert!(
+                query.contains("foo") || query.contains("bar"),
+                "expected query to retain non-path identifiers, got: {query}"
+            );
+
+            encoded = double_encode_percent(&encoded);
+        }
+    }
+}
+
+#[test]
 fn related_code_query_avoids_html_entity_percent_encoded_path_segments() {
     #[derive(Default)]
     struct CapturingSearch {
@@ -1478,6 +1543,48 @@ fn related_code_query_skips_percent_encoded_unicode_separator_path_only_selectio
             assert!(
                 req.related_code.is_empty(),
                 "expected no related code for percent-encoded unicode path-only focal code"
+            );
+
+            encoded = double_encode_percent(&encoded);
+        }
+    }
+}
+
+#[test]
+fn related_code_query_skips_percent_encoded_html_entity_path_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for percent-encoded HTML entity path selections");
+        }
+    }
+
+    fn double_encode_percent(input: &str) -> String {
+        input.replace('%', "%25")
+    }
+
+    let search = PanicSearch;
+    for sep in [
+        "%26sol%3B",
+        "%26sol",
+        "%26slash%3B",
+        "%26dsol%3B",
+        "%26bsol%3B",
+        "%26Backslash%3B",
+        "%26setminus%3B",
+        "%26frasl%3B",
+        "%26%2347%3B",
+        "%26%23x2F%3B",
+        "%26%2347",
+    ] {
+        let mut encoded = sep.to_string();
+        for _ in 0..3 {
+            let focal_code = format!("{encoded}home{encoded}user{encoded}secret{encoded}credentials");
+            let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+            assert!(
+                req.related_code.is_empty(),
+                "expected no related code for percent-encoded HTML entity path-only focal code"
             );
 
             encoded = double_encode_percent(&encoded);

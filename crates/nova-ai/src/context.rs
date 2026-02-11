@@ -2632,7 +2632,21 @@ fn token_contains_percent_encoded_path_separator(tok: &str) -> bool {
     }
 
     fn bytes_contain_path_separator(bytes: &[u8]) -> bool {
-        bytes.iter().any(|b| *b == b'/' || *b == b'\\') || bytes_contain_unicode_path_separator(bytes)
+        if bytes.iter().any(|b| *b == b'/' || *b == b'\\') || bytes_contain_unicode_path_separator(bytes)
+        {
+            return true;
+        }
+
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            return false;
+        };
+
+        token_contains_html_entity_path_separator(text)
+            || token_contains_html_entity_percent_encoded_path_separator(text)
+            || token_contains_unicode_escaped_path_separator(text)
+            || token_contains_hex_escaped_path_separator(text)
+            || token_contains_octal_escaped_path_separator(text)
+            || token_contains_backslash_hex_escaped_path_separator(text)
     }
 
     // Percent-encoded tokens can hide both ASCII separators (`%2F`) and Unicode lookalikes
