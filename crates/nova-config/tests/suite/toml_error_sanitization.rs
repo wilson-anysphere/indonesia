@@ -71,3 +71,38 @@ kind = "{secret}"
         "expected ConfigError toml message to include redaction marker: {message}"
     );
 }
+
+#[test]
+fn config_toml_errors_do_not_echo_backticked_numeric_values() {
+    let secret_number = 9_876_543_210u64;
+    let secret_text = secret_number.to_string();
+    let text = format!(
+        r#"
+[ai]
+enabled = {secret_number}
+"#
+    );
+
+    let raw_err = toml::from_str::<NovaConfig>(&text).expect_err("expected type mismatch");
+    let raw_message = raw_err.message();
+    assert!(
+        raw_message.contains(&secret_text),
+        "expected raw toml error message to include the numeric value so this test would catch leaks: {raw_message}"
+    );
+
+    let err = NovaConfig::load_from_str_with_diagnostics(&text).expect_err("expected parse error");
+    assert!(
+        matches!(err, ConfigError::Toml(_)),
+        "expected ConfigError::Toml, got {err:?}"
+    );
+
+    let message = err.to_string();
+    assert!(
+        !message.contains(&secret_text),
+        "expected ConfigError toml message to omit numeric values: {message}"
+    );
+    assert!(
+        message.contains("<redacted>"),
+        "expected ConfigError toml message to include redaction marker: {message}"
+    );
+}
