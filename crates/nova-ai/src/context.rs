@@ -1702,6 +1702,36 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 }
             }
 
+            // Skip the percent entity names themselves (`percnt`/`percent`) even when the entity is
+            // missing its terminating `;` (e.g. `&percnt&#50;&#70;home`, which decodes to `%2Fhome`).
+            // These tokens are low-signal and can otherwise trigger semantic search on path-only
+            // selections.
+            if start > 0
+                && bytes[start - 1] == b'&'
+                && (tok.eq_ignore_ascii_case("percnt") || tok.eq_ignore_ascii_case("percent"))
+            {
+                let mut j = end;
+                let scan_end = j.saturating_add(64).min(bytes.len());
+                while j <= scan_end {
+                    if percent_encoded_byte_before(bytes, j).is_some() {
+                        return true;
+                    }
+                    j += 1;
+                }
+            }
+
+            // Skip identifiers inside numeric percent entities (e.g. `x25` in `&#x25...`) even when
+            // the entity omits its terminating `;`. These fragments are low-signal and can leak
+            // through when the following percent-encoded hex digits are themselves HTML entities
+            // (e.g. `&#x25&#50;&#70;home` == `%2Fhome`).
+            if start > 1
+                && bytes[start - 2] == b'&'
+                && bytes[start - 1] == b'#'
+                && numeric_fragment_after_hash_value(tok.as_bytes()) == Some(37)
+            {
+                return true;
+            }
+
             // Handle percent-encoded separators where the `%` itself is HTML-escaped, e.g.
             // `&#37;2Fhome...` or `&amp;#37;252Fhome...`. The surrounding token starts with the hex
             // digits (`2F`, `252F`, ...) and the entity delimiter `;` is treated as a boundary, so
@@ -3314,6 +3344,89 @@ fn percent_encoded_byte_before(bytes: &[u8], idx: usize) -> Option<u8> {
         }
     }
 
+    fn ends_with_named_percent_entity_without_semicolon(bytes: &[u8], cursor: usize) -> bool {
+        if cursor >= 7
+            && bytes[cursor - 7] == b'&'
+            && bytes[cursor - 6..cursor].eq_ignore_ascii_case(b"percnt")
+        {
+            return true;
+        }
+        if cursor >= 8
+            && bytes[cursor - 8] == b'&'
+            && bytes[cursor - 7..cursor].eq_ignore_ascii_case(b"percent")
+        {
+            return true;
+        }
+        false
+    }
+
+    fn ends_with_numeric_percent_entity_without_semicolon(bytes: &[u8], cursor: usize) -> bool {
+        if cursor < 4 {
+            return false;
+        }
+
+        // Scan backwards for the start of a numeric entity (`&#...`) that ends at `cursor` without
+        // a semicolon. This is used to catch patterns like `&#37E2`/`&#37&#50;` and `&#x25E2`.
+        let mut amp = None;
+        let mut i = cursor;
+        let mut scanned = 0usize;
+        while i > 0 && scanned < 32 {
+            i -= 1;
+            scanned += 1;
+            if bytes[i] == b'&' {
+                amp = Some(i);
+                break;
+            }
+        }
+
+        let Some(amp) = amp else {
+            return false;
+        };
+        if amp + 2 >= cursor || bytes[amp + 1] != b'#' {
+            return false;
+        }
+
+        let mut j = amp + 2;
+        let base = match bytes.get(j) {
+            Some(b'x') | Some(b'X') => {
+                j += 1;
+                16u32
+            }
+            _ => 10u32,
+        };
+        if j >= cursor {
+            return false;
+        }
+
+        let mut digits = &bytes[j..cursor];
+        while digits.first().is_some_and(|b| *b == b'0') {
+            digits = &digits[1..];
+        }
+        if digits.is_empty() || digits.len() > 8 {
+            return false;
+        }
+
+        let mut value = 0u32;
+        for &b in digits {
+            let digit = if base == 16 {
+                let Some(v) = hex_value(b) else {
+                    return false;
+                };
+                v as u32
+            } else if b.is_ascii_digit() {
+                (b - b'0') as u32
+            } else {
+                return false;
+            };
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+        }
+
+        value == 37
+    }
+
     fn html_numeric_entity_value(bytes: &[u8], end_semicolon: usize) -> Option<(usize, u32)> {
         if end_semicolon >= bytes.len() || bytes[end_semicolon] != b';' {
             return None;
@@ -3433,6 +3546,15 @@ fn percent_encoded_byte_before(bytes: &[u8], idx: usize) -> Option<u8> {
         {
             return Some((hi << 4) | lo);
         }
+    }
+
+    // Handle percent HTML entities without semicolons, e.g. `&percnt2F`, `&percnt&#50;&#70;`,
+    // `&#37E2`, or `&#37&#50;&#70;`. These constructs appear in HTML-escaped logs and should be
+    // treated as path separators to avoid leaking path segments into semantic-search queries.
+    if ends_with_named_percent_entity_without_semicolon(bytes, cursor)
+        || ends_with_numeric_percent_entity_without_semicolon(bytes, cursor)
+    {
+        return Some((hi << 4) | lo);
     }
 
     None

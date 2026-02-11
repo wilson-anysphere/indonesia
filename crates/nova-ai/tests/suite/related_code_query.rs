@@ -2339,6 +2339,15 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_wit
         "&#37;&#50;&#102;",
         "&#37;&#53;&#67;",
         "&#37;&#53;&#99;",
+        // Missing semicolons on the percent entity itself.
+        "&percnt&#50;&#70;",
+        "&percnt&#53;&#67;",
+        "&percent&#50;&#70;",
+        "&percent&#53;&#67;",
+        "&#37&#50;&#70;",
+        "&#37&#53;&#67;",
+        "&#x25&#50;&#70;",
+        "&#x25&#53;&#67;",
         // Mixed literal + entity hex digits.
         "&#37;2&#70;",
         "&#37;&#50;F",
@@ -2347,6 +2356,8 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_wit
         // Named percent entity.
         "&percnt;&#50;&#70;",
         "&percnt;&#53;&#67;",
+        "&percent;&#50;&#70;",
+        "&percent;&#53;&#67;",
     ] {
         let search = PanicSearch { sep };
         let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
