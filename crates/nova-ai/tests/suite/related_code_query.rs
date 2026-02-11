@@ -782,6 +782,7 @@ fn related_code_query_avoids_html_entity_unicode_separator_path_segments() {
         "&#9585;",  // ╱ box drawings light diagonal (U+2571)
         "&#10742;", // ⧶ solidus with overbar (U+29F6)
         "&#10744;", // ⧸ big solidus (U+29F8)
+        "&dsol;",   // ⧶ solidus with overbar (named entity)
         "&frasl;",  // ⁄ fraction slash (named entity)
         // Backslash-like separators.
         "&#8726;",  // ∖ set minus / backslash-like (U+2216)
@@ -840,6 +841,9 @@ fn related_code_query_avoids_html_entity_unicode_separator_path_segments_without
         "&#9585",  // ╱ box drawings light diagonal (U+2571)
         "&#10742", // ⧶ solidus with overbar (U+29F6)
         "&#10744", // ⧸ big solidus (U+29F8)
+        "&dsol",
+        "&amp;dsol",
+        "&amp;amp;dsol",
         "&frasl",
         "&amp;frasl",
         "&amp;amp;frasl",
@@ -1723,6 +1727,7 @@ fn related_code_query_skips_html_entity_unicode_separator_path_only_selections()
         "&#9585;home&#9585;user&#9585;secret&#9585;credentials",
         "&#10742;home&#10742;user&#10742;secret&#10742;credentials",
         "&#10744;home&#10744;user&#10744;secret&#10744;credentials",
+        "&dsol;home&dsol;user&dsol;secret&dsol;credentials",
         "&frasl;home&frasl;user&frasl;secret&frasl;credentials",
         "&#8726;home&#8726;user&#8726;secret&#8726;credentials",
         "&#65340;home&#65340;user&#65340;secret&#65340;credentials",
@@ -1759,6 +1764,9 @@ fn related_code_query_skips_html_entity_unicode_separator_path_only_selections_w
         "&#9585home&#9585user&#9585secret&#9585credentials",
         "&#10742home&#10742user&#10742secret&#10742credentials",
         "&#10744home&#10744user&#10744secret&#10744credentials",
+        "&dsolhome&dsoluser&dsolsecret&dsolcredentials",
+        "&amp;dsolhome&amp;dsoluser&amp;dsolsecret&amp;dsolcredentials",
+        "&amp;amp;dsolhome&amp;amp;dsoluser&amp;amp;dsolsecret&amp;amp;dsolcredentials",
         "&fraslhome&frasluser&fraslsecret&fraslcredentials",
         "&amp;fraslhome&amp;frasluser&amp;fraslsecret&amp;fraslcredentials",
         "&amp;amp;fraslhome&amp;amp;frasluser&amp;amp;fraslsecret&amp;amp;fraslcredentials",

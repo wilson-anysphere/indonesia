@@ -943,6 +943,10 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                     || token
                         .as_bytes()
                         .get(..4)
+                        .is_some_and(|frag| frag.eq_ignore_ascii_case(b"dsol"))
+                    || token
+                        .as_bytes()
+                        .get(..4)
                         .is_some_and(|frag| frag.eq_ignore_ascii_case(b"bsol"))
                     || token
                         .as_bytes()
@@ -1135,6 +1139,9 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                         || bytes
                             .get(start..start + 5)
                             .is_some_and(|frag| frag.eq_ignore_ascii_case(b"slash"))
+                        || bytes
+                            .get(start..start + 4)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"dsol"))
                         || bytes
                             .get(start..start + 4)
                             .is_some_and(|frag| frag.eq_ignore_ascii_case(b"bsol"))
@@ -1483,6 +1490,7 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
         let name = &bytes[amp + 1..end_semicolon];
         if name.eq_ignore_ascii_case(b"sol")
             || name.eq_ignore_ascii_case(b"slash")
+            || name.eq_ignore_ascii_case(b"dsol")
             || name.eq_ignore_ascii_case(b"bsol")
             || name.eq_ignore_ascii_case(b"backslash")
             || name.eq_ignore_ascii_case(b"frasl")
@@ -1512,6 +1520,7 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
         if stripped && !rest.is_empty() {
             if rest.eq_ignore_ascii_case(b"sol")
                 || rest.eq_ignore_ascii_case(b"slash")
+                || rest.eq_ignore_ascii_case(b"dsol")
                 || rest.eq_ignore_ascii_case(b"bsol")
                 || rest.eq_ignore_ascii_case(b"backslash")
                 || rest.eq_ignore_ascii_case(b"frasl")
@@ -2902,6 +2911,9 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
             || bytes
                 .get(start..start + 5)
                 .is_some_and(|frag| frag.eq_ignore_ascii_case(b"slash"))
+            || bytes
+                .get(start..start + 4)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"dsol"))
             || bytes
                 .get(start..start + 4)
                 .is_some_and(|frag| frag.eq_ignore_ascii_case(b"bsol"))
