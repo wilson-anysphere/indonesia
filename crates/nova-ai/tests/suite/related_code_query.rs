@@ -1183,6 +1183,31 @@ fn related_code_query_skips_stripe_secret_key_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_common_api_token_prefixes_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for token prefix related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_codes = [
+        ["S", "G", ".", "not-a-real-sendgrid-key-but-long-enough"].concat(),
+        ["h", "f", "_", "not-a-real-hf-token-but-long-enough"].concat(),
+        ["do", "p", "_v1", "_", "not-a-real-do-token-but-long-enough"].concat(),
+    ];
+    for focal_code in &focal_codes {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for token-only focal code"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_slack_token_only_selections() {
     struct PanicSearch;
 

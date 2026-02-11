@@ -1932,6 +1932,13 @@ fn looks_like_obvious_secret_token(tok: &str) -> bool {
     {
         return true;
     }
+    if (lower.starts_with("sg.")
+        || lower.starts_with("hf_")
+        || lower.starts_with("dop_v1_"))
+        && trimmed.len() >= 20
+    {
+        return true;
+    }
     if lower.starts_with("gocspx-") && trimmed.len() >= 20 {
         return true;
     }
@@ -2003,6 +2010,13 @@ fn looks_like_secret_token(tok: &str) -> bool {
         || lower.starts_with("rk_live_")
         || lower.starts_with("rk_test_")
         || lower.starts_with("whsec_"))
+        && trimmed.len() >= 20
+    {
+        return true;
+    }
+    if (lower.starts_with("sg.")
+        || lower.starts_with("hf_")
+        || lower.starts_with("dop_v1_"))
         && trimmed.len() >= 20
     {
         return true;
