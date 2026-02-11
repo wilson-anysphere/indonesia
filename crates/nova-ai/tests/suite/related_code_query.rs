@@ -538,6 +538,12 @@ fn related_code_query_avoids_html_entity_percent_encoded_path_segments() {
         "&amp;#37;5C",
         // Nested percent-encoded backslash (`%255C`).
         "&#37;255C",
+        // Percent-encoded Unicode separators via HTML entity percent sign.
+        "&#37;E2&#37;88&#37;95",         // %E2%88%95 (∕ division slash)
+        "&#37;E2&#37;88&#37;96",         // %E2%88%96 (∖ set minus / backslash-like)
+        "&percnt;E2&percnt;88&percnt;95", // %E2%88%95 via named entity
+        // Percent-encoded HTML entities via HTML entity percent sign.
+        "&#37;26sol&#37;3B", // %26sol%3B -> &sol;
     ] {
         let search = CapturingSearch::default();
         let focal_code = format!(
@@ -590,6 +596,12 @@ fn related_code_query_avoids_html_entity_percent_encoded_path_segments_without_s
         "&amp;#000000000372F",
         "&amp;amp;amp;amp;#372F",
         "&amp;percnt2F",
+        // Percent-encoded Unicode separators via HTML entity percent sign, without `;` terminator.
+        "&#37E2&#3788&#3795",       // %E2%88%95 (∕ division slash)
+        "&#37E2&#3788&#3796",       // %E2%88%96 (∖ set minus / backslash-like)
+        "&percntE2&percnt88&percnt95", // %E2%88%95 via named entity
+        // Percent-encoded HTML entities via HTML entity percent sign.
+        "&#3726sol&#373B", // %26sol%3B -> &sol;
         // Backslash separator (`%5C`).
         "&#375C",
         "&#x255C",
@@ -1990,6 +2002,85 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_wit
         assert!(
             req.related_code.is_empty(),
             "expected no related code for long zero-padded HTML entity percent-encoded path-only focal code"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_html_entity_percent_encoded_unicode_separator_path_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for HTML entity percent-encoded unicode separator path selections");
+        }
+    }
+
+    let search = PanicSearch;
+    for sep in [
+        "&#37;E2&#37;88&#37;95",         // %E2%88%95 (∕ division slash)
+        "&#37;E2&#37;88&#37;96",         // %E2%88%96 (∖ set minus / backslash-like)
+        "&percnt;E2&percnt;88&percnt;95", // %E2%88%95 via named entity
+    ] {
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for HTML entity percent-encoded unicode separator path-only focal code"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_html_entity_percent_encoded_unicode_separator_path_only_selections_without_semicolons(
+) {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for HTML entity percent-encoded unicode separator path selections without semicolons"
+            );
+        }
+    }
+
+    let search = PanicSearch;
+    for sep in [
+        "&#37E2&#3788&#3795",       // %E2%88%95 (∕ division slash)
+        "&#37E2&#3788&#3796",       // %E2%88%96 (∖ set minus / backslash-like)
+        "&percntE2&percnt88&percnt95", // %E2%88%95 via named entity
+    ] {
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for HTML entity percent-encoded unicode separator path-only focal code without semicolons"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_html_entity_percent_encoded_html_entity_path_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for HTML entity percent-encoded HTML entity path selections");
+        }
+    }
+
+    let search = PanicSearch;
+    for sep in [
+        "&#37;26sol&#37;3B", // %26sol%3B -> &sol;
+        "&percnt;26sol&percnt;3B",
+        "&#3726sol&#373B", // %26sol%3B -> &sol; (no semicolons)
+        "&percnt26sol&percnt3B",
+    ] {
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for HTML entity percent-encoded HTML entity path-only focal code"
         );
     }
 }

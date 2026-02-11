@@ -1292,14 +1292,17 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
             }
 
             // Skip identifiers inside percent entities (`&percnt;`, `&#37;`, `&amp;#37;`) when they
-            // are immediately followed by a percent-encoded path separator (e.g. `&percnt;2F...`).
-            if after.is_some_and(|b| *b == b';')
-                && html_entity_is_percent(bytes, bounds.end)
-                && bytes
-                    .get(bounds.end + 1..)
-                    .is_some_and(|tail| percent_encoded_path_separator_len(tail).is_some())
-            {
-                return true;
+            // are immediately followed by percent-encoded bytes (e.g. `&percnt;2F...`,
+            // `&percnt;E2...`). These patterns appear in HTML-escaped logs and should be treated as
+            // path-like so low-signal tokens such as `percnt` do not leak into semantic-search
+            // queries.
+            if after.is_some_and(|b| *b == b';') && html_entity_is_percent(bytes, bounds.end) {
+                if bytes
+                    .get(bounds.end + 1..bounds.end + 3)
+                    .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
+                {
+                    return true;
+                }
             }
 
             // Handle percent-encoded separators where the `%` itself is HTML-escaped, e.g.
@@ -1307,10 +1310,18 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
             // digits (`2F`, `252F`, ...) and the entity delimiter `;` is treated as a boundary, so
             // we need to look at the preceding entity to decide whether this identifier is a path
             // segment.
-            if before_idx.is_some_and(|idx| html_entity_is_percent(bytes, idx))
-                && percent_encoded_path_separator_len(token.as_bytes()).is_some()
-            {
-                return true;
+            if before_idx.is_some_and(|idx| html_entity_is_percent(bytes, idx)) {
+                // Treat any token that begins with a percent-encoded byte (`2F`, `E2`, `25`, ...)
+                // as path-like. In HTML-escaped logs this commonly represents `%2F`/`%5C` as well
+                // as percent-encoded Unicode separators (`%E2%88%95`, etc) and percent-encoded HTML
+                // entities (`%26sol%3B`, etc).
+                let token_bytes = token.as_bytes();
+                if token_bytes
+                    .get(..2)
+                    .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
+                {
+                    return true;
+                }
             }
 
             let before_is_sep = before.is_some_and(|b| *b == b'/' || *b == b'\\')
@@ -3312,24 +3323,20 @@ fn token_contains_html_entity_percent_encoded_path_separator(tok: &str) -> bool 
     }
 
     let bytes = tok.as_bytes();
-    for (idx, b) in bytes.iter().enumerate() {
-        if *b != b';' {
-            continue;
-        }
-        if !html_entity_is_percent(bytes, idx) {
-            continue;
-        }
-        if idx + 1 >= bytes.len() {
-            continue;
-        }
-        if percent_encoded_path_separator_len(&bytes[idx + 1..]).is_some() {
-            return true;
-        }
+    if !bytes.contains(&b'&') {
+        return false;
     }
 
-    // Some HTML emitters omit the trailing semicolon in percent entities (e.g. `&#37` or
-    // `&percnt`) and immediately follow it with percent-encoded separator bytes (e.g. `2F...`).
-    // Treat these as encoded separators so paths do not leak into semantic-search queries.
+    // Convert HTML-escaped percent signs (`&#37;`, `&percnt;`, etc) into literal `%` so we can reuse
+    // the normal percent-decoder (which already handles nested encodings, Unicode separators, and
+    // percent-encoded HTML entities such as `%26sol%3B`).
+    //
+    // Note: semicolons are treated as token boundaries elsewhere in the query extractor, so we
+    // also support percent entities without a trailing `;` (e.g. `&#37E2` or `&percntE2`).
+    let mut normalized: Vec<u8> = Vec::new();
+    let mut changed = false;
+    let mut last = 0usize;
+
     let mut i = 0usize;
     while i < bytes.len() {
         if bytes[i] != b'&' {
@@ -3348,13 +3355,12 @@ fn token_contains_html_entity_percent_encoded_path_separator(tok: &str) -> bool 
             }
             break;
         }
-
         if j >= bytes.len() {
             i += 1;
             continue;
         }
 
-        let next = if bytes[j] == b'#' {
+        let mut next = if bytes[j] == b'#' {
             html_numeric_fragment_is_percent(bytes, j).unwrap_or(0)
         } else if bytes.get(j..j + 6).is_some_and(|frag| frag.eq_ignore_ascii_case(b"percnt")) {
             j + 6
@@ -3364,18 +3370,32 @@ fn token_contains_html_entity_percent_encoded_path_separator(tok: &str) -> bool 
             0
         };
 
-        if next != 0
-            && bytes
-                .get(next..)
-                .is_some_and(|tail| percent_encoded_path_separator_len(tail).is_some())
-        {
-            return true;
+        if next == 0 {
+            i += 1;
+            continue;
         }
 
-        i += 1;
+        if bytes.get(next).is_some_and(|b| *b == b';') {
+            next += 1;
+        }
+
+        if !changed {
+            normalized = Vec::with_capacity(bytes.len());
+        }
+        normalized.extend_from_slice(&bytes[last..i]);
+        normalized.push(b'%');
+        changed = true;
+        last = next;
+        i = next;
     }
 
-    false
+    if !changed {
+        return false;
+    }
+
+    normalized.extend_from_slice(&bytes[last..]);
+    let normalized = std::string::String::from_utf8_lossy(&normalized);
+    token_contains_percent_encoded_path_separator(normalized.as_ref())
 }
 
 fn bytes_contain_unicode_path_separator(bytes: &[u8]) -> bool {
