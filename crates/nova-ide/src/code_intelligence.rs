@@ -10816,38 +10816,55 @@ pub(crate) fn infer_receiver_type_before_dot(
             return None;
         }
 
-        let array_ty = if bytes
+        if bytes
             .get(array_expr_end - 1)
             .is_some_and(|b| *b == b')' || *b == b']')
         {
-            infer_receiver_type_before_dot(db, file, array_expr_end)
+            let array_ty = infer_receiver_type_before_dot(db, file, array_expr_end)?;
+            return strip_one_array_dimension(array_ty.as_str());
+        }
+
+        // Best-effort recovery for array expressions qualified by an expression ending in `)`,
+        // e.g. `foo().bar[0].<cursor>` / `((Foo) obj).bar[0].<cursor>`.
+        if ident_chain_is_qualified_by_paren_expr(text, open_bracket, 8) {
+            let (mut types, env) = completion_type_store(db, file);
+            let file_ctx = CompletionResolveCtx::from_tokens(&analysis.tokens).with_env(env);
+            if let Some(ty) = infer_call_chain_field_access_receiver_type_in_store(
+                &mut types,
+                &analysis,
+                &file_ctx,
+                text,
+                open_bracket,
+                6,
+            ) {
+                if let Type::Array(inner) = ty {
+                    return Some(format_type_fully_qualified(&types, inner.as_ref()));
+                }
+            }
+        }
+
+        let (seg_start, segment) = identifier_prefix(text, array_expr_end);
+        let segment = segment.trim();
+        if segment.is_empty() {
+            return None;
+        }
+
+        let (_qual_start, qualifier_prefix) = dotted_qualifier_prefix(text, seg_start);
+        let expr = format!("{qualifier_prefix}{segment}");
+        let expr = expr.trim();
+        if expr.is_empty() {
+            return None;
+        }
+
+        let array_ty = if expr.contains('.') {
+            infer_receiver_type_for_member_access(db, file, expr, dot_offset).and_then(|(ty, kind)| {
+                let trimmed = ty.trim();
+                let expr_trimmed = expr.trim();
+                let is_unresolved_type_ref = kind == CallKind::Static && trimmed == expr_trimmed;
+                (!is_unresolved_type_ref).then_some(ty)
+            })
         } else {
-            let (seg_start, segment) = identifier_prefix(text, array_expr_end);
-            let segment = segment.trim();
-            if segment.is_empty() {
-                return None;
-            }
-
-            let (_qual_start, qualifier_prefix) = dotted_qualifier_prefix(text, seg_start);
-            let expr = format!("{qualifier_prefix}{segment}");
-            let expr = expr.trim();
-            if expr.is_empty() {
-                return None;
-            }
-
-            if expr.contains('.') {
-                infer_receiver_type_for_member_access(db, file, expr, dot_offset).and_then(
-                    |(ty, kind)| {
-                        let trimmed = ty.trim();
-                        let expr_trimmed = expr.trim();
-                        let is_unresolved_type_ref =
-                            kind == CallKind::Static && trimmed == expr_trimmed;
-                        (!is_unresolved_type_ref).then_some(ty)
-                    },
-                )
-            } else {
-                infer_ident_type_name(&analysis, expr, dot_offset)
-            }
+            infer_ident_type_name(&analysis, expr, dot_offset)
         }?;
 
         return strip_one_array_dimension(array_ty.as_str());
@@ -11383,6 +11400,54 @@ fn find_matching_open_bracket(bytes: &[u8], close_bracket_idx: usize) -> Option<
     None
 }
 
+fn ident_chain_is_qualified_by_paren_expr(text: &str, chain_end: usize, max_segments: usize) -> bool {
+    let bytes = text.as_bytes();
+    let receiver_end = skip_whitespace_backwards(text, chain_end.min(bytes.len()));
+    if receiver_end == 0 {
+        return false;
+    }
+
+    let mut cursor_end = receiver_end;
+    let mut chain_start = receiver_end;
+    let mut segments = 0usize;
+    while cursor_end > 0 && segments < max_segments {
+        // Find identifier immediately before `cursor_end`.
+        let mut seg_start = cursor_end;
+        while seg_start > 0 && is_ident_continue(bytes[seg_start - 1] as char) {
+            seg_start -= 1;
+        }
+        if seg_start == cursor_end || !is_ident_start(bytes[seg_start] as char) {
+            break;
+        }
+
+        segments += 1;
+        chain_start = seg_start;
+
+        let before_seg = skip_whitespace_backwards(text, seg_start);
+        if before_seg == 0 || bytes.get(before_seg - 1) != Some(&b'.') {
+            break;
+        }
+        let dot = before_seg - 1;
+        cursor_end = skip_whitespace_backwards(text, dot);
+    }
+
+    if segments == 0 {
+        return false;
+    }
+
+    // Find the dot immediately before the start of the identifier chain and ensure the segment
+    // before it ends with `)`, i.e. `<expr>).<ident_chain>`.
+    let before_chain = skip_whitespace_backwards(text, chain_start);
+    let Some(dot_before_chain) = before_chain
+        .checked_sub(1)
+        .filter(|idx| bytes.get(*idx) == Some(&b'.'))
+    else {
+        return false;
+    };
+    let prev_end = skip_whitespace_backwards(text, dot_before_chain);
+    prev_end > 0 && bytes.get(prev_end - 1) == Some(&b')')
+}
+
 fn unwrap_paren_expr(
     bytes: &[u8],
     open_paren: usize,
@@ -11811,6 +11876,22 @@ fn infer_receiver_type_of_expr_ending_at(
         let array_expr_end = skip_whitespace_backwards(text, open_bracket);
         if array_expr_end == 0 {
             return None;
+        }
+
+        // Prefer the semantic call-chain field access helper for receivers like
+        // `foo().bar[0]` / `((Foo) obj).bar[0]`, so we don't accidentally interpret `bar` as a local
+        // variable when `receiver_before_dot` can't capture the full receiver expression.
+        if let Some(ty) = infer_call_chain_field_access_receiver_type_in_store(
+            types,
+            analysis,
+            file_ctx,
+            text,
+            open_bracket,
+            budget.saturating_sub(1),
+        ) {
+            if let Type::Array(inner) = ty {
+                return Some(*inner);
+            }
         }
 
         let array_ty = if bytes
@@ -22132,6 +22213,39 @@ class A {
             .find("xs[0].")
             .expect("expected `xs[0].` in fixture")
             + "xs[0]".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert!(
+            ty.as_deref().unwrap_or_default().contains("String"),
+            "expected receiver type to contain `String`, got {ty:?}"
+        );
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_array_access_element_type_after_call_chain_field_access()
+    {
+        let java = r#"
+class B {
+  String[] xs = new String[0];
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    b().xs[0].
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("b().xs[0].")
+            .expect("expected `b().xs[0].` in fixture")
+            + "b().xs[0]".len();
 
         let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
         assert!(
