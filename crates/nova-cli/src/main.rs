@@ -3285,7 +3285,8 @@ fn add_lsp_runtime_metrics(run: &mut RuntimeRun, nova_lsp: &PathBuf) -> Result<(
     }
 
     fn write_lsp_message<W: Write>(writer: &mut W, value: &serde_json::Value) -> Result<()> {
-        let payload = serde_json::to_vec(value)?;
+        let payload = serde_json::to_vec(value)
+            .map_err(|err| anyhow::Error::msg(sanitize_serde_json_error(&err)))?;
         write!(writer, "Content-Length: {}\r\n\r\n", payload.len())?;
         writer.write_all(&payload)?;
         writer.flush()?;
@@ -3321,7 +3322,9 @@ fn add_lsp_runtime_metrics(run: &mut RuntimeRun, nova_lsp: &PathBuf) -> Result<(
         );
         let mut payload = vec![0u8; len];
         reader.read_exact(&mut payload)?;
-        Ok(Some(serde_json::from_slice(&payload)?))
+        let value = serde_json::from_slice(&payload)
+            .map_err(|err| anyhow::Error::msg(sanitize_serde_json_error(&err)))?;
+        Ok(Some(value))
     }
 
     fn read_lsp_response<R: Read>(
@@ -3441,4 +3444,122 @@ fn add_lsp_runtime_metrics(run: &mut RuntimeRun, nova_lsp: &PathBuf) -> Result<(
     let _ = child.wait();
 
     Ok(())
+}
+
+fn sanitize_serde_json_error(err: &serde_json::Error) -> String {
+    sanitize_json_error_message(&err.to_string())
+}
+
+fn sanitize_json_error_message(message: &str) -> String {
+    // `serde_json::Error` display strings can include user-provided scalar values (for example:
+    // `invalid type: string "..."`). Avoid echoing those values in CLI error messages because
+    // Nova's perf tooling can process user workspaces and configs that may include secrets.
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let mut end = None;
+        let bytes = rest.as_bytes();
+        for (idx, &b) in bytes.iter().enumerate() {
+            if b != b'"' {
+                continue;
+            }
+
+            // Treat quotes preceded by an odd number of backslashes as escaped.
+            let mut backslashes = 0usize;
+            let mut k = idx;
+            while k > 0 && bytes[k - 1] == b'\\' {
+                backslashes += 1;
+                k -= 1;
+            }
+            if backslashes % 2 == 0 {
+                end = Some(idx);
+                break;
+            }
+        }
+
+        let Some(end) = end else {
+            // Unterminated quote: redact the remainder and stop.
+            out.push_str("<redacted>");
+            rest = "";
+            break;
+        };
+
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+
+    // `serde` wraps unknown fields/variants in backticks:
+    // `unknown field `secret`, expected ...`
+    //
+    // Redact only the first backticked segment so we keep the expected value list actionable.
+    if let Some(start) = out.find('`') {
+        let after_start = &out[start.saturating_add(1)..];
+        let end = if let Some(end_rel) = after_start.rfind("`, expected") {
+            Some(start.saturating_add(1).saturating_add(end_rel))
+        } else if let Some(end_rel) = after_start.rfind('`') {
+            Some(start.saturating_add(1).saturating_add(end_rel))
+        } else {
+            None
+        };
+        if let Some(end) = end {
+            if start + 1 <= end && end <= out.len() {
+                out.replace_range(start + 1..end, "<redacted>");
+            }
+        }
+    }
+
+    out
+}
+
+#[cfg(test)]
+mod json_error_sanitization_tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_serde_json_error_does_not_echo_string_values() {
+        let secret_suffix = "nova-cli-super-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
+        let err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+
+        let message = sanitize_serde_json_error(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized serde_json error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized serde_json error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn sanitize_serde_json_error_does_not_echo_backticked_values() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OnlyFoo {
+            #[allow(dead_code)]
+            foo: u32,
+        }
+
+        let secret_suffix = "nova-cli-backticked-secret";
+        let secret = format!("prefix`, expected {secret_suffix}");
+        let json = format!(r#"{{"{secret}": 1}}"#);
+        let err = serde_json::from_str::<OnlyFoo>(&json).expect_err("expected unknown field error");
+
+        let message = sanitize_serde_json_error(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized serde_json error message to omit backticked values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized serde_json error message to include redaction marker: {message}"
+        );
+    }
 }
