@@ -617,10 +617,8 @@ fn apply_unified_diff_hunks(
                     })?;
                     if original_line != text {
                         return Err(PatchApplyError::UnifiedDiffApplyFailed(format!(
-                            "file '{file}': hunk {hunk_idx} line {line_idx}: context mismatch at old line {} (expected {:?}, got {:?})",
+                            "file '{file}': hunk {hunk_idx} line {line_idx}: context mismatch at old line {}",
                             old_index + 1,
-                            text,
-                            original_line
                         )));
                     }
                     output_lines.push(text.clone());
@@ -634,10 +632,8 @@ fn apply_unified_diff_hunks(
                     })?;
                     if original_line != text {
                         return Err(PatchApplyError::UnifiedDiffApplyFailed(format!(
-                            "file '{file}': hunk {hunk_idx} line {line_idx}: remove mismatch at old line {} (expected {:?}, got {:?})",
+                            "file '{file}': hunk {hunk_idx} line {line_idx}: remove mismatch at old line {}",
                             old_index + 1,
-                            text,
-                            original_line
                         )));
                     }
                     old_index += 1;
@@ -674,38 +670,16 @@ fn apply_unified_diff_hunks(
 #[derive(Debug)]
 enum HunkMismatch {
     MissingLines,
-    ContextMismatch {
-        expected: String,
-        actual: String,
-        line: usize,
-    },
-    RemoveMismatch {
-        expected: String,
-        actual: String,
-        line: usize,
-    },
+    ContextMismatch { line: usize },
+    RemoveMismatch { line: usize },
 }
 
 impl std::fmt::Display for HunkMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HunkMismatch::MissingLines => write!(f, "hunk context went past end of file"),
-            HunkMismatch::ContextMismatch {
-                expected,
-                actual,
-                line,
-            } => write!(
-                f,
-                "context mismatch at old line {line} (expected {expected:?}, got {actual:?})"
-            ),
-            HunkMismatch::RemoveMismatch {
-                expected,
-                actual,
-                line,
-            } => write!(
-                f,
-                "remove mismatch at old line {line} (expected {expected:?}, got {actual:?})"
-            ),
+            HunkMismatch::ContextMismatch { line } => write!(f, "context mismatch at old line {line}"),
+            HunkMismatch::RemoveMismatch { line } => write!(f, "remove mismatch at old line {line}"),
         }
     }
 }
@@ -771,11 +745,7 @@ fn matches_hunk_at(
                     .get(old_index)
                     .ok_or(HunkMismatch::MissingLines)?;
                 if original != text {
-                    return Err(HunkMismatch::ContextMismatch {
-                        expected: text.clone(),
-                        actual: (*original).to_string(),
-                        line: old_index + 1,
-                    });
+                    return Err(HunkMismatch::ContextMismatch { line: old_index + 1 });
                 }
                 old_index += 1;
             }
@@ -784,11 +754,7 @@ fn matches_hunk_at(
                     .get(old_index)
                     .ok_or(HunkMismatch::MissingLines)?;
                 if original != text {
-                    return Err(HunkMismatch::RemoveMismatch {
-                        expected: text.clone(),
-                        actual: (*original).to_string(),
-                        line: old_index + 1,
-                    });
+                    return Err(HunkMismatch::RemoveMismatch { line: old_index + 1 });
                 }
                 old_index += 1;
             }

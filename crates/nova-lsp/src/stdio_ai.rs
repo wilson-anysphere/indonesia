@@ -77,7 +77,7 @@ fn patch_parse_subkind(err: &nova_ai::patch::PatchParseError) -> &'static str {
   use nova_ai::patch::PatchParseError as E;
   match err {
     E::UnsupportedFormat => "unsupportedFormat",
-    E::InvalidJson(_) => "invalidJson",
+    E::InvalidJson { .. } => "invalidJson",
     E::EmptyJsonPatch => "emptyJsonPatch",
     E::InvalidDiff(_) => "invalidDiff",
   }

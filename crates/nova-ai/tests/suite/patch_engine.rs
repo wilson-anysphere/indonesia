@@ -463,3 +463,95 @@ BROKEN
     let err = parse_structured_patch(raw).expect_err("expected parse failure");
     assert!(matches!(err, PatchParseError::InvalidDiff(_)));
 }
+
+#[test]
+fn invalid_unified_diff_errors_do_not_echo_raw_diff_lines() {
+    let secret = "super-secret-diff-line";
+    let diff = format!(
+        "--- a/foo.txt\n+++ b/foo.txt\n{secret}\n",
+    );
+
+    let err = parse_structured_patch(&diff).expect_err("expected invalid diff");
+    let message = err.to_string();
+    assert!(
+        !message.contains(secret),
+        "PatchParseError should not echo raw diff lines: {message}"
+    );
+    assert!(
+        message.contains("line 3"),
+        "PatchParseError should report the offending line number: {message}"
+    );
+
+    let debug = format!("{err:?}");
+    assert!(
+        !debug.contains(secret),
+        "PatchParseError debug should not echo raw diff lines: {debug}"
+    );
+}
+
+#[test]
+fn invalid_unified_diff_hunk_errors_do_not_echo_raw_hunk_lines() {
+    let secret = "super-secret-hunk-line";
+    let diff = format!(
+        "--- a/foo.txt\n+++ b/foo.txt\n@@ -1,1 +1,1 @@\n{secret}\n",
+    );
+
+    let err = parse_structured_patch(&diff).expect_err("expected invalid diff");
+    let message = err.to_string();
+    assert!(
+        !message.contains(secret),
+        "PatchParseError should not echo raw hunk lines: {message}"
+    );
+    assert!(
+        message.contains("line 4"),
+        "PatchParseError should report the offending line number: {message}"
+    );
+}
+
+#[test]
+fn invalid_json_patch_errors_do_not_echo_string_values() {
+    let secret = "super-secret-json-string";
+    let raw = format!(r#"{{ "edits": "{secret}" }}"#);
+
+    let err = parse_structured_patch(&raw).expect_err("expected invalid json");
+    let message = err.to_string();
+    assert!(
+        !message.contains(secret),
+        "PatchParseError should not echo JSON string values: {message}"
+    );
+    assert!(
+        message.contains("<redacted>"),
+        "PatchParseError should include redaction marker: {message}"
+    );
+}
+
+#[test]
+fn unified_diff_apply_errors_do_not_echo_file_contents() {
+    let secret = "sk-verysecretstringthatislong";
+    let ws = VirtualWorkspace::new(vec![(
+        "foo.txt".to_string(),
+        format!("a\n{secret}\n"),
+    )]);
+
+    let diff = r#"--- a/foo.txt
++++ b/foo.txt
+@@ -1,2 +1,2 @@
+ a
+-secret_different
++new
+"#;
+
+    let patch = parse_structured_patch(diff).expect("parse diff");
+    let err = ws.apply_patch(&patch).expect_err("expected apply failure");
+    let message = err.to_string();
+    assert!(
+        !message.contains(secret),
+        "PatchApplyError should not echo file contents: {message}"
+    );
+
+    let debug = format!("{err:?}");
+    assert!(
+        !debug.contains(secret),
+        "PatchApplyError debug should not echo file contents: {debug}"
+    );
+}

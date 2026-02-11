@@ -148,12 +148,45 @@ pub enum JsonPatchOp {
 pub enum PatchParseError {
     #[error("unsupported patch format: expected JSON object or unified diff")]
     UnsupportedFormat,
-    #[error("invalid JSON patch: {0}")]
-    InvalidJson(#[from] serde_json::Error),
+    #[error("invalid JSON patch: {message}")]
+    InvalidJson { message: String },
     #[error("invalid JSON patch: expected at least one edit or op")]
     EmptyJsonPatch,
     #[error("invalid unified diff patch: {0}")]
     InvalidDiff(String),
+}
+
+impl From<serde_json::Error> for PatchParseError {
+    fn from(err: serde_json::Error) -> Self {
+        // `serde_json::Error` display strings can include user-provided scalar values (e.g.
+        // `invalid type: string "..."`), which may include sensitive content from an LLM-produced
+        // patch. Strip quoted substrings to avoid leaking code/secrets through error surfaces.
+        let message = sanitize_json_error_message(&err.to_string());
+        Self::InvalidJson { message }
+    }
+}
+
+fn sanitize_json_error_message(message: &str) -> String {
+    // Conservatively redact all double-quoted substrings. This keeps the error actionable (it
+    // retains the overall structure + line/column info) without echoing potentially-sensitive
+    // content embedded in strings.
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let Some(end) = rest.find('"') else {
+            // Unterminated quote: append the remainder and stop.
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -586,7 +619,8 @@ fn parse_unified_diff(diff: &str) -> Result<UnifiedDiffPatch, PatchParseError> {
         }
 
         return Err(PatchParseError::InvalidDiff(format!(
-            "unexpected line in diff: {line}"
+            "unexpected line in diff at line {}",
+            idx + 1
         )));
     }
 
@@ -755,7 +789,8 @@ fn parse_unified_file_block(
         }
         if !line.starts_with("@@") {
             return Err(PatchParseError::InvalidDiff(format!(
-                "unexpected line between headers and hunks: {line}"
+                "unexpected line between headers and hunks at line {}",
+                idx + 1
             )));
         }
         let (hunk, next_idx) = parse_hunk(lines, idx)?;
@@ -904,7 +939,8 @@ fn parse_hunk(
             }
             _ => {
                 return Err(PatchParseError::InvalidDiff(format!(
-                    "unexpected hunk line prefix: {line}"
+                    "unexpected hunk line prefix {prefix:?} at line {}",
+                    idx + 1
                 )));
             }
         }
@@ -1231,7 +1267,7 @@ index e69de29..4b825dc 100644
     fn malformed_json_fence_returns_invalid_json() {
         let raw = "```json\n{\"edits\":[\n";
         let err = parse_structured_patch(raw).expect_err("expected failure");
-        assert!(matches!(err, PatchParseError::InvalidJson(_)));
+        assert!(matches!(err, PatchParseError::InvalidJson { .. }));
     }
 
     #[test]
