@@ -2845,6 +2845,9 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_wit
         "&amp;#x25u{0032}u{0046}", // %2F
         "&amp;#x25u0035u0043",     // %5C
         "&amp;#x25u{0035}u{0043}", // %5C
+        // Numeric percent entity (`#37`) with digits escaped via unicode sequences.
+        "&amp;#u0033u0037u0032u0046", // %2F
+        "&amp;#u0033u0037u0035u0043", // %5C
         // Missing semicolons on the outer `&amp` escape.
         "&amp#37u0032u0046",    // %2F
         "&amp#x25u0032u0046",   // %2F

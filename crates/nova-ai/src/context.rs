@@ -1743,6 +1743,12 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 }
 
                 let mut j = bounds.end + 1;
+                if percent_marker_end(bytes, j)
+                    .and_then(|digits_start| percent_encoded_byte_after_obfuscated_digits(bytes, digits_start))
+                    .is_some_and(|(value, _)| percent_encoded_byte_is_path_like(value))
+                {
+                    return true;
+                }
                 fn html_named_fragment_is_path_separator(bytes: &[u8], start: usize) -> bool {
                     bytes
                         .get(start..start + 3)
@@ -5100,19 +5106,15 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
             let mut value = 0u32;
             let mut significant = 0usize;
             while j < bytes.len() && significant < 8 {
-                let b = bytes[j];
-                let digit = if base == 16 {
-                    let Some(v) = hex_value(b) else {
-                        break;
-                    };
-                    v as u32
-                } else if b.is_ascii_digit() {
-                    (b - b'0') as u32
-                } else {
+                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, j) else {
                     break;
                 };
+                if base == 10 && digit >= 10 {
+                    break;
+                }
+                let digit = digit as u32;
                 if significant == 0 && digit == 0 {
-                    j += 1;
+                    j = next;
                     continue;
                 }
                 value = value
@@ -5120,8 +5122,11 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
                     .and_then(|v| v.checked_add(digit))
                     .unwrap_or(u32::MAX);
                 significant += 1;
-                j += 1;
+                j = next;
                 if value == 37 {
+                    if bytes.get(j).is_some_and(|b| *b == b';') {
+                        j += 1;
+                    }
                     return Some(j);
                 }
             }
@@ -5145,19 +5150,15 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
             let mut value = 0u32;
             let mut significant = 0usize;
             while j < bytes.len() && significant < 8 {
-                let b = bytes[j];
-                let digit = if base == 16 {
-                    let Some(v) = hex_value(b) else {
-                        break;
-                    };
-                    v as u32
-                } else if b.is_ascii_digit() {
-                    (b - b'0') as u32
-                } else {
+                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, j) else {
                     break;
                 };
+                if base == 10 && digit >= 10 {
+                    break;
+                }
+                let digit = digit as u32;
                 if significant == 0 && digit == 0 {
-                    j += 1;
+                    j = next;
                     continue;
                 }
                 value = value
@@ -5165,7 +5166,7 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
                     .and_then(|v| v.checked_add(digit))
                     .unwrap_or(u32::MAX);
                 significant += 1;
-                j += 1;
+                j = next;
                 if value == 37 {
                     if bytes.get(j).is_some_and(|b| *b == b';') {
                         j += 1;
@@ -6378,7 +6379,7 @@ fn token_contains_obfuscated_percent_marker_path_separator(tok: &str) -> bool {
     while i < bytes.len() {
         let b = bytes[i];
         let maybe_marker = match b {
-            b'%' | b'&' | b'\\' => true,
+            b'%' | b'&' | b'#' | b'\\' => true,
             b'u' | b'U' => bytes
                 .get(i + 1)
                 .is_some_and(|next| *next == b'{' || *next == b'u' || next.is_ascii_hexdigit()),
