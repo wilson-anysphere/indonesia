@@ -1843,6 +1843,94 @@ pub struct LogBuffer {
     inner: Mutex<VecDeque<String>>,
 }
 
+fn log_line_contains_serde_json_error(line: &str) -> bool {
+    // `serde_json::Error` values can embed user-controlled scalar values in their display strings
+    // (for example `invalid type: string "..."` or `unknown field `...`, expected ...`). Those
+    // errors sometimes make their way into tracing logs (notably via `?err`), which are later
+    // included in bug report bundles.
+    //
+    // Keep this detection intentionally narrow: only sanitize log lines that look like they
+    // contain serde/serde_json diagnostics that are known to echo scalar values.
+    line.contains("invalid type:")
+        || line.contains("invalid value:")
+        || line.contains("unknown field")
+        || line.contains("unknown variant")
+}
+
+fn sanitize_json_error_message(message: &str) -> String {
+    // Conservatively redact all double-quoted substrings. This keeps the log message actionable
+    // (it retains the overall structure) without echoing potentially-sensitive content embedded in
+    // strings.
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let mut end = None;
+        let bytes = rest.as_bytes();
+        for (idx, &b) in bytes.iter().enumerate() {
+            if b != b'"' {
+                continue;
+            }
+
+            // Treat quotes preceded by an odd number of backslashes as escaped.
+            let mut backslashes = 0usize;
+            let mut k = idx;
+            while k > 0 && bytes[k - 1] == b'\\' {
+                backslashes += 1;
+                k -= 1;
+            }
+            if backslashes % 2 == 0 {
+                end = Some(idx);
+                break;
+            }
+        }
+
+        let Some(end) = end else {
+            // Unterminated quote: redact the remainder and stop.
+            out.push_str("<redacted>");
+            rest = "";
+            break;
+        };
+
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+
+    // `serde` wraps unknown fields/variants in backticks:
+    // `unknown field `secret`, expected ...`
+    //
+    // Redact only the first backticked segment so we keep the expected value list actionable.
+    if let Some(start) = out.find('`') {
+        let after_start = &out[start.saturating_add(1)..];
+        let end = if let Some(end_rel) = after_start.rfind("`, expected") {
+            Some(start.saturating_add(1).saturating_add(end_rel))
+        } else if let Some(end_rel) = after_start.rfind('`') {
+            Some(start.saturating_add(1).saturating_add(end_rel))
+        } else {
+            None
+        };
+        if let Some(end) = end {
+            if start + 1 <= end && end <= out.len() {
+                out.replace_range(start + 1..end, "<redacted>");
+            }
+        }
+    }
+
+    out
+}
+
+fn sanitize_bugreport_log_line(line: &str) -> String {
+    if log_line_contains_serde_json_error(line) {
+        sanitize_json_error_message(line)
+    } else {
+        line.to_owned()
+    }
+}
+
 impl LogBuffer {
     pub fn new(capacity: usize) -> Self {
         Self {
@@ -1906,7 +1994,7 @@ impl Drop for LogBufferWriter {
         for line in text.split_terminator('\n') {
             let line = line.trim_end_matches('\r');
             if !line.is_empty() {
-                self.buffer.push_line(line.to_owned());
+                self.buffer.push_line(sanitize_bugreport_log_line(line));
             }
         }
     }
@@ -2239,6 +2327,42 @@ mod toml_tests {
             0,
             "AI audit log file should not be accessible by group/other (mode {:03o})",
             mode
+        );
+    }
+
+    #[test]
+    fn log_buffer_sanitizes_serde_json_error_messages() {
+        let buffer = Arc::new(LogBuffer::new(64));
+        let subscriber = tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::EnvFilter::default()
+                    .add_directive(tracing_subscriber::filter::LevelFilter::WARN.into()),
+            )
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(LogBufferMakeWriter {
+                        buffer: buffer.clone(),
+                    })
+                    .with_ansi(false),
+            );
+
+        tracing::subscriber::with_default(subscriber, || {
+            let secret_suffix = "nova-config-log-buffer-secret-token";
+            let secret = format!("prefix\"{secret_suffix}");
+            let serde_err = serde_json::from_value::<bool>(serde_json::json!(secret))
+                .expect_err("expected type mismatch");
+            let io_err = std::io::Error::new(std::io::ErrorKind::Other, serde_err);
+            tracing::warn!(target: "nova.config", error = ?io_err, "failed to parse JSON");
+        });
+
+        let text = buffer.last_lines(64).join("\n");
+        assert!(
+            !text.contains("nova-config-log-buffer-secret-token"),
+            "expected log buffer to omit string scalar values from serde_json errors: {text}"
+        );
+        assert!(
+            text.contains("<redacted>"),
+            "expected log buffer to include redaction marker: {text}"
         );
     }
 }
