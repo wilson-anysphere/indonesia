@@ -1818,6 +1818,77 @@ fn log_line_contains_serde_json_error(line: &str) -> bool {
         || line.contains("unknown variant")
 }
 
+fn log_line_looks_like_toml_snippet(line: &str) -> bool {
+    // `toml::de::Error`'s default `Display` output includes a source snippet block that can leak
+    // raw config/manifest contents into logs (and therefore bug report bundles). These snippet
+    // blocks include lines like:
+    // - `1 | key = "secret"`
+    // - `  |        ^`
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("-->") {
+        return true;
+    }
+    if trimmed.starts_with('|') {
+        return true;
+    }
+
+    // `1 | ...`
+    let mut chars = trimmed.chars();
+    let mut saw_digit = false;
+    while let Some(ch) = chars.next() {
+        if ch.is_ascii_digit() {
+            saw_digit = true;
+            continue;
+        }
+        if saw_digit && ch.is_whitespace() {
+            continue;
+        }
+        if saw_digit && ch == '|' {
+            return true;
+        }
+        break;
+    }
+
+    false
+}
+
+fn json_log_line_contains_toml_snippet(line: &str) -> bool {
+    // JSON log lines are single-line objects; multiline strings (like TOML snippet displays) are
+    // encoded with `\n` escapes. Look for a `\n`-prefixed snippet line like `\n1 | ...`.
+    if !line.contains("\\n") || !line.contains('|') {
+        return false;
+    }
+
+    let bytes = line.as_bytes();
+    let mut i = 0usize;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'\\' && bytes[i + 1] == b'n' {
+            let mut j = i + 2;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+
+            if j < bytes.len() && bytes[j].is_ascii_digit() {
+                while j < bytes.len() && bytes[j].is_ascii_digit() {
+                    j += 1;
+                }
+                while j < bytes.len() && bytes[j] == b' ' {
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j] == b'|' {
+                    return true;
+                }
+            } else if j < bytes.len() && bytes[j] == b'|' {
+                return true;
+            }
+        }
+
+        i += 1;
+    }
+
+    false
+}
+
 fn sanitize_json_error_message(message: &str) -> String {
     nova_core::sanitize_json_error_message(message)
 }
@@ -1825,6 +1896,8 @@ fn sanitize_json_error_message(message: &str) -> String {
 fn sanitize_bugreport_log_line(line: &str) -> String {
     if log_line_contains_serde_json_error(line) {
         sanitize_json_error_message(line)
+    } else if log_line_looks_like_toml_snippet(line) {
+        sanitize_toml_error_message(line)
     } else {
         line.to_owned()
     }
@@ -1854,6 +1927,8 @@ fn sanitize_json_log_value(value: serde_json::Value) -> serde_json::Value {
         serde_json::Value::String(s) => {
             if log_line_contains_serde_json_error(&s) {
                 serde_json::Value::String(sanitize_json_error_message(&s))
+            } else if s.lines().any(log_line_looks_like_toml_snippet) {
+                serde_json::Value::String(sanitize_toml_error_message(&s))
             } else {
                 serde_json::Value::String(s)
             }
@@ -1874,7 +1949,7 @@ fn sanitize_json_log_value(value: serde_json::Value) -> serde_json::Value {
 }
 
 fn sanitize_json_log_line(line: &str) -> String {
-    if !log_line_contains_serde_json_error(line) {
+    if !log_line_contains_serde_json_error(line) && !json_log_line_contains_toml_snippet(line) {
         return line.to_owned();
     }
 
@@ -1903,6 +1978,84 @@ fn sanitize_json_log_text(text: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod bugreport_log_sanitization_tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_bugreport_log_line_redacts_toml_snippet_string_values() {
+        let secret_suffix = "nova-config-toml-snippet-secret";
+        let line = format!(r#"1 | api_key = "prefix\"{secret_suffix}""#);
+        assert!(
+            line.contains(secret_suffix),
+            "expected raw snippet line to include secret so this test catches leaks: {line}"
+        );
+
+        let sanitized = sanitize_bugreport_log_line(&line);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected log sanitizer to omit string values from TOML snippets: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected log sanitizer to include redaction marker: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn sanitize_bugreport_log_line_redacts_toml_snippet_numeric_values() {
+        let secret_number = 9_876_543_210u64;
+        let secret_text = secret_number.to_string();
+        let line = format!("1 | enabled = {secret_number}");
+        assert!(
+            line.contains(&secret_text),
+            "expected raw snippet line to include numeric value so this test catches leaks: {line}"
+        );
+
+        let sanitized = sanitize_bugreport_log_line(&line);
+        assert!(
+            !sanitized.contains(&secret_text),
+            "expected log sanitizer to omit numeric values from TOML snippets: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected log sanitizer to include redaction marker: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn sanitize_json_log_line_redacts_toml_snippet_blocks_in_string_values() {
+        let secret_suffix = "nova-config-json-toml-snippet-secret";
+        let secret_number = 42_424_242u64;
+        let secret_number_text = secret_number.to_string();
+        let message = format!(
+            "TOML parse error at line 1, column 10\n1 | api_key = \"{secret_suffix}\"\n2 | enabled = {secret_number}\n  |          ^"
+        );
+        let line = serde_json::json!({ "message": message }).to_string();
+        assert!(
+            line.contains(secret_suffix),
+            "expected raw JSON log line to include the secret so this test catches leaks: {line}"
+        );
+        assert!(
+            line.contains(&secret_number_text),
+            "expected raw JSON log line to include the numeric value so this test catches leaks: {line}"
+        );
+
+        let sanitized = sanitize_json_log_line(&line);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected JSON log sanitizer to omit string values from TOML snippets: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains(&secret_number_text),
+            "expected JSON log sanitizer to omit numeric values from TOML snippets: {sanitized}"
+        );
+
+        serde_json::from_str::<serde_json::Value>(&sanitized)
+            .expect("expected sanitized log line to remain valid JSON");
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -117,7 +117,83 @@ pub fn sanitize_json_error_message(message: &str) -> String {
 /// This is intentionally string-based so callers can use it without depending on `toml`.
 #[must_use]
 pub fn sanitize_toml_error_message(message: &str) -> String {
-    let out = sanitize_json_error_message(message);
+    fn looks_like_snippet_line(line: &str) -> bool {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('|') {
+            return true;
+        }
+
+        // `toml::de::Error` snippet lines often look like:
+        // `1 | key = "value"` (line number, pipe, raw source).
+        let mut chars = trimmed.chars();
+        let mut saw_digit = false;
+        while let Some(ch) = chars.next() {
+            if ch.is_ascii_digit() {
+                saw_digit = true;
+                continue;
+            }
+
+            if saw_digit && ch.is_whitespace() {
+                continue;
+            }
+
+            if saw_digit && ch == '|' {
+                return true;
+            }
+
+            break;
+        }
+
+        false
+    }
+
+    fn strip_snippet_block(message: &str) -> String {
+        if !message.contains('\n') {
+            return message.to_string();
+        }
+
+        let mut out = String::with_capacity(message.len());
+        for chunk in message.split_inclusive('\n') {
+            let line = chunk.strip_suffix('\n').unwrap_or(chunk);
+            let line = line.trim_end_matches('\r');
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("-->") || looks_like_snippet_line(line) {
+                break;
+            }
+            out.push_str(chunk);
+        }
+
+        out.trim_end_matches(&['\n', '\r'][..]).to_string()
+    }
+
+    fn redact_single_snippet_line(line: &str) -> Option<String> {
+        let line = line.trim_end_matches('\r');
+        if !looks_like_snippet_line(line) {
+            return None;
+        }
+
+        let pipe = line.find('|')?;
+        let after_pipe = &line[pipe + 1..];
+        if after_pipe.trim().is_empty() {
+            return Some(line.to_string());
+        }
+
+        let mut out = String::with_capacity(line.len());
+        out.push_str(&line[..pipe + 1]);
+        out.push(' ');
+        out.push_str("<redacted>");
+        Some(out)
+    }
+
+    // `toml::de::Error::message()` is snippet-free, but callers occasionally stringify full
+    // `toml::de::Error` values (including the source snippet) when logging or panicking.
+    // Best-effort: strip the snippet block so we don't leak raw config/manifest contents.
+    let mut message = strip_snippet_block(message);
+    if let Some(redacted) = redact_single_snippet_line(&message) {
+        message = redacted;
+    }
+
+    let out = sanitize_json_error_message(&message);
 
     // Some TOML diagnostics (notably semver parsing) quote scalar values using single quotes.
     // Redact those as well, using the same backslash/escape handling we apply to double quotes.
@@ -294,6 +370,48 @@ mod tests {
         assert!(
             !sanitized.contains("123"),
             "expected TOML sanitizer to omit backticked scalar values: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected TOML sanitizer to include redaction marker: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn sanitize_toml_error_message_strips_source_snippet_blocks() {
+        let secret_suffix = "nova-core-toml-snippet-secret";
+        let message = format!(
+            "TOML parse error at line 1, column 10\n1 | api_key = \"prefix{secret_suffix}\"\n  |          ^\n"
+        );
+        assert!(
+            message.contains(secret_suffix),
+            "expected raw TOML error display to include the secret so this test catches leaks: {message}"
+        );
+
+        let sanitized = sanitize_toml_error_message(&message);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected TOML sanitizer to omit snippet contents: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains("api_key ="),
+            "expected TOML sanitizer to strip snippet lines entirely: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn sanitize_toml_error_message_redacts_single_snippet_lines_with_unquoted_numbers() {
+        let secret_number = "9876543210";
+        let line = format!("1 | enabled = {secret_number}");
+        assert!(
+            line.contains(secret_number),
+            "expected raw snippet line to include the numeric value so this test catches leaks: {line}"
+        );
+
+        let sanitized = sanitize_toml_error_message(&line);
+        assert!(
+            !sanitized.contains(secret_number),
+            "expected TOML sanitizer to omit numeric values from snippet lines: {sanitized}"
         );
         assert!(
             sanitized.contains("<redacted>"),
