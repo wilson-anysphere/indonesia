@@ -1973,10 +1973,7 @@ fn braced_unicode_escape_is_path_separator(bytes: &[u8], end_brace: usize) -> bo
     }
 
     html_entity_codepoint_is_path_separator(value)
-        || (value == 37
-            && bytes
-                .get(end_brace + 1..end_brace + 3)
-                .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit()))
+        || (value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, end_brace + 1).is_some())
 }
 
 fn unicode_path_separator_before(bytes: &[u8], idx: usize) -> bool {
@@ -3908,6 +3905,270 @@ fn percent_encoded_byte_before(bytes: &[u8], idx: usize) -> Option<u8> {
     None
 }
 
+fn parse_obfuscated_hex_digit(bytes: &[u8], idx: usize) -> Option<(u8, usize)> {
+    fn hex_value(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    fn parse_unicode_escape_value(bytes: &[u8], idx: usize) -> Option<(u32, usize)> {
+        let bytes_len = bytes.len();
+        if idx >= bytes_len {
+            return None;
+        }
+
+        let b = bytes[idx];
+        if b == b'U' {
+            if idx + 9 > bytes_len {
+                return None;
+            }
+            let mut value = 0u32;
+            for &b in &bytes[idx + 1..idx + 9] {
+                value = (value << 4) | hex_value(b)? as u32;
+            }
+            return Some((value, idx + 9));
+        }
+
+        if b != b'u' {
+            return None;
+        }
+
+        let mut j = idx + 1;
+        while j < bytes_len && bytes[j] == b'u' {
+            j += 1;
+        }
+        if j >= bytes_len {
+            return None;
+        }
+
+        if bytes[j] == b'{' {
+            let mut value = 0u32;
+            let mut significant = 0usize;
+            let mut k = j + 1;
+            let scan_end = (k + 1024).min(bytes_len);
+            while k < scan_end && significant < 8 {
+                if bytes[k] == b'}' {
+                    break;
+                }
+                let hex = hex_value(bytes[k])?;
+                if significant == 0 && hex == 0 {
+                    k += 1;
+                    continue;
+                }
+                value = (value << 4) | hex as u32;
+                significant += 1;
+                k += 1;
+            }
+            if significant == 0 {
+                return None;
+            }
+            if k < bytes_len && bytes[k] == b'}' {
+                return Some((value, k + 1));
+            }
+            None
+        } else {
+            if j + 4 > bytes_len {
+                return None;
+            }
+            let mut value = 0u32;
+            for &b in &bytes[j..j + 4] {
+                value = (value << 4) | hex_value(b)? as u32;
+            }
+            Some((value, j + 4))
+        }
+    }
+
+    fn parse_hex_escape_value(bytes: &[u8], idx: usize) -> Option<(u32, usize)> {
+        let bytes_len = bytes.len();
+        if idx >= bytes_len {
+            return None;
+        }
+
+        let b = bytes[idx];
+        if b != b'x' && b != b'X' {
+            return None;
+        }
+
+        if bytes.get(idx + 1).is_some_and(|b| *b == b'{') {
+            let mut value = 0u32;
+            let mut significant = 0usize;
+            let mut j = idx + 2;
+            let scan_end = (j + 1024).min(bytes_len);
+            while j < scan_end && significant < 8 {
+                if bytes[j] == b'}' {
+                    break;
+                }
+                let hex = hex_value(bytes[j])?;
+                if significant == 0 && hex == 0 {
+                    j += 1;
+                    continue;
+                }
+                value = (value << 4) | hex as u32;
+                significant += 1;
+                j += 1;
+            }
+            if significant == 0 {
+                return None;
+            }
+            if j < bytes_len && bytes[j] == b'}' {
+                return Some((value, j + 1));
+            }
+            return None;
+        }
+
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        let mut j = idx + 1;
+        while j < bytes_len && significant < 8 {
+            let Some(hex) = hex_value(bytes[j]) else {
+                break;
+            };
+            if significant == 0 && hex == 0 {
+                j += 1;
+                continue;
+            }
+            value = (value << 4) | hex as u32;
+            significant += 1;
+            j += 1;
+        }
+        if significant == 0 {
+            None
+        } else {
+            Some((value, j))
+        }
+    }
+
+    fn parse_octal_escape_value(bytes: &[u8], idx: usize) -> Option<(u32, usize)> {
+        let bytes_len = bytes.len();
+        if idx >= bytes_len || bytes[idx] != b'\\' {
+            return None;
+        }
+        let mut value = 0u32;
+        let mut digits = 0usize;
+        let mut j = idx + 1;
+        while j < bytes_len && digits < 3 {
+            let b = bytes[j];
+            if !(b'0'..=b'7').contains(&b) {
+                break;
+            }
+            value = (value << 3) | (b - b'0') as u32;
+            digits += 1;
+            j += 1;
+        }
+        if digits == 0 {
+            None
+        } else {
+            Some((value, j))
+        }
+    }
+
+    fn parse_backslash_hex_escape_value(bytes: &[u8], idx: usize) -> Option<(u32, usize)> {
+        let bytes_len = bytes.len();
+        if idx >= bytes_len || bytes[idx] != b'\\' {
+            return None;
+        }
+        let mut value = 0u32;
+        let mut digits = 0usize;
+        let mut j = idx + 1;
+        while j < bytes_len && digits < 6 {
+            let Some(hex) = hex_value(bytes[j]) else {
+                break;
+            };
+            value = (value << 4) | hex as u32;
+            digits += 1;
+            j += 1;
+        }
+        if digits == 0 {
+            None
+        } else {
+            Some((value, j))
+        }
+    }
+
+    if idx >= bytes.len() {
+        return None;
+    }
+
+    let b = bytes[idx];
+    if let Some(v) = hex_value(b) {
+        return Some((v, idx + 1));
+    }
+
+    if let Some((value, next)) = parse_unicode_escape_value(bytes, idx) {
+        if value <= u32::from(u8::MAX) {
+            let ch = value as u8;
+            if let Some(v) = hex_value(ch) {
+                return Some((v, next));
+            }
+        }
+    }
+
+    if let Some((value, next)) = parse_hex_escape_value(bytes, idx) {
+        if value <= u32::from(u8::MAX) {
+            let ch = value as u8;
+            if let Some(v) = hex_value(ch) {
+                return Some((v, next));
+            }
+        }
+    }
+
+    if b == b'\\' {
+        if bytes.get(idx + 1).is_some_and(|b| *b == b'u' || *b == b'U') {
+            if let Some((value, next)) = parse_unicode_escape_value(bytes, idx + 1) {
+                if value <= u32::from(u8::MAX) {
+                    let ch = value as u8;
+                    if let Some(v) = hex_value(ch) {
+                        return Some((v, next));
+                    }
+                }
+            }
+        }
+
+        if bytes.get(idx + 1).is_some_and(|b| *b == b'x' || *b == b'X') {
+            if let Some((value, next)) = parse_hex_escape_value(bytes, idx + 1) {
+                if value <= u32::from(u8::MAX) {
+                    let ch = value as u8;
+                    if let Some(v) = hex_value(ch) {
+                        return Some((v, next));
+                    }
+                }
+            }
+        }
+
+        // Prefer octal decoding for backslash-digit escapes so sequences like `\\062` map to the
+        // intended ASCII digit rather than being interpreted as hex (`0x62`).
+        if let Some((value, next)) = parse_octal_escape_value(bytes, idx) {
+            if value <= u32::from(u8::MAX) {
+                let ch = value as u8;
+                if let Some(v) = hex_value(ch) {
+                    return Some((v, next));
+                }
+            }
+        }
+
+        if let Some((value, next)) = parse_backslash_hex_escape_value(bytes, idx) {
+            if value <= u32::from(u8::MAX) {
+                let ch = value as u8;
+                if let Some(v) = hex_value(ch) {
+                    return Some((v, next));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn percent_encoded_byte_after_obfuscated_digits(bytes: &[u8], idx: usize) -> Option<(u8, usize)> {
+    let (hi, cursor) = parse_obfuscated_hex_digit(bytes, idx)?;
+    let (lo, cursor) = parse_obfuscated_hex_digit(bytes, cursor)?;
+    Some(((hi << 4) | lo, cursor))
+}
+
 fn percent_encoded_path_separator_len(bytes: &[u8]) -> Option<usize> {
     if bytes.len() < 2 {
         return None;
@@ -4761,6 +5022,29 @@ fn token_contains_percent_encoded_path_separator(tok: &str) -> bool {
         window[0] == b'%' && hex_value(window[1]).is_some() && hex_value(window[2]).is_some()
     });
     if !has_escape {
+        // Some tokens obfuscate percent-escape hex digits via escape sequences (e.g.
+        // `%u0032u0046home` → `%2Fhome`). Treat these as path-like when we can still decode at
+        // least one percent-escape byte.
+        if !bytes.contains(&b'%') {
+            return false;
+        }
+
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if bytes[i] != b'%' {
+                i += 1;
+                continue;
+            }
+
+            if let Some((value, _)) = percent_encoded_byte_after_obfuscated_digits(bytes, i + 1) {
+                if percent_encoded_byte_is_path_like(value) || value == b'%' {
+                    return true;
+                }
+            }
+
+            i += 1;
+        }
+
         return false;
     }
 
@@ -4886,11 +5170,7 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
                 // Percent-encoded separators can hide the `%` via unicode escapes (e.g.
                 // `\u00252Fhome` → `%2Fhome`). Treat these as path-like so segments do not leak into
                 // semantic-search queries.
-                if value == 37
-                    && bytes
-                        .get(k + 1..k + 3)
-                        .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
-                {
+                if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, k + 1).is_some() {
                     return true;
                 }
             }
@@ -4911,11 +5191,7 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
                     if html_entity_codepoint_is_path_separator(value) {
                         return true;
                     }
-                    if value == 37
-                        && bytes
-                            .get(j + 4..j + 6)
-                            .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
-                    {
+                    if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, j + 4).is_some() {
                         return true;
                     }
                 }
@@ -4937,11 +5213,7 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
                 if html_entity_codepoint_is_path_separator(value) {
                     return true;
                 }
-                if value == 37
-                    && bytes
-                        .get(i + 9..i + 11)
-                        .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
-                {
+                if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, i + 9).is_some() {
                     return true;
                 }
             }
@@ -5016,9 +5288,7 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
                     }
                 }
                 if value == 37
-                    && bytes
-                        .get(j + 1..j + 3)
-                        .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
+                    && percent_encoded_byte_after_obfuscated_digits(bytes, j + 1).is_some()
                 {
                     if !embedded {
                         return true;
@@ -5055,9 +5325,7 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
                     break;
                 }
                 if value == 37
-                    && bytes
-                        .get(j..j + 2)
-                        .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
+                    && percent_encoded_byte_after_obfuscated_digits(bytes, j).is_some()
                 {
                     if !embedded {
                         return true;
@@ -5104,11 +5372,7 @@ fn token_contains_octal_escaped_path_separator(tok: &str) -> bool {
             if matches!(value, 47 | 92) {
                 return true;
             }
-            if value == 37
-                && bytes
-                    .get(j..j + 2)
-                    .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
-            {
+            if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, j).is_some() {
                 return true;
             }
         }
@@ -5154,11 +5418,7 @@ fn token_contains_backslash_hex_escaped_path_separator(tok: &str) -> bool {
             if html_entity_codepoint_is_path_separator(value) {
                 return true;
             }
-            if value == 37
-                && bytes
-                    .get(j..j + 2)
-                    .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
-            {
+            if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, j).is_some() {
                 return true;
             }
         }

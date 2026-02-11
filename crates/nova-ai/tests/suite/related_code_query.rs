@@ -2106,6 +2106,62 @@ fn related_code_query_skips_escaped_percent_encoded_path_only_selections_with_he
 }
 
 #[test]
+fn related_code_query_skips_escaped_percent_encoded_path_only_selections_with_escaped_hex_digits() {
+    struct PanicSearch<'a> {
+        sep: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for escaped percent-encoded path selections with escaped hex digits (sep={}); got query={query}",
+                self.sep
+            );
+        }
+    }
+
+    for sep in [
+        // `%2F` with each hex digit escaped via unicode escapes.
+        "u0025u0032u0046",
+        "u0025u0032u0066",
+        // `%5C` with each hex digit escaped via unicode escapes.
+        "u0025u0035u0043",
+        "u0025u0035u0063",
+        // `%2F` and `%5C` with each hex digit escaped via `xNN` sequences.
+        "x25x32x46",
+        "x25x32x66",
+        "x25x35x43",
+        "x25x35x63",
+        // Octal escapes for `%` (`\\045`) with octal-escaped hex digits.
+        r"\045\062\106",
+        r"\045\062\146",
+        r"\045\065\103",
+        r"\045\065\143",
+        // Backslash-hex escapes for `%` (`\\25`) with backslash-hex digits.
+        r"\25\32\46",
+        r"\25\32\66",
+        r"\25\35\43",
+        r"\25\35\63",
+        // Literal percent sign with escaped hex digits.
+        "%u0032u0046",
+        "%u0032u0066",
+        "%u0035u0043",
+        "%u0035u0063",
+        // Braced percent marker (`u{0025}`) with escaped hex digits.
+        "u{0025}u0032u0046",
+        "u{0025}u0035u0043",
+    ] {
+        let search = PanicSearch { sep };
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for escaped percent-encoded path-only focal code with escaped hex digits"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_unicode_escaped_path_only_selections_without_backslashes() {
     struct PanicSearch<'a> {
         focal_code: &'a str,
