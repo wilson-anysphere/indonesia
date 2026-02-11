@@ -549,13 +549,17 @@ struct IdentCandidate<'a> {
 }
 
 fn related_code_query_from_focal_code(focal_code: &str) -> String {
-    if focal_code_contains_sensitive_assignment(focal_code) {
-        return String::new();
-    }
-
     // 1) Prefer identifier-like tokens outside comments/strings.
+    let sensitive_lines = sensitive_assignment_line_ranges(focal_code);
     let mut unique: BTreeMap<&str, usize> = BTreeMap::new();
     for cand in extract_identifier_candidates(focal_code) {
+        if sensitive_lines
+            .iter()
+            .any(|range| range.contains(&cand.first_pos))
+        {
+            continue;
+        }
+
         let end_pos = cand.first_pos + cand.token.len();
         if identifier_looks_like_path_component(focal_code, cand.first_pos, end_pos, cand.token) {
             continue;
@@ -629,6 +633,8 @@ fn related_code_query_from_focal_code(focal_code: &str) -> String {
     related_code_query_fallback(focal_code)
 }
 
+const SENSITIVE_ASSIGNMENT_KEY_SUBSTRINGS: &[&str] = &["password", "passwd", "secret", "api_key", "apikey"];
+
 fn focal_code_contains_sensitive_assignment(text: &str) -> bool {
     // This is a best-effort privacy guard. Selections that contain obvious secret key/value patterns
     // (e.g. `password: hunter2` or `"apiKey":"sk-..."`) should not trigger semantic search queries,
@@ -636,8 +642,6 @@ fn focal_code_contains_sensitive_assignment(text: &str) -> bool {
     //
     // Keep this conservative: only check for common secret-bearing key names and require an
     // assignment delimiter immediately after the key (allowing whitespace and quotes).
-    const SENSITIVE_KEY_SUBSTRINGS: &[&str] = &["password", "passwd", "secret", "api_key", "apikey"];
-
     let bytes = text.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
@@ -653,7 +657,7 @@ fn focal_code_contains_sensitive_assignment(text: &str) -> bool {
         }
         let ident = &text[start..i];
         let lower = ident.to_ascii_lowercase();
-        if !SENSITIVE_KEY_SUBSTRINGS
+        if !SENSITIVE_ASSIGNMENT_KEY_SUBSTRINGS
             .iter()
             .any(|needle| lower.contains(needle))
         {
@@ -676,6 +680,147 @@ fn focal_code_contains_sensitive_assignment(text: &str) -> bool {
     }
 
     false
+}
+
+fn sensitive_assignment_line_ranges(text: &str) -> Vec<Range<usize>> {
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    let mut state = FocalScanState::Normal;
+    let mut line_start = 0usize;
+    let mut line_has_sensitive = false;
+    let mut out: Vec<Range<usize>> = Vec::new();
+
+    while i < bytes.len() {
+        if bytes[i] == b'\n' {
+            if line_has_sensitive {
+                out.push(line_start..i);
+            }
+            line_start = i + 1;
+            line_has_sensitive = false;
+            if state == FocalScanState::LineComment {
+                state = FocalScanState::Normal;
+            }
+            i += 1;
+            continue;
+        }
+
+        match state {
+            FocalScanState::Normal => {
+                // Comments.
+                if bytes[i] == b'/' && i + 1 < bytes.len() {
+                    if bytes[i + 1] == b'/' {
+                        state = FocalScanState::LineComment;
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i + 1] == b'*' {
+                        state = FocalScanState::BlockComment;
+                        i += 2;
+                        continue;
+                    }
+                }
+
+                // Strings/chars.
+                if bytes[i] == b'"' {
+                    if i + 2 < bytes.len() && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
+                        state = FocalScanState::TextBlock;
+                        i += 3;
+                    } else {
+                        state = FocalScanState::String;
+                        i += 1;
+                    }
+                    continue;
+                }
+                if bytes[i] == b'\'' {
+                    state = FocalScanState::Char;
+                    i += 1;
+                    continue;
+                }
+
+                if is_ident_start(bytes[i]) {
+                    let start = i;
+                    i += 1;
+                    while i < bytes.len() && is_ident_continue(bytes[i]) {
+                        i += 1;
+                    }
+
+                    // Safe: identifier scanning only slices on ASCII boundaries.
+                    let ident = &text[start..i];
+                    let lower = ident.to_ascii_lowercase();
+                    if SENSITIVE_ASSIGNMENT_KEY_SUBSTRINGS
+                        .iter()
+                        .any(|needle| lower.contains(needle))
+                    {
+                        let mut j = i;
+                        while j < bytes.len() {
+                            match bytes[j] {
+                                b' ' | b'\t' | b'\r' => j += 1,
+                                b'\n' => break,
+                                _ => break,
+                            }
+                        }
+                        if j < bytes.len() && matches!(bytes[j], b':' | b'=') {
+                            line_has_sensitive = true;
+                        }
+                    }
+
+                    continue;
+                }
+
+                i += 1;
+            }
+            FocalScanState::LineComment => {
+                // Newlines are handled at the top of the loop.
+                i += 1;
+            }
+            FocalScanState::BlockComment => {
+                if bytes[i] == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                    state = FocalScanState::Normal;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            }
+            FocalScanState::String => {
+                if bytes[i] == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                if bytes[i] == b'"' {
+                    state = FocalScanState::Normal;
+                }
+                i += 1;
+            }
+            FocalScanState::TextBlock => {
+                if bytes[i] == b'"'
+                    && i + 2 < bytes.len()
+                    && bytes[i + 1] == b'"'
+                    && bytes[i + 2] == b'"'
+                {
+                    state = FocalScanState::Normal;
+                    i += 3;
+                    continue;
+                }
+                i += 1;
+            }
+            FocalScanState::Char => {
+                if bytes[i] == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                if bytes[i] == b'\'' {
+                    state = FocalScanState::Normal;
+                }
+                i += 1;
+            }
+        }
+    }
+
+    if line_has_sensitive {
+        out.push(line_start..bytes.len());
+    }
+
+    out
 }
 
 fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, tok: &str) -> bool {
@@ -857,6 +1002,9 @@ fn is_known_file_extension(ext: &str) -> bool {
 
 fn related_code_query_fallback(focal_code: &str) -> String {
     let redacted = crate::privacy::redact_file_paths(focal_code);
+    if focal_code_contains_sensitive_assignment(&redacted) {
+        return String::new();
+    }
     let mut out = String::new();
 
     for tok in redacted.split_whitespace() {

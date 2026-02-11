@@ -281,6 +281,45 @@ fn related_code_query_does_not_drop_identifiers_due_to_inline_string_paths() {
 }
 
 #[test]
+fn related_code_query_does_not_skip_due_to_sensitive_words_inside_string_literals() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let search = CapturingSearch::default();
+    let focal_code = r#"return userRepository.findByNote("password: hunter2");"#;
+
+    let _ = base_request(focal_code).with_related_code_from_focal(&search, 1);
+    let query = search
+        .last_query
+        .lock()
+        .expect("lock poisoned")
+        .clone()
+        .expect("query captured");
+
+    assert!(
+        query.contains("userRepository") || query.contains("findByNote"),
+        "expected query to retain surrounding identifiers, got: {query}"
+    );
+    assert!(
+        !query.to_ascii_lowercase().contains("password"),
+        "expected query to ignore string-literal contents, got: {query}"
+    );
+    assert!(
+        !query.to_ascii_lowercase().contains("hunter2"),
+        "expected query to ignore string-literal contents, got: {query}"
+    );
+}
+
+#[test]
 fn related_code_query_avoids_file_name_tokens_with_extensions() {
     #[derive(Default)]
     struct CapturingSearch {
