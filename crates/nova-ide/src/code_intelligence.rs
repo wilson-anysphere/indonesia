@@ -11888,63 +11888,74 @@ fn constructor_type_name_for_token_idx(tokens: &[Token], name_idx: usize) -> Opt
         return None;
     }
 
-    fn find_matching_open_angle(tokens: &[Token], close_angle_idx: usize) -> Option<usize> {
-        let mut depth = 0i32;
-        let mut i = close_angle_idx + 1;
-        while i > 0 {
-            i -= 1;
+    fn parse_type_name_after_new(tokens: &[Token], start_idx: usize) -> Option<(String, usize)> {
+        if start_idx >= tokens.len() {
+            return None;
+        }
+
+        let mut i = start_idx;
+
+        // Skip constructor type arguments (`new <T> Foo()`) and leading type annotations
+        // (`new @Deprecated Foo()`).
+        loop {
             match tokens.get(i)?.kind {
-                TokenKind::Symbol('>') => depth += 1,
-                TokenKind::Symbol('<') => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(i);
-                    }
-                }
-                _ => {}
+                TokenKind::Symbol('<') => i = skip_type_params(tokens, i),
+                TokenKind::Symbol('@') => i = skip_annotation(tokens, i),
+                _ => break,
+            }
+            if i >= tokens.len() {
+                return None;
             }
         }
-        None
-    }
 
-    fn type_segment_ident_before_dot(tokens: &[Token], dot_idx: usize) -> Option<usize> {
-        let prev = dot_idx.checked_sub(1)?;
-        match tokens.get(prev)?.kind {
-            TokenKind::Ident => Some(prev),
-            TokenKind::Symbol('>') => {
-                let open = find_matching_open_angle(tokens, prev)?;
-                let ident_idx = open.checked_sub(1)?;
-                tokens
-                    .get(ident_idx)
-                    .is_some_and(|t| t.kind == TokenKind::Ident)
-                    .then_some(ident_idx)
-            }
-            _ => None,
+        let first = tokens.get(i)?;
+        if first.kind != TokenKind::Ident {
+            return None;
         }
+        let mut segments = vec![first.text.clone()];
+        let mut last_ident_idx = i;
+        i += 1;
+
+        // Skip generic type arguments on the current segment (`Outer<String>`).
+        i = skip_type_params(tokens, i);
+
+        while i < tokens.len() && tokens[i].kind == TokenKind::Symbol('.') {
+            i += 1;
+
+            // Skip type annotations on the next segment (`Outer.@Anno Inner`).
+            while i < tokens.len() && tokens[i].kind == TokenKind::Symbol('@') {
+                i = skip_annotation(tokens, i);
+            }
+
+            let tok = tokens.get(i)?;
+            if tok.kind != TokenKind::Ident {
+                return None;
+            }
+            segments.push(tok.text.clone());
+            last_ident_idx = i;
+            i += 1;
+
+            // Skip generic type arguments on the current segment (`Outer<String>`).
+            i = skip_type_params(tokens, i);
+        }
+
+        Some((segments.join("."), last_ident_idx))
     }
 
-    let mut segments_rev = Vec::new();
-    segments_rev.push(tokens[name_idx].text.clone());
-
-    let mut cur_idx = name_idx;
-    loop {
-        let dot_idx = match cur_idx.checked_sub(1) {
-            Some(idx) if tokens.get(idx)?.kind == TokenKind::Symbol('.') => idx,
-            _ => break,
-        };
-
-        let prev_ident_idx = type_segment_ident_before_dot(tokens, dot_idx)?;
-        segments_rev.push(tokens[prev_ident_idx].text.clone());
-        cur_idx = prev_ident_idx;
-    }
-
-    let new_idx = cur_idx.checked_sub(1)?;
-    if tokens
-        .get(new_idx)
-        .is_some_and(|t| t.kind == TokenKind::Ident && t.text == "new")
-    {
-        segments_rev.reverse();
-        return Some(segments_rev.join("."));
+    // Scan backwards to find the `new` keyword for this call and then parse the type name forward.
+    // This allows best-effort support for constructors with type arguments and type annotations.
+    let mut i = name_idx + 1;
+    while i > 0 {
+        i -= 1;
+        if tokens
+            .get(i)
+            .is_some_and(|t| t.kind == TokenKind::Ident && t.text == "new")
+        {
+            let (ty_name, last_ident_idx) = parse_type_name_after_new(tokens, i + 1)?;
+            if last_ident_idx == name_idx {
+                return Some(ty_name);
+            }
+        }
     }
 
     None
@@ -22750,6 +22761,64 @@ class A {
             .find("new Foo<>().")
             .expect("expected `new Foo<>().` in fixture")
             + "new Foo<>()".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert!(
+            ty.as_deref().unwrap_or_default().contains("Foo"),
+            "expected receiver type to contain `Foo`, got {ty:?}"
+        );
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_generic_constructor_call_type_with_constructor_type_args() {
+        let java = r#"
+class Foo<T> {
+  <U> Foo() {}
+}
+
+class A {
+  void m() {
+    new <String> Foo<Integer>().
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("new <String> Foo<Integer>().")
+            .expect("expected `new <String> Foo<Integer>().` in fixture")
+            + "new <String> Foo<Integer>()".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert!(
+            ty.as_deref().unwrap_or_default().contains("Foo"),
+            "expected receiver type to contain `Foo`, got {ty:?}"
+        );
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_generic_constructor_call_type_with_type_annotation() {
+        let java = r#"
+class Foo<T> {}
+
+class A {
+  void m() {
+    new @Deprecated Foo<String>().
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("new @Deprecated Foo<String>().")
+            .expect("expected `new @Deprecated Foo<String>().` in fixture")
+            + "new @Deprecated Foo<String>()".len();
 
         let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
         assert!(

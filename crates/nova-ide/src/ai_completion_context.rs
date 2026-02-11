@@ -1225,6 +1225,55 @@ class A {
     }
 
     #[test]
+    fn generic_constructor_call_receiver_with_constructor_type_args_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class Foo<T> {
+  void bar() {}
+  <U> Foo() {}
+}
+
+class A {
+  void m() {
+    new <String> Foo<Integer>().<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Foo"),
+            "expected receiver type to contain `Foo`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "bar"));
+    }
+
+    #[test]
+    fn generic_constructor_call_receiver_with_type_annotation_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class Foo<T> {
+  void bar() {}
+}
+
+class A {
+  void m() {
+    new @Deprecated Foo<String>().<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Foo"),
+            "expected receiver type to contain `Foo`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "bar"));
+    }
+
+    #[test]
     fn array_access_receiver_type_and_methods_are_semantic() {
         let ctx = ctx_for(
             r#"

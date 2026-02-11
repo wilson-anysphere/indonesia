@@ -1436,6 +1436,55 @@ class A {
 }
 
 #[test]
+fn completion_resolves_generic_constructor_call_receiver_with_constructor_type_args() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo<T> {
+  void bar() {}
+  <U> Foo() {}
+}
+
+class A {
+  void m() {
+    new <String> Foo<Integer>().<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"bar"),
+        "expected completion list to contain Foo.bar for constructor type-arg receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_generic_constructor_call_receiver_with_type_annotation() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo<T> {
+  void bar() {}
+}
+
+class A {
+  void m() {
+    new @Deprecated Foo<String>().<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"bar"),
+        "expected completion list to contain Foo.bar for annotated constructor receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_resolves_array_access_receiver() {
     let (db, file, pos) = fixture(
         r#"
