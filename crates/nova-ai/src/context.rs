@@ -886,6 +886,7 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 || looks_like_mac_address_token(token)
                 || looks_like_uuid_token(token)
                 || looks_like_jwt_token(token)
+                || looks_like_user_at_host_token(token)
                 || token_contains_obvious_secret_fragment(token)
                 || token_contains_sensitive_assignment(token)
             {
@@ -1061,6 +1062,10 @@ fn related_code_query_fallback(focal_code: &str) -> String {
         // intentionally conservative: if we see a secret-like substring (e.g. a JSON token that
         // includes `"apiKey":"sk-..."`), skip the entire whitespace token.
         if token_contains_secret_fragment(tok) {
+            continue;
+        }
+        // Treat `user@host`/URI authority-style tokens as sensitive (usernames/hosts/passwords).
+        if looks_like_user_at_host_token(tok) {
             continue;
         }
         // Numeric literals are very low-signal as embedding queries and can contain unique IDs
@@ -1462,6 +1467,23 @@ fn looks_like_jwt_token(tok: &str) -> bool {
     }
 
     is_base64url_segment(first) && is_base64url_segment(second) && is_base64url_segment(third)
+}
+
+fn looks_like_user_at_host_token(tok: &str) -> bool {
+    let token =
+        tok.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '-' | '_')));
+    let Some((left, right)) = token.split_once('@') else {
+        return false;
+    };
+    if left.is_empty() || right.is_empty() || right.contains('@') {
+        return false;
+    }
+
+    let token_ok = |part: &str| {
+        part.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    };
+    token_ok(left) && token_ok(right)
 }
 
 fn push_query_token(out: &mut String, tok: &str, max_bytes: usize) -> bool {
