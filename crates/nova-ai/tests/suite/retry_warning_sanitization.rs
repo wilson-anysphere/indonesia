@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::sync::Once;
 
 use httpmock::prelude::*;
 use nova_ai::{AiClient, CancellationToken, ChatMessage, ChatRequest};
@@ -69,8 +70,26 @@ impl Visit for FieldVisitor {
     }
 }
 
+fn ensure_global_tracing_subscriber() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        // Install a process-wide subscriber so `tracing` callsites are never permanently disabled
+        // (`Interest::never`) when other tests exercise retry logic without setting a subscriber.
+        // The subscriber writes to a sink to keep the test harness output clean.
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(std::io::sink)
+            .finish();
+        let _ = tracing::subscriber::set_global_default(subscriber);
+    });
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn ai_client_retry_warning_does_not_leak_provider_url_secrets() {
+    ensure_global_tracing_subscriber();
+
     let server = MockServer::start();
     let _mock = server.mock(|when, then| {
         when.method(POST)
@@ -104,6 +123,8 @@ async fn ai_client_retry_warning_does_not_leak_provider_url_secrets() {
     };
     let subscriber = tracing_subscriber::registry().with(layer);
     let _guard = tracing::subscriber::set_default(subscriber);
+    // Rebuild callsite interest in case other tests ran before we installed the global subscriber.
+    tracing::callsite::rebuild_interest_cache();
 
     let client = AiClient::from_config(&config).expect("ai client");
     let _ = client
@@ -154,4 +175,3 @@ async fn ai_client_retry_warning_does_not_leak_provider_url_secrets() {
         );
     }
 }
-
