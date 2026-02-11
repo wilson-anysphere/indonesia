@@ -5396,6 +5396,20 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
                     return Some(next);
                 }
             }
+        } else {
+            // `u`-prefixed unicode escapes can be nested with obfuscated digits (e.g.
+            // `u&#x30;&#x30;&#x32;&#x35;...`), so fall back to parsing the codepoint digits via the
+            // obfuscated-hex-digit decoder.
+            let mut digits_start = idx + 1;
+            if b == b'u' {
+                while digits_start < bytes.len() && bytes[digits_start] == b'u' {
+                    digits_start += 1;
+                }
+            }
+            if let Some(end) = marker_end_after_unicode_escape_u_prefix(bytes, digits_start, b == b'U')
+            {
+                return Some(end);
+            }
         }
     }
 
@@ -6856,10 +6870,15 @@ fn token_contains_obfuscated_percent_marker_path_separator(tok: &str) -> bool {
             b'%' | b'&' | b'#' | b'\\' => true,
             b'u' | b'U' => bytes
                 .get(i + 1)
-                .is_some_and(|next| *next == b'{' || *next == b'u' || next.is_ascii_hexdigit()),
+                .is_some_and(|next| {
+                    matches!(*next, b'{' | b'u' | b'U' | b'x' | b'X' | b'&' | b'\\')
+                        || next.is_ascii_hexdigit()
+                }),
             b'x' | b'X' => bytes
                 .get(i + 1)
-                .is_some_and(|next| *next == b'{' || next.is_ascii_hexdigit()),
+                .is_some_and(|next| {
+                    matches!(*next, b'{' | b'u' | b'U' | b'&' | b'\\') || next.is_ascii_hexdigit()
+                }),
             b'p' | b'P' => bytes
                 .get(i..i + 6)
                 .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percnt"))
