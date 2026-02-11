@@ -57,8 +57,16 @@ pub fn sanitize_json_error_message(message: &str) -> String {
     // `serde` wraps unknown fields/variants in backticks:
     // `unknown field `secret`, expected ...`
     //
-    // Redact only the first backticked segment so we keep the expected value list actionable.
-    if let Some(start) = out.find('`') {
+    // Only redact the first backticked segment for unknown field/variant errors, because that
+    // segment can contain user-controlled content (the unknown key/variant).
+    //
+    // Other serde diagnostics (e.g. `missing field `foo``) also use backticks, but those refer to
+    // schema field names and are safe + useful to keep.
+    let start = ["unknown field `", "unknown variant `"]
+        .iter()
+        .filter_map(|pattern| out.find(pattern).map(|pos| pos + pattern.len().saturating_sub(1)))
+        .min();
+    if let Some(start) = start {
         let after_start = &out[start.saturating_add(1)..];
         let end = if let Some(end_rel) = after_start.rfind("`, expected") {
             Some(start.saturating_add(1).saturating_add(end_rel))
@@ -143,5 +151,14 @@ mod tests {
             sanitized.contains("expected foo, bar"),
             "expected sanitized message to preserve expected list: {sanitized}"
         );
+    }
+
+    #[test]
+    fn sanitize_json_error_message_preserves_missing_field_names() {
+        // `missing field` errors refer to schema field names (not user-controlled values). Keep
+        // these intact so invalid-params errors remain actionable for clients.
+        let message = "missing field `textDocument`";
+        let sanitized = sanitize_json_error_message(message);
+        assert_eq!(sanitized, message);
     }
 }
