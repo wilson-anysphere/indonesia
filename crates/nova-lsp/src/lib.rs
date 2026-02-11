@@ -61,6 +61,8 @@ mod completion_more;
 mod diagnostics;
 mod distributed;
 #[cfg(test)]
+mod codec;
+#[cfg(test)]
 mod rename_lsp;
 #[cfg(feature = "ai")]
 mod requests;
