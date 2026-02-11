@@ -1923,6 +1923,15 @@ fn looks_like_obvious_secret_token(tok: &str) -> bool {
     }
 
     let lower = trimmed.to_ascii_lowercase();
+    if (lower.starts_with("sk_live_")
+        || lower.starts_with("sk_test_")
+        || lower.starts_with("rk_live_")
+        || lower.starts_with("rk_test_")
+        || lower.starts_with("whsec_"))
+        && trimmed.len() >= 20
+    {
+        return true;
+    }
     if lower.starts_with("gocspx-") && trimmed.len() >= 20 {
         return true;
     }
@@ -1989,6 +1998,15 @@ fn looks_like_secret_token(tok: &str) -> bool {
     }
 
     let lower = trimmed.to_ascii_lowercase();
+    if (lower.starts_with("sk_live_")
+        || lower.starts_with("sk_test_")
+        || lower.starts_with("rk_live_")
+        || lower.starts_with("rk_test_")
+        || lower.starts_with("whsec_"))
+        && trimmed.len() >= 20
+    {
+        return true;
+    }
     if lower.starts_with("gocspx-") && trimmed.len() >= 20 {
         return true;
     }

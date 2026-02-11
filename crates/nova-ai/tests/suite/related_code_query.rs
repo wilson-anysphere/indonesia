@@ -1158,6 +1158,31 @@ fn related_code_query_skips_gitlab_pat_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_stripe_secret_key_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for Stripe secret key related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_codes = [
+        ["sk", "_", "live", "_", "not-a-real-stripe-key-but-long-enough"].concat(),
+        ["rk", "_", "test", "_", "not-a-real-stripe-key-but-long-enough"].concat(),
+        ["wh", "sec", "_", "not-a-real-webhook-secret-but-long-enough"].concat(),
+    ];
+    for focal_code in &focal_codes {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for Stripe secret key-only focal code"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_slack_token_only_selections() {
     struct PanicSearch;
 
