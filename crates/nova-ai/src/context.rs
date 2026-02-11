@@ -931,11 +931,42 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 // terminator and checking whether it encodes a path separator.
                 let scan_end = (j + 64).min(bytes.len());
                 while j < scan_end {
-                    if bytes[j] == b';' && html_entity_is_path_separator(bytes, j) {
-                        return true;
+                    if bytes[j] == b';' {
+                        if html_entity_is_path_separator(bytes, j) {
+                            return true;
+                        }
+                        if html_entity_is_percent(bytes, j)
+                            && bytes
+                                .get(j + 1..)
+                                .is_some_and(|tail| percent_encoded_path_separator_len(tail).is_some())
+                        {
+                            return true;
+                        }
                     }
                     j += 1;
                 }
+            }
+
+            // Skip identifiers inside percent entities (`&percnt;`, `&#37;`, `&amp;#37;`) when they
+            // are immediately followed by a percent-encoded path separator (e.g. `&percnt;2F...`).
+            if after.is_some_and(|b| *b == b';')
+                && html_entity_is_percent(bytes, bounds.end)
+                && bytes
+                    .get(bounds.end + 1..)
+                    .is_some_and(|tail| percent_encoded_path_separator_len(tail).is_some())
+            {
+                return true;
+            }
+
+            // Handle percent-encoded separators where the `%` itself is HTML-escaped, e.g.
+            // `&#37;2Fhome...` or `&amp;#37;252Fhome...`. The surrounding token starts with the hex
+            // digits (`2F`, `252F`, ...) and the entity delimiter `;` is treated as a boundary, so
+            // we need to look at the preceding entity to decide whether this identifier is a path
+            // segment.
+            if before_idx.is_some_and(|idx| html_entity_is_percent(bytes, idx))
+                && percent_encoded_path_separator_len(token.as_bytes()).is_some()
+            {
+                return true;
             }
 
             let before_is_sep = before.is_some_and(|b| *b == b'/' || *b == b'\\')
@@ -1185,6 +1216,162 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
     matches!(value, 47 | 92)
 }
 
+fn html_entity_is_percent(bytes: &[u8], end_semicolon: usize) -> bool {
+    fn hex_value(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    if end_semicolon >= bytes.len() || bytes[end_semicolon] != b';' {
+        return false;
+    }
+
+    let mut amp = None;
+    let mut i = end_semicolon;
+    let mut scanned = 0usize;
+    while i > 0 && scanned < 64 {
+        i -= 1;
+        scanned += 1;
+        if bytes[i] == b'&' {
+            amp = Some(i);
+            break;
+        }
+    }
+
+    let Some(amp) = amp else {
+        return false;
+    };
+    if amp + 2 >= end_semicolon {
+        return false;
+    }
+
+    if bytes[amp + 1] != b'#' {
+        let name = &bytes[amp + 1..end_semicolon];
+        if name.eq_ignore_ascii_case(b"percnt") || name.eq_ignore_ascii_case(b"percent") {
+            return true;
+        }
+
+        // Handle nested escapes like `&amp;#37;` or `&amp;percnt;` by stripping `amp;` prefixes.
+        let mut rest = name;
+        let mut stripped = false;
+        for _ in 0..3 {
+            if rest.len() >= 4 && rest[..3].eq_ignore_ascii_case(b"amp") && rest[3] == b';' {
+                rest = &rest[4..];
+                stripped = true;
+                continue;
+            }
+            break;
+        }
+
+        if stripped && !rest.is_empty() {
+            if rest.eq_ignore_ascii_case(b"percnt") || rest.eq_ignore_ascii_case(b"percent") {
+                return true;
+            }
+            if rest[0] == b'#' {
+                let mut j = 1usize;
+                let base = match rest.get(j) {
+                    Some(b'x') | Some(b'X') => {
+                        j += 1;
+                        16u32
+                    }
+                    _ => 10u32,
+                };
+                if j >= rest.len() {
+                    return false;
+                }
+
+                let digits = &rest[j..];
+                if digits.len() > 8 {
+                    return false;
+                }
+
+                let mut value = 0u32;
+                for &b in digits {
+                    let digit = if base == 16 {
+                        let Some(v) = hex_value(b) else {
+                            return false;
+                        };
+                        v as u32
+                    } else if b.is_ascii_digit() {
+                        (b - b'0') as u32
+                    } else {
+                        return false;
+                    };
+                    value = value
+                        .checked_mul(base)
+                        .and_then(|v| v.checked_add(digit))
+                        .unwrap_or(u32::MAX);
+                }
+
+                if value == 37 {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    let mut j = amp + 2;
+    let base = match bytes.get(j) {
+        Some(b'x') | Some(b'X') => {
+            j += 1;
+            16u32
+        }
+        _ => 10u32,
+    };
+    if j >= end_semicolon {
+        return false;
+    }
+
+    let digits = &bytes[j..end_semicolon];
+    if digits.len() > 8 {
+        return false;
+    }
+
+    let mut value = 0u32;
+    for &b in digits {
+        let digit = if base == 16 {
+            let Some(v) = hex_value(b) else {
+                return false;
+            };
+            v as u32
+        } else if b.is_ascii_digit() {
+            (b - b'0') as u32
+        } else {
+            return false;
+        };
+        value = value
+            .checked_mul(base)
+            .and_then(|v| v.checked_add(digit))
+            .unwrap_or(u32::MAX);
+    }
+
+    value == 37
+}
+
+fn percent_encoded_path_separator_len(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < 2 {
+        return None;
+    }
+
+    let mut i = 0usize;
+    while i + 1 < bytes.len() && bytes[i] == b'2' && bytes[i + 1] == b'5' {
+        i += 2;
+    }
+    if i + 1 >= bytes.len() {
+        return None;
+    }
+    match (bytes[i], bytes[i + 1]) {
+        (b'2', b'f' | b'F') | (b'5', b'c' | b'C') => Some(i + 2),
+        _ => None,
+    }
+}
+
 fn identifier_looks_like_ipv6_segment(text: &str, start: usize, end: usize, tok: &str) -> bool {
     // IPv6 segments are 1-4 hex digits.
     if tok.is_empty() || tok.len() > 4 {
@@ -1321,6 +1508,9 @@ fn related_code_query_fallback(focal_code: &str) -> String {
             continue;
         }
         if token_contains_html_entity_path_separator(raw_tok) {
+            continue;
+        }
+        if token_contains_html_entity_percent_encoded_path_separator(raw_tok) {
             continue;
         }
 
@@ -2189,6 +2379,25 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
     let bytes = tok.as_bytes();
     for (idx, b) in bytes.iter().enumerate() {
         if *b == b';' && html_entity_is_path_separator(bytes, idx) {
+            return true;
+        }
+    }
+    false
+}
+
+fn token_contains_html_entity_percent_encoded_path_separator(tok: &str) -> bool {
+    let bytes = tok.as_bytes();
+    for (idx, b) in bytes.iter().enumerate() {
+        if *b != b';' {
+            continue;
+        }
+        if !html_entity_is_percent(bytes, idx) {
+            continue;
+        }
+        if idx + 1 >= bytes.len() {
+            continue;
+        }
+        if percent_encoded_path_separator_len(&bytes[idx + 1..]).is_some() {
             return true;
         }
     }

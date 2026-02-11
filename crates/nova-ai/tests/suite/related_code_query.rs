@@ -297,6 +297,63 @@ fn related_code_query_avoids_percent_encoded_path_segments() {
 }
 
 #[test]
+fn related_code_query_avoids_html_entity_percent_encoded_path_segments() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+    for sep in [
+        // `%2F` via HTML entity percent sign.
+        "&#37;2F",
+        "&#x25;2F",
+        "&percnt;2F",
+        // Nested HTML escaping of the percent entity itself.
+        "&amp;#37;2F",
+        "&amp;percnt;2F",
+        // Nested percent-encoding (`%252F`) with HTML entity percent sign.
+        "&#37;252F",
+        "&amp;#37;252F",
+        // Backslash separator (`%5C`).
+        "&#37;5C",
+        "&percnt;5C",
+        "&amp;#37;5C",
+        // Nested percent-encoded backslash (`%255C`).
+        "&#37;255C",
+    ] {
+        let search = CapturingSearch::default();
+        let focal_code = format!(
+            "{sep}home{sep}user{sep}my-{private_segment}-project{sep}src{sep}main{sep}java\nreturn foo.bar();\n"
+        );
+
+        let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+        let query = search
+            .last_query
+            .lock()
+            .expect("lock poisoned")
+            .clone()
+            .expect("query captured");
+
+        assert!(
+            !query.contains(private_segment),
+            "query should not include percent-encoded path fragments hidden behind HTML entity percent signs: {query}"
+        );
+        assert!(
+            query.contains("foo") || query.contains("bar"),
+            "expected query to retain non-path identifiers, got: {query}"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_avoids_unicode_escaped_path_segments() {
     #[derive(Default)]
     struct CapturingSearch {
@@ -808,6 +865,37 @@ fn related_code_query_skips_percent_encoded_path_only_selections() {
         assert!(
             req.related_code.is_empty(),
             "expected no related code for percent-encoded path-only focal code"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_html_entity_percent_encoded_path_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for HTML entity percent-encoded path selections");
+        }
+    }
+
+    let search = PanicSearch;
+    for focal_code in [
+        "&#37;2Fhome&#37;2Fuser&#37;2Fsecret&#37;2Fcredentials",
+        "&#x25;2Fhome&#x25;2Fuser&#x25;2Fsecret&#x25;2Fcredentials",
+        "&percnt;2Fhome&percnt;2Fuser&percnt;2Fsecret&percnt;2Fcredentials",
+        "&amp;#37;2Fhome&amp;#37;2Fuser&amp;#37;2Fsecret&amp;#37;2Fcredentials",
+        "&amp;percnt;2Fhome&amp;percnt;2Fuser&amp;percnt;2Fsecret&amp;percnt;2Fcredentials",
+        "&#37;252Fhome&#37;252Fuser&#37;252Fsecret&#37;252Fcredentials",
+        "&amp;#37;252Fhome&amp;#37;252Fuser&amp;#37;252Fsecret&amp;#37;252Fcredentials",
+        "&#37;5Chome&#37;5Cuser&#37;5Csecret&#37;5Ccredentials",
+        "&percnt;5Chome&percnt;5Cuser&percnt;5Csecret&percnt;5Ccredentials",
+        "&amp;#37;5Chome&amp;#37;5Cuser&amp;#37;5Csecret&amp;#37;5Ccredentials",
+    ] {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for HTML entity percent-encoded path-only focal code"
         );
     }
 }
