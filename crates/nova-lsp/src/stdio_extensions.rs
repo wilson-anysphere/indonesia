@@ -1,5 +1,6 @@
 use crate::stdio_paths::path_from_uri;
 use crate::stdio_extensions_db::SingleFileDb;
+use crate::stdio_sanitize::sanitize_serde_json_error;
 use crate::stdio_text::offset_to_position_utf16;
 use crate::ServerState;
 
@@ -100,7 +101,7 @@ pub(super) fn handle_extensions_navigation(
     }
 
     let params: ExtensionsNavigationParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     if let Some(version) = params.schema_version {
         if version != nova_lsp::EXTENSIONS_NAVIGATION_SCHEMA_VERSION {
             return Err(format!(
@@ -259,4 +260,3 @@ impl ServerState {
         }
     }
 }
-

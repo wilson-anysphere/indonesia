@@ -1,4 +1,5 @@
 use crate::stdio_text::{ident_range_at, position_to_offset_utf16};
+use crate::stdio_sanitize::sanitize_serde_json_error;
 use crate::ServerState;
 
 use nova_db::Database;
@@ -11,7 +12,7 @@ pub(super) fn handle_definition(
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: lsp_types::TextDocumentPositionParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -22,7 +23,7 @@ pub(super) fn handle_definition(
     let location = nova_lsp::goto_definition(&state.analysis, file_id, params.position)
         .or_else(|| goto_definition_jdk(state, file_id, params.position));
     match location {
-        Some(loc) => serde_json::to_value(loc).map_err(|e| e.to_string()),
+        Some(loc) => serde_json::to_value(loc).map_err(|e| sanitize_serde_json_error(&e)),
         None => Ok(serde_json::Value::Null),
     }
 }
@@ -32,7 +33,7 @@ pub(super) fn handle_implementation(
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: lsp_types::TextDocumentPositionParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -44,7 +45,7 @@ pub(super) fn handle_implementation(
     if locations.is_empty() {
         Ok(serde_json::Value::Null)
     } else {
-        serde_json::to_value(locations).map_err(|e| e.to_string())
+        serde_json::to_value(locations).map_err(|e| sanitize_serde_json_error(&e))
     }
 }
 
@@ -53,7 +54,7 @@ pub(super) fn handle_declaration(
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: lsp_types::TextDocumentPositionParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -63,7 +64,7 @@ pub(super) fn handle_declaration(
 
     let location = nova_lsp::declaration(&state.analysis, file_id, params.position);
     match location {
-        Some(loc) => serde_json::to_value(loc).map_err(|e| e.to_string()),
+        Some(loc) => serde_json::to_value(loc).map_err(|e| sanitize_serde_json_error(&e)),
         None => Ok(serde_json::Value::Null),
     }
 }
@@ -73,7 +74,7 @@ pub(super) fn handle_type_definition(
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: lsp_types::TextDocumentPositionParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -84,7 +85,7 @@ pub(super) fn handle_type_definition(
     let location = nova_lsp::type_definition(&state.analysis, file_id, params.position)
         .or_else(|| type_definition_jdk(state, file_id, params.position));
     match location {
-        Some(loc) => serde_json::to_value(loc).map_err(|e| e.to_string()),
+        Some(loc) => serde_json::to_value(loc).map_err(|e| sanitize_serde_json_error(&e)),
         None => Ok(serde_json::Value::Null),
     }
 }
@@ -914,4 +915,3 @@ fn type_definition_jdk(
         ),
     })
 }
-

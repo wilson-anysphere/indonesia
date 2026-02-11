@@ -1,4 +1,5 @@
 use crate::stdio_paths::{load_document_text, path_from_uri};
+use crate::stdio_sanitize::sanitize_serde_json_error;
 use crate::stdio_text::position_to_offset_utf16;
 use crate::stdio_extensions_db::SingleFileDb;
 use crate::ServerState;
@@ -23,8 +24,9 @@ pub(super) fn handle_completion_more(
     state: &ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: nova_lsp::MoreCompletionsParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
-    serde_json::to_value(state.completion_service.completion_more(params)).map_err(|e| e.to_string())
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
+    serde_json::to_value(state.completion_service.completion_more(params))
+        .map_err(|e| sanitize_serde_json_error(&e))
 }
 
 pub(super) fn handle_completion(
@@ -32,7 +34,8 @@ pub(super) fn handle_completion(
     state: &ServerState,
     cancel: CancellationToken,
 ) -> Result<serde_json::Value, String> {
-    let params: CompletionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: CompletionParams =
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     let uri = params.text_document_position.text_document.uri;
     let position = params.text_document_position.position;
 
@@ -175,16 +178,17 @@ pub(super) fn handle_completion(
         ..CompletionList::default()
     };
 
-    serde_json::to_value(list).map_err(|e| e.to_string())
+    serde_json::to_value(list).map_err(|e| sanitize_serde_json_error(&e))
 }
 
 pub(super) fn handle_completion_item_resolve(
     params: serde_json::Value,
     state: &ServerState,
 ) -> Result<serde_json::Value, String> {
-    let item: CompletionItem = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let item: CompletionItem =
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     let resolved = resolve_completion_item_with_state(item, state);
-    serde_json::to_value(resolved).map_err(|e| e.to_string())
+    serde_json::to_value(resolved).map_err(|e| sanitize_serde_json_error(&e))
 }
 
 fn resolve_completion_item_with_state(item: CompletionItem, state: &ServerState) -> CompletionItem {

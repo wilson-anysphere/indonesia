@@ -1,4 +1,5 @@
 use crate::ServerState;
+use crate::stdio_sanitize::sanitize_serde_json_error;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -14,7 +15,7 @@ pub(super) fn handle_semantic_tokens_full(
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: lsp_types::SemanticTokensParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -27,7 +28,7 @@ pub(super) fn handle_semantic_tokens_full(
         result_id: Some(next_semantic_tokens_result_id()),
         data: tokens,
     };
-    serde_json::to_value(result).map_err(|e| e.to_string())
+    serde_json::to_value(result).map_err(|e| sanitize_serde_json_error(&e))
 }
 
 pub(super) fn handle_semantic_tokens_full_delta(
@@ -35,7 +36,7 @@ pub(super) fn handle_semantic_tokens_full_delta(
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: lsp_types::SemanticTokensDeltaParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -48,6 +49,5 @@ pub(super) fn handle_semantic_tokens_full_delta(
         result_id: Some(next_semantic_tokens_result_id()),
         data: tokens,
     };
-    serde_json::to_value(result).map_err(|e| e.to_string())
+    serde_json::to_value(result).map_err(|e| sanitize_serde_json_error(&e))
 }
-

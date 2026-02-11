@@ -1,4 +1,5 @@
 use crate::ServerState;
+use crate::stdio_sanitize::sanitize_serde_json_error;
 
 use lsp_types::{
     Location as LspLocation, Position as LspTypesPosition, Range as LspTypesRange,
@@ -120,7 +121,7 @@ pub(super) fn handle_workspace_symbol(
     cancel: &CancellationToken,
 ) -> Result<JsonValue, (i32, String)> {
     let params: WorkspaceSymbolParams =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+        serde_json::from_value(params).map_err(|e| (-32602, sanitize_serde_json_error(&e)))?;
 
     let query = params.query.trim();
 
@@ -200,7 +201,8 @@ pub(super) fn handle_workspace_symbol(
             });
         }
 
-        return serde_json::to_value(out).map_err(|e| (-32603, e.to_string()));
+        return serde_json::to_value(out)
+            .map_err(|e| (-32603, sanitize_serde_json_error(&e)));
     }
 
     if state.workspace.is_none() {
@@ -224,7 +226,12 @@ pub(super) fn handle_workspace_symbol(
 
     let mut out = Vec::new();
     for symbol in symbols {
-        let value = serde_json::to_value(&symbol).map_err(|e| (-32603, format!("symbol json: {e}")))?;
+        let value = serde_json::to_value(&symbol).map_err(|e| {
+            (
+                -32603,
+                format!("symbol json: {}", sanitize_serde_json_error(&e)),
+            )
+        })?;
         let Some((file, line, column)) = json_location(&value) else {
             continue;
         };
@@ -262,6 +269,5 @@ pub(super) fn handle_workspace_symbol(
         });
     }
 
-    serde_json::to_value(out).map_err(|e| (-32603, e.to_string()))
+    serde_json::to_value(out).map_err(|e| (-32603, sanitize_serde_json_error(&e)))
 }
-

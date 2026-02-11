@@ -1,4 +1,5 @@
 use crate::stdio_paths::{load_document_text, path_from_uri};
+use crate::stdio_sanitize::sanitize_serde_json_error;
 use crate::stdio_text::position_to_offset_utf16;
 use crate::stdio_extensions_db::SingleFileDb;
 use crate::ServerState;
@@ -93,7 +94,8 @@ pub(super) fn handle_code_action(
     state: &mut ServerState,
     cancel: CancellationToken,
 ) -> Result<serde_json::Value, String> {
-    let params: CodeActionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: CodeActionParams =
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     let doc_path = path_from_uri(&params.text_document.uri);
     let text = load_document_text(state, &params.text_document.uri);
     let text = text.as_deref();
@@ -107,7 +109,7 @@ pub(super) fn handle_code_action(
             if let Some(action) =
                 nova_ide::code_action::extract_method_code_action(text, uri.clone(), range.clone())
             {
-                actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+                actions.push(serde_json::to_value(action).map_err(|e| sanitize_serde_json_error(&e))?);
             }
 
             let is_cursor = params.range.start.line == params.range.end.line
@@ -116,17 +118,17 @@ pub(super) fn handle_code_action(
                 line: params.range.start.line,
                 character: params.range.start.character,
             };
-            if is_cursor {
-                for action in nova_ide::refactor::inline_method_code_actions(&uri, text, cursor) {
-                    actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+                if is_cursor {
+                    for action in nova_ide::refactor::inline_method_code_actions(&uri, text, cursor) {
+                    actions.push(serde_json::to_value(action).map_err(|e| sanitize_serde_json_error(&e))?);
                 }
                 for action in nova_lsp::refactor::inline_variable_code_actions(&uri, text, cursor) {
-                    actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+                    actions.push(serde_json::to_value(action).map_err(|e| sanitize_serde_json_error(&e))?);
                 }
                 if let Some(action) =
                     nova_lsp::refactor::convert_to_record_code_action(uri.clone(), text, cursor)
                 {
-                    actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+                    actions.push(serde_json::to_value(action).map_err(|e| sanitize_serde_json_error(&e))?);
                 }
 
                 // Best-effort Safe Delete code action: only available for open documents because
@@ -185,12 +187,12 @@ pub(super) fn handle_code_action(
                                                         mode: nova_refactor::SafeDeleteMode::Safe,
                                                     },
                                                 )
-                                                .map_err(|e| e.to_string())?]),
+                                                .map_err(|e| sanitize_serde_json_error(&e))?]),
                                             });
                                         }
                                     }
                                     actions.push(
-                                        serde_json::to_value(action).map_err(|e| e.to_string())?,
+                                        serde_json::to_value(action).map_err(|e| sanitize_serde_json_error(&e))?,
                                     );
                                 }
                             }
@@ -214,7 +216,7 @@ pub(super) fn handle_code_action(
                             }
                         }
                     }
-                    actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+                    actions.push(serde_json::to_value(action).map_err(|e| sanitize_serde_json_error(&e))?);
                 }
                 for mut action in nova_ide::refactor::extract_member_code_actions(&uri, text, range)
                 {
@@ -230,7 +232,7 @@ pub(super) fn handle_code_action(
                             }
                         }
                     }
-                    actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+                    actions.push(serde_json::to_value(action).map_err(|e| sanitize_serde_json_error(&e))?);
                 }
             }
         }
@@ -241,7 +243,7 @@ pub(super) fn handle_code_action(
             if let Some(action) =
                 crate::stdio_organize_imports::organize_imports_code_action(state, &uri, text)
             {
-                actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+                actions.push(serde_json::to_value(action).map_err(|e| sanitize_serde_json_error(&e))?);
             }
         }
     }
@@ -267,7 +269,7 @@ pub(super) fn handle_code_action(
                 range,
                 &lsp_diags,
             ) {
-                actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+                actions.push(serde_json::to_value(action).map_err(|e| sanitize_serde_json_error(&e))?);
             }
         }
     }
@@ -386,7 +388,10 @@ pub(super) fn handle_code_action(
                             kind,
                             ..lsp_types::CodeAction::default()
                         });
-                    actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+                    actions.push(
+                        serde_json::to_value(action)
+                            .map_err(|e| sanitize_serde_json_error(&e))?,
+                    );
                 }
             }
         }
@@ -399,24 +404,25 @@ pub(super) fn handle_code_action_resolve(
     params: serde_json::Value,
     state: &ServerState,
 ) -> Result<serde_json::Value, String> {
-    let mut action: CodeAction = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let mut action: CodeAction =
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     let Some(data) = action.data.clone() else {
-        return serde_json::to_value(action).map_err(|e| e.to_string());
+        return serde_json::to_value(action).map_err(|e| sanitize_serde_json_error(&e));
     };
 
     let action_type = data.get("type").and_then(|v| v.as_str());
     if !matches!(action_type, Some("ExtractMember" | "ExtractVariable")) {
-        return serde_json::to_value(action).map_err(|e| e.to_string());
+        return serde_json::to_value(action).map_err(|e| sanitize_serde_json_error(&e));
     }
 
     let Some(uri) = data.get("uri").and_then(|v| v.as_str()) else {
-        return serde_json::to_value(action).map_err(|e| e.to_string());
+        return serde_json::to_value(action).map_err(|e| sanitize_serde_json_error(&e));
     };
     let Ok(uri) = uri.parse::<LspUri>() else {
-        return serde_json::to_value(action).map_err(|e| e.to_string());
+        return serde_json::to_value(action).map_err(|e| sanitize_serde_json_error(&e));
     };
     let Some(source) = load_document_text(state, uri.as_str()) else {
-        return serde_json::to_value(action).map_err(|e| e.to_string());
+        return serde_json::to_value(action).map_err(|e| sanitize_serde_json_error(&e));
     };
 
     // We inject `data.uri` for `codeAction/resolve` so the server can locate the open document.
@@ -447,7 +453,7 @@ pub(super) fn handle_code_action_resolve(
     // needed and so downstream tooling can introspect the origin of the action.
     action.data = Some(data);
 
-    serde_json::to_value(action).map_err(|e| e.to_string())
+    serde_json::to_value(action).map_err(|e| sanitize_serde_json_error(&e))
 }
 
 fn code_action_to_lsp(action: NovaCodeAction) -> serde_json::Value {

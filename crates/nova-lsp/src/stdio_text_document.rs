@@ -1,4 +1,5 @@
 use crate::stdio_paths::path_from_uri;
+use crate::stdio_sanitize::sanitize_serde_json_error;
 use crate::stdio_text::{ident_range_at, offset_to_position_utf16, position_to_offset_utf16};
 use crate::stdio_diagnostics;
 use crate::stdio_extensions_db::SingleFileDb;
@@ -27,7 +28,7 @@ pub(super) fn handle_hover(
     }
 
     let params: HoverParams =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+        serde_json::from_value(params).map_err(|e| (-32602, sanitize_serde_json_error(&e)))?;
     let uri = params.text_document_position_params.text_document.uri;
     let position = params.text_document_position_params.position;
 
@@ -38,7 +39,8 @@ pub(super) fn handle_hover(
 
     let hover = nova_ide::hover(&state.analysis, file_id, position);
     match hover {
-        Some(value) => serde_json::to_value(value).map_err(|e| (-32603, e.to_string())),
+        Some(value) => serde_json::to_value(value)
+            .map_err(|e| (-32603, sanitize_serde_json_error(&e))),
         None => Ok(serde_json::Value::Null),
     }
 }
@@ -53,7 +55,7 @@ pub(super) fn handle_signature_help(
     }
 
     let params: SignatureHelpParams =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+        serde_json::from_value(params).map_err(|e| (-32602, sanitize_serde_json_error(&e)))?;
     let uri = params.text_document_position_params.text_document.uri;
     let position = params.text_document_position_params.position;
 
@@ -64,7 +66,8 @@ pub(super) fn handle_signature_help(
 
     let help = nova_ide::signature_help(&state.analysis, file_id, position);
     match help {
-        Some(value) => serde_json::to_value(value).map_err(|e| (-32603, e.to_string())),
+        Some(value) => serde_json::to_value(value)
+            .map_err(|e| (-32603, sanitize_serde_json_error(&e))),
         None => Ok(serde_json::Value::Null),
     }
 }
@@ -79,7 +82,7 @@ pub(super) fn handle_references(
     }
 
     let params: ReferenceParams =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+        serde_json::from_value(params).map_err(|e| (-32602, sanitize_serde_json_error(&e)))?;
     let uri = params.text_document_position.text_document.uri;
     let position = params.text_document_position.position;
     let include_declaration = params.context.include_declaration;
@@ -112,7 +115,7 @@ pub(super) fn handle_references(
     });
     locations.dedup_by(|a, b| a.uri == b.uri && a.range == b.range);
 
-    serde_json::to_value(locations).map_err(|e| (-32603, e.to_string()))
+    serde_json::to_value(locations).map_err(|e| (-32603, sanitize_serde_json_error(&e)))
 }
 
 pub(super) fn handle_document_diagnostic(
@@ -127,7 +130,7 @@ pub(super) fn handle_document_diagnostic(
     }
 
     let params: DocumentDiagnosticParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     let uri = params.text_document.uri;
     let diagnostics = stdio_diagnostics::diagnostics_for_uri(state, &uri, cancel);
 
@@ -143,7 +146,8 @@ pub(super) fn handle_inlay_hints(
     state: &mut ServerState,
     cancel: CancellationToken,
 ) -> Result<serde_json::Value, String> {
-    let params: InlayHintParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: InlayHintParams =
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -166,14 +170,15 @@ pub(super) fn handle_inlay_hints(
     );
 
     let hints = ide_extensions.inlay_hints_lsp(cancel, file_id, params.range);
-    serde_json::to_value(hints).map_err(|e| e.to_string())
+    serde_json::to_value(hints).map_err(|e| sanitize_serde_json_error(&e))
 }
 
 pub(super) fn handle_document_symbol(
     params: serde_json::Value,
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
-    let params: DocumentSymbolParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: DocumentSymbolParams =
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
@@ -182,7 +187,7 @@ pub(super) fn handle_document_symbol(
     }
 
     let symbols = nova_ide::document_symbols(&state.analysis, file_id);
-    serde_json::to_value(symbols).map_err(|e| e.to_string())
+    serde_json::to_value(symbols).map_err(|e| sanitize_serde_json_error(&e))
 }
 
 pub(super) fn handle_document_highlight(
@@ -194,19 +199,21 @@ pub(super) fn handle_document_highlight(
     }
 
     let params: DocumentHighlightParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     let uri = params.text_document_position_params.text_document.uri;
     let position = params.text_document_position_params.position;
 
     let file_id = state.analysis.ensure_loaded(&uri);
     if !state.analysis.exists(file_id) {
-        return serde_json::to_value(Vec::<DocumentHighlight>::new()).map_err(|e| e.to_string());
+        return serde_json::to_value(Vec::<DocumentHighlight>::new())
+            .map_err(|e| sanitize_serde_json_error(&e));
     }
 
     let source = state.analysis.file_content(file_id);
     let offset = position_to_offset_utf16(source, position).unwrap_or(0);
     let Some((start, end)) = ident_range_at(source, offset) else {
-        return serde_json::to_value(Vec::<DocumentHighlight>::new()).map_err(|e| e.to_string());
+        return serde_json::to_value(Vec::<DocumentHighlight>::new())
+            .map_err(|e| sanitize_serde_json_error(&e));
     };
     let ident = &source[start..end];
 
@@ -232,19 +239,21 @@ pub(super) fn handle_document_highlight(
         });
     }
 
-    serde_json::to_value(highlights).map_err(|e| e.to_string())
+    serde_json::to_value(highlights).map_err(|e| sanitize_serde_json_error(&e))
 }
 
 pub(super) fn handle_folding_range(
     params: serde_json::Value,
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
-    let params: FoldingRangeParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: FoldingRangeParams =
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
     if !state.analysis.exists(file_id) {
-        return serde_json::to_value(Vec::<FoldingRange>::new()).map_err(|e| e.to_string());
+        return serde_json::to_value(Vec::<FoldingRange>::new())
+            .map_err(|e| sanitize_serde_json_error(&e));
     }
 
     let text = state.analysis.file_content(file_id);
@@ -325,19 +334,21 @@ pub(super) fn handle_folding_range(
         }
     }
 
-    serde_json::to_value(ranges).map_err(|e| e.to_string())
+    serde_json::to_value(ranges).map_err(|e| sanitize_serde_json_error(&e))
 }
 
 pub(super) fn handle_selection_range(
     params: serde_json::Value,
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
-    let params: SelectionRangeParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: SelectionRangeParams =
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&uri);
     if !state.analysis.exists(file_id) {
-        return serde_json::to_value(Vec::<SelectionRange>::new()).map_err(|e| e.to_string());
+        return serde_json::to_value(Vec::<SelectionRange>::new())
+            .map_err(|e| sanitize_serde_json_error(&e));
     }
 
     let text = state.analysis.file_content(file_id);
@@ -382,6 +393,5 @@ pub(super) fn handle_selection_range(
         out.push(leaf);
     }
 
-    serde_json::to_value(out).map_err(|e| e.to_string())
+    serde_json::to_value(out).map_err(|e| sanitize_serde_json_error(&e))
 }
-

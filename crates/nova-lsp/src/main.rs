@@ -32,6 +32,7 @@ mod stdio_extensions;
 mod stdio_extensions_db;
 mod stdio_requests;
 mod stdio_semantic_tokens;
+mod stdio_sanitize;
 mod stdio_text;
 mod stdio_text_document;
 

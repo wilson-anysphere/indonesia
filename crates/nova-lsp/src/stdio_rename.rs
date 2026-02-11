@@ -1,4 +1,5 @@
 use crate::rename_lsp;
+use crate::stdio_sanitize::sanitize_serde_json_error;
 use crate::stdio_text::{ident_range_at, offset_to_position_utf16, position_to_offset_utf16};
 use crate::ServerState;
 
@@ -16,7 +17,7 @@ pub(super) fn handle_prepare_rename(
     state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: TextDocumentPositionParams =
-        serde_json::from_value(params).map_err(|e| e.to_string())?;
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     let uri = params.text_document.uri;
     let snapshot = match state.refactor_snapshot(&uri) {
         Ok(snapshot) => snapshot,
@@ -73,7 +74,7 @@ pub(super) fn handle_prepare_rename(
         offset_to_position_utf16(source, start),
         offset_to_position_utf16(source, end),
     );
-    serde_json::to_value(range).map_err(|e| e.to_string())
+    serde_json::to_value(range).map_err(|e| sanitize_serde_json_error(&e))
 }
 
 pub(super) fn handle_rename(
@@ -81,7 +82,7 @@ pub(super) fn handle_rename(
     state: &mut ServerState,
 ) -> Result<LspWorkspaceEdit, (i32, String)> {
     let params: LspRenameParams =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+        serde_json::from_value(params).map_err(|e| (-32602, sanitize_serde_json_error(&e)))?;
     let uri = params.text_document_position.text_document.uri;
     let snapshot = state
         .refactor_snapshot(&uri)
@@ -138,4 +139,3 @@ pub(super) fn handle_rename(
 
     rename_lsp::rename_workspace_edit_to_lsp(snapshot.db(), &edit).map_err(|e| (-32603, e))
 }
-

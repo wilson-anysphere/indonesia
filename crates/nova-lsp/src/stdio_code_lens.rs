@@ -1,4 +1,5 @@
 use crate::stdio_paths::load_document_text;
+use crate::stdio_sanitize::sanitize_serde_json_error;
 use crate::stdio_text::offset_to_position_utf16;
 use crate::ServerState;
 
@@ -9,21 +10,23 @@ pub(super) fn handle_code_lens(
     params: serde_json::Value,
     state: &ServerState,
 ) -> Result<serde_json::Value, String> {
-    let params: lsp_types::CodeLensParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: lsp_types::CodeLensParams =
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
     let uri = params.text_document.uri;
     let Some(source) = load_document_text(state, uri.as_str()) else {
         return Ok(serde_json::Value::Array(Vec::new()));
     };
 
     let lenses = code_lenses_for_java(&source);
-    serde_json::to_value(lenses).map_err(|e| e.to_string())
+    serde_json::to_value(lenses).map_err(|e| sanitize_serde_json_error(&e))
 }
 
 pub(super) fn handle_code_lens_resolve(params: serde_json::Value) -> Result<serde_json::Value, String> {
     // We eagerly resolve CodeLens commands in `textDocument/codeLens`, but some clients still call
     // `codeLens/resolve` unconditionally. Echo the lens back to avoid "method not found".
-    let lens: LspCodeLens = serde_json::from_value(params).map_err(|e| e.to_string())?;
-    serde_json::to_value(lens).map_err(|e| e.to_string())
+    let lens: LspCodeLens =
+        serde_json::from_value(params).map_err(|e| sanitize_serde_json_error(&e))?;
+    serde_json::to_value(lens).map_err(|e| sanitize_serde_json_error(&e))
 }
 
 #[derive(Debug, Clone)]
@@ -341,4 +344,3 @@ fn find_main_method_name_offset(line: &str) -> Option<usize> {
 
     None
 }
-

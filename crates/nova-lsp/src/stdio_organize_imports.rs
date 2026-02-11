@@ -1,5 +1,6 @@
 use crate::rpc_out::RpcOut;
 use crate::stdio_paths::load_document_text;
+use crate::stdio_sanitize::sanitize_serde_json_error;
 use crate::ServerState;
 
 use lsp_server::RequestId;
@@ -67,7 +68,7 @@ pub(super) fn handle_java_organize_imports(
     client: &crate::stdio_transport::LspClient,
 ) -> Result<serde_json::Value, (i32, String)> {
     let params: JavaOrganizeImportsRequestParams =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+        serde_json::from_value(params).map_err(|e| (-32602, sanitize_serde_json_error(&e)))?;
     let uri_string = params.uri;
     let uri = uri_string
         .parse::<LspUri>()
@@ -84,11 +85,11 @@ pub(super) fn handle_java_organize_imports(
             applied: false,
             edit: None,
         })
-        .map_err(|e| (-32603, e.to_string()));
+        .map_err(|e| (-32603, sanitize_serde_json_error(&e)));
     };
 
     let id: RequestId = serde_json::from_value(json!(state.next_outgoing_id()))
-        .map_err(|e| (-32603, e.to_string()))?;
+        .map_err(|e| (-32603, sanitize_serde_json_error(&e)))?;
     client
         .send_request(
             id,
@@ -104,6 +105,5 @@ pub(super) fn handle_java_organize_imports(
         applied: true,
         edit: Some(edit),
     })
-    .map_err(|e| (-32603, e.to_string()))
+    .map_err(|e| (-32603, sanitize_serde_json_error(&e)))
 }
-
