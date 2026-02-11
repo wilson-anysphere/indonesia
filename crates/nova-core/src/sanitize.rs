@@ -5,7 +5,8 @@
 ///
 /// This helper conservatively redacts:
 /// - all double-quoted substrings (handling escaped quotes), and
-/// - the first backticked segment (typically the unknown field/variant),
+/// - backticked segments when they are known to contain user-controlled content (unknown
+///   fields/variants or invalid type/value scalars),
 ///
 /// while preserving the rest of the message so it remains actionable (line/column info, expected
 /// field lists, etc).
