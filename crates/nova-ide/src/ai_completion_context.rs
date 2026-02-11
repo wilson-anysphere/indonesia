@@ -624,6 +624,28 @@ class Test {
     }
 
     #[test]
+    fn receiver_type_infers_parenthesized_this_receiver_with_comment_before_nested_parens() {
+        let ctx = ctx_for(
+            r#"
+class Test {
+    void bar() {}
+
+    void f() {
+        (/*comment*/(this)).<cursor>
+    }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Test"),
+            "expected receiver type to contain `Test`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "bar"));
+    }
+
+    #[test]
     fn receiver_type_infers_qualified_this_receiver_type_and_methods() {
         let ctx = ctx_for(
             r#"
@@ -710,6 +732,33 @@ class Test extends Base {
     (
       // comment
       super
+    ).<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Base"),
+            "expected receiver type to contain `Base`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "base"));
+    }
+
+    #[test]
+    fn receiver_type_infers_parenthesized_super_receiver_with_comment_before_nested_parens() {
+        let ctx = ctx_for(
+            r#"
+class Base {
+  void base() {}
+}
+
+class Test extends Base {
+  void f() {
+    (
+      // comment
+      (super)
     ).<cursor>
   }
 }

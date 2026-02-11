@@ -11115,12 +11115,31 @@ pub(crate) fn infer_receiver_type_before_dot(
     // Otherwise, treat as a parenthesized expression like `(foo).<cursor>`.
     let open_paren = find_matching_open_paren(bytes, end - 1)?;
     let (mut start, mut end) = unwrap_paren_expr(bytes, open_paren, end - 1)?;
-    start = skip_trivia_forwards(text, start);
-    // `unwrap_paren_expr` strips whitespace but not comments. Skip trailing trivia inside the
-    // parentheses so receivers like `(b()/*comment*/).<cursor>` still infer the call return type.
-    end = skip_trivia_backwards(text, end);
-    if end <= start {
-        return None;
+    // `unwrap_paren_expr` strips whitespace but not comments. Skip leading/trailing trivia inside
+    // the parentheses so receivers like:
+    // - `(/*comment*/this).<cursor>`
+    // - `(b()/*comment*/).<cursor>`
+    // - `(/*comment*/(this)).<cursor>`
+    // still infer semantic receiver types.
+    loop {
+        start = skip_trivia_forwards(text, start);
+        end = skip_trivia_backwards(text, end);
+        if end <= start {
+            return None;
+        }
+
+        // After skipping trivia, strip redundant nested parentheses (best-effort).
+        if bytes.get(start) == Some(&b'(') && bytes.get(end - 1) == Some(&b')') {
+            if let Some(inner_open) = find_matching_open_paren(bytes, end - 1) {
+                if inner_open == start {
+                    start += 1;
+                    end -= 1;
+                    continue;
+                }
+            }
+        }
+
+        break;
     }
     let inner = text.get(start..end)?.trim();
     if inner.is_empty() {
