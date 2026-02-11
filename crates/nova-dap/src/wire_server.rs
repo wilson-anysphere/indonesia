@@ -621,6 +621,35 @@ async fn handle_request_inner(
 
             send_response(out_tx, seq, request, true, None, None).await;
         }
+        // Test-only endpoint for validating that we sanitize serde-json unknown field/variant
+        // errors in DAP response messages.
+        #[cfg(any(test, debug_assertions))]
+        "nova/testSerdeJsonArgs" => {
+            #[derive(Debug, Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct TestSerdeJsonArgs {
+                #[allow(dead_code)]
+                foo: u32,
+            }
+
+            match serde_json::from_value::<TestSerdeJsonArgs>(request.arguments.clone()) {
+                Ok(_args) => {
+                    send_response(out_tx, seq, request, true, None, None).await;
+                }
+                Err(err) => {
+                    let message = sanitize_serde_json_error(err);
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(format!("invalid nova/testSerdeJsonArgs arguments: {message}")),
+                    )
+                    .await;
+                }
+            }
+        }
         "nova/bugReport" => {
             if cancel.is_cancelled() {
                 send_response(
