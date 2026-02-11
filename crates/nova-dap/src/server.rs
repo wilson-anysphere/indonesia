@@ -48,10 +48,31 @@ fn sanitize_json_error_message(message: &str) -> String {
         out.push_str(&rest[..start + 1]);
         rest = &rest[start + 1..];
 
-        let Some(end) = rest.find('"') else {
-            // Unterminated quote: append the remainder and stop.
-            out.push_str(rest);
-            return out;
+        let mut end = None;
+        let bytes = rest.as_bytes();
+        for (idx, &b) in bytes.iter().enumerate() {
+            if b != b'"' {
+                continue;
+            }
+
+            // Treat quotes preceded by an odd number of backslashes as escaped.
+            let mut backslashes = 0usize;
+            let mut k = idx;
+            while k > 0 && bytes[k - 1] == b'\\' {
+                backslashes += 1;
+                k -= 1;
+            }
+            if backslashes % 2 == 0 {
+                end = Some(idx);
+                break;
+            }
+        }
+
+        let Some(end) = end else {
+            // Unterminated quote: redact the remainder and stop.
+            out.push_str("<redacted>");
+            rest = "";
+            break;
         };
         out.push_str("<redacted>\"");
         rest = &rest[end + 1..];
@@ -1139,7 +1160,8 @@ mod tests {
             port: u16,
         }
 
-        let secret = "nova-dap-legacy-super-secret-token";
+        let secret_suffix = "nova-dap-legacy-super-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
         // Ensure the field is considered "read" so this test doesn't introduce new dead-code
         // warnings beyond the ones already in this crate's test suite.
         let _ = Dummy { port: 0 }.port;
@@ -1148,14 +1170,14 @@ mod tests {
             .expect_err("expected type mismatch");
         let raw_message = raw_err.to_string();
         assert!(
-            raw_message.contains(secret),
+            raw_message.contains(secret_suffix),
             "expected raw serde_json error to include the string value so this test would catch leaks: {raw_message}"
         );
 
         let err: anyhow::Error = raw_err.into();
         let message = sanitize_anyhow_error_message(&err);
         assert!(
-            !message.contains(secret),
+            !message.contains(secret_suffix),
             "expected sanitized anyhow error to omit string values: {message}"
         );
         assert!(

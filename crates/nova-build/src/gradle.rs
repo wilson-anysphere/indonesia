@@ -1783,12 +1783,14 @@ BUILD SUCCESSFUL
 
     #[test]
     fn gradle_json_parse_errors_do_not_echo_string_values() {
-        let secret = "nova-gradle-secret-token";
+        let secret_suffix = "nova-gradle-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
+        let payload = serde_json::json!({ "projects": secret }).to_string();
         let out = format!(
             r#"
 > Task :printNovaProjects
 NOVA_PROJECTS_BEGIN
-{{"projects":"{secret}"}}
+{payload}
 NOVA_PROJECTS_END
 "#
         );
@@ -1796,7 +1798,7 @@ NOVA_PROJECTS_END
         let err = parse_gradle_projects_output(&out).expect_err("expected json parse error");
         let message = err.to_string();
         assert!(
-            !message.contains(secret),
+            !message.contains(secret_suffix),
             "expected BuildError::Parse to omit string values: {message}"
         );
         assert!(
@@ -2170,10 +2172,31 @@ fn sanitize_json_error_message(message: &str) -> String {
         out.push_str(&rest[..start + 1]);
         rest = &rest[start + 1..];
 
-        let Some(end) = rest.find('"') else {
-            // Unterminated quote: append the remainder and stop.
-            out.push_str(rest);
-            return out;
+        let mut end = None;
+        let bytes = rest.as_bytes();
+        for (idx, &b) in bytes.iter().enumerate() {
+            if b != b'"' {
+                continue;
+            }
+
+            // Treat quotes preceded by an odd number of backslashes as escaped.
+            let mut backslashes = 0usize;
+            let mut k = idx;
+            while k > 0 && bytes[k - 1] == b'\\' {
+                backslashes += 1;
+                k -= 1;
+            }
+            if backslashes % 2 == 0 {
+                end = Some(idx);
+                break;
+            }
+        }
+
+        let Some(end) = end else {
+            // Unterminated quote: redact the remainder and stop.
+            out.push_str("<redacted>");
+            rest = "";
+            break;
         };
         out.push_str("<redacted>\"");
         rest = &rest[end + 1..];

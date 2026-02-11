@@ -285,10 +285,31 @@ fn sanitize_json_error_message(message: &str) -> String {
         out.push_str(&rest[..start + 1]);
         rest = &rest[start + 1..];
 
-        let Some(end) = rest.find('"') else {
-            // Unterminated quote: append the remainder and stop.
-            out.push_str(rest);
-            return out;
+        let mut end = None;
+        let bytes = rest.as_bytes();
+        for (idx, &b) in bytes.iter().enumerate() {
+            if b != b'"' {
+                continue;
+            }
+
+            // Treat quotes preceded by an odd number of backslashes as escaped.
+            let mut backslashes = 0usize;
+            let mut k = idx;
+            while k > 0 && bytes[k - 1] == b'\\' {
+                backslashes += 1;
+                k -= 1;
+            }
+            if backslashes % 2 == 0 {
+                end = Some(idx);
+                break;
+            }
+        }
+
+        let Some(end) = end else {
+            // Unterminated quote: redact the remainder and stop.
+            out.push_str("<redacted>");
+            rest = "";
+            break;
         };
         out.push_str("<redacted>\"");
         rest = &rest[end + 1..];
@@ -935,13 +956,14 @@ mod tests {
 
     #[test]
     fn wasm_call_error_json_does_not_echo_string_values() {
-        let secret = "nova-wasm-secret-token";
-        let err =
-            serde_json::from_value::<bool>(serde_json::json!(secret)).expect_err("expected type error");
+        let secret_suffix = "nova-wasm-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
+        let err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
 
         let message = sanitize_serde_json_error(&err);
         assert!(
-            !message.contains(secret),
+            !message.contains(secret_suffix),
             "expected sanitized serde_json error message to omit string values: {message}"
         );
         assert!(

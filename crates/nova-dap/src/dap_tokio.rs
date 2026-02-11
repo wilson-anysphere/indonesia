@@ -41,10 +41,31 @@ fn sanitize_json_error_message(message: &str) -> String {
         out.push_str(&rest[..start + 1]);
         rest = &rest[start + 1..];
 
-        let Some(end) = rest.find('"') else {
-            // Unterminated quote: append the remainder and stop.
-            out.push_str(rest);
-            return out;
+        let mut end = None;
+        let bytes = rest.as_bytes();
+        for (idx, &b) in bytes.iter().enumerate() {
+            if b != b'"' {
+                continue;
+            }
+
+            // Treat quotes preceded by an odd number of backslashes as escaped.
+            let mut backslashes = 0usize;
+            let mut k = idx;
+            while k > 0 && bytes[k - 1] == b'\\' {
+                backslashes += 1;
+                k -= 1;
+            }
+            if backslashes % 2 == 0 {
+                end = Some(idx);
+                break;
+            }
+        }
+
+        let Some(end) = end else {
+            // Unterminated quote: redact the remainder and stop.
+            out.push_str("<redacted>");
+            rest = "";
+            break;
         };
         out.push_str("<redacted>\"");
         rest = &rest[end + 1..];
@@ -359,7 +380,8 @@ mod tests {
 
     #[test]
     fn dap_error_json_does_not_echo_string_values() {
-        let secret = "dap-super-secret-token";
+        let secret_suffix = "dap-super-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
         let err = serde_json::from_value::<Request>(serde_json::json!({
             "seq": secret,
             "type": "request",
@@ -371,7 +393,7 @@ mod tests {
         let dap_err = DapError::from(err);
         let message = dap_err.to_string();
         assert!(
-            !message.contains(secret),
+            !message.contains(secret_suffix),
             "expected DapError json message to omit string values: {message}"
         );
         assert!(

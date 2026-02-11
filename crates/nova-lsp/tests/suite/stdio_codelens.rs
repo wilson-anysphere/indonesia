@@ -328,7 +328,11 @@ fn stdio_server_does_not_echo_string_params_in_jsonrpc_errors() {
     let root = temp.path();
     let root_uri = file_uri_string(root);
 
-    let secret = "nova-lsp-secret-token";
+    // The secret intentionally contains an embedded quote. `serde_json::Error` display strings
+    // escape that quote (e.g. `string "prefix\"secret"`). Make sure our sanitizer redacts the full
+    // string even in the presence of escapes.
+    let secret_suffix = "nova-lsp-secret-token";
+    let secret = format!("prefix\"{secret_suffix}");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -375,7 +379,7 @@ fn stdio_server_does_not_echo_string_params_in_jsonrpc_errors() {
         .expect("error message");
 
     assert!(
-        !message.contains(secret),
+        !message.contains(secret_suffix),
         "expected error message to omit secret string values: {message}"
     );
     assert!(

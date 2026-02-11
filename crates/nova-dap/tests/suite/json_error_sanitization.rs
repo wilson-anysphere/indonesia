@@ -7,7 +7,8 @@ async fn wire_server_does_not_echo_string_values_in_launch_argument_errors() {
 
     client.initialize_handshake().await;
 
-    let secret = "nova-dap-wire-super-secret-token";
+    let secret_suffix = "nova-dap-wire-super-secret-token";
+    let secret = format!("prefix\"{secret_suffix}");
     // `launch.port` expects a number (`u16`). Passing a string triggers:
     // `invalid type: string "..."`.
     let resp = client.request("launch", json!({ "port": secret })).await;
@@ -23,7 +24,7 @@ async fn wire_server_does_not_echo_string_values_in_launch_argument_errors() {
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     assert!(
-        !message.contains(secret),
+        !message.contains(secret_suffix),
         "expected DAP response error message to omit string values: {message}"
     );
     assert!(
@@ -34,4 +35,3 @@ async fn wire_server_does_not_echo_string_values_in_launch_argument_errors() {
     client.disconnect().await;
     server_task.await.unwrap().unwrap();
 }
-

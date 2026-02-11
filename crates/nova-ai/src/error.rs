@@ -37,25 +37,46 @@ impl From<url::ParseError> for AiError {
 impl fmt::Display for AiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fn sanitize_json_error_message(message: &str) -> String {
-            // `serde_json::Error` display strings can include user-provided scalar values (e.g.
-            // `invalid type: string "..."`). Conservatively redact quoted substrings so secrets/code
-            // from provider responses cannot leak through user-facing errors.
-            let mut out = String::with_capacity(message.len());
-            let mut rest = message;
-            while let Some(start) = rest.find('"') {
-                // Include the opening quote.
-                out.push_str(&rest[..start + 1]);
-                rest = &rest[start + 1..];
-
-                let Some(end) = rest.find('"') else {
-                    // Unterminated quote: append the remainder and stop.
-                    out.push_str(rest);
-                    return out;
-                };
-                out.push_str("<redacted>\"");
-                rest = &rest[end + 1..];
-            }
-            out.push_str(rest);
+             // `serde_json::Error` display strings can include user-provided scalar values (e.g.
+             // `invalid type: string "..."`). Conservatively redact quoted substrings so secrets/code
+             // from provider responses cannot leak through user-facing errors.
+             let mut out = String::with_capacity(message.len());
+             let mut rest = message;
+             while let Some(start) = rest.find('"') {
+                 // Include the opening quote.
+                 out.push_str(&rest[..start + 1]);
+                 rest = &rest[start + 1..];
+ 
+                 let mut end = None;
+                 let bytes = rest.as_bytes();
+                 for (idx, &b) in bytes.iter().enumerate() {
+                     if b != b'"' {
+                         continue;
+                     }
+ 
+                     // Treat quotes preceded by an odd number of backslashes as escaped.
+                     let mut backslashes = 0usize;
+                     let mut k = idx;
+                     while k > 0 && bytes[k - 1] == b'\\' {
+                         backslashes += 1;
+                         k -= 1;
+                     }
+                     if backslashes % 2 == 0 {
+                         end = Some(idx);
+                         break;
+                     }
+                 }
+ 
+                 let Some(end) = end else {
+                     // Unterminated quote: redact the remainder and stop.
+                     out.push_str("<redacted>");
+                     rest = "";
+                     break;
+                 };
+                 out.push_str("<redacted>\"");
+                 rest = &rest[end + 1..];
+             }
+             out.push_str(rest);
 
             // `serde` wraps unknown fields/variants in backticks:
             // `unknown field `secret`, expected ...`
@@ -108,21 +129,41 @@ impl fmt::Display for AiError {
 
 impl fmt::Debug for AiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fn sanitize_json_error_message(message: &str) -> String {
-            let mut out = String::with_capacity(message.len());
-            let mut rest = message;
-            while let Some(start) = rest.find('"') {
-                out.push_str(&rest[..start + 1]);
-                rest = &rest[start + 1..];
-
-                let Some(end) = rest.find('"') else {
-                    out.push_str(rest);
-                    return out;
-                };
-                out.push_str("<redacted>\"");
-                rest = &rest[end + 1..];
-            }
-            out.push_str(rest);
+         fn sanitize_json_error_message(message: &str) -> String {
+             let mut out = String::with_capacity(message.len());
+             let mut rest = message;
+             while let Some(start) = rest.find('"') {
+                 out.push_str(&rest[..start + 1]);
+                 rest = &rest[start + 1..];
+ 
+                 let mut end = None;
+                 let bytes = rest.as_bytes();
+                 for (idx, &b) in bytes.iter().enumerate() {
+                     if b != b'"' {
+                         continue;
+                     }
+ 
+                     let mut backslashes = 0usize;
+                     let mut k = idx;
+                     while k > 0 && bytes[k - 1] == b'\\' {
+                         backslashes += 1;
+                         k -= 1;
+                     }
+                     if backslashes % 2 == 0 {
+                         end = Some(idx);
+                         break;
+                     }
+                 }
+ 
+                 let Some(end) = end else {
+                     out.push_str("<redacted>");
+                     rest = "";
+                     break;
+                 };
+                 out.push_str("<redacted>\"");
+                 rest = &rest[end + 1..];
+             }
+             out.push_str(rest);
 
             if let Some(start) = out.find('`') {
                 if let Some(end_rel) = out[start.saturating_add(1)..].find('`') {
@@ -245,7 +286,8 @@ mod tests {
 
     #[test]
     fn ai_error_json_display_does_not_echo_string_values() {
-        let secret = "super-secret-token";
+        let secret_suffix = "super-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
         let err = serde_json::from_value::<bool>(serde_json::json!(secret))
             .expect_err("expected type error");
 
@@ -257,7 +299,7 @@ mod tests {
 
         let message = ai_err.to_string();
         assert!(
-            !message.contains(secret),
+            !message.contains(secret_suffix),
             "AiError json display leaked secret token: {message}"
         );
         assert!(

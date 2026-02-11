@@ -18,10 +18,31 @@ fn sanitize_json_error_message(message: &str) -> String {
         out.push_str(&rest[..start + 1]);
         rest = &rest[start + 1..];
 
-        let Some(end) = rest.find('"') else {
-            // Unterminated quote: append the remainder and stop.
-            out.push_str(rest);
-            return out;
+        let mut end = None;
+        let bytes = rest.as_bytes();
+        for (idx, &b) in bytes.iter().enumerate() {
+            if b != b'"' {
+                continue;
+            }
+
+            // Treat quotes preceded by an odd number of backslashes as escaped.
+            let mut backslashes = 0usize;
+            let mut k = idx;
+            while k > 0 && bytes[k - 1] == b'\\' {
+                backslashes += 1;
+                k -= 1;
+            }
+            if backslashes % 2 == 0 {
+                end = Some(idx);
+                break;
+            }
+        }
+
+        let Some(end) = end else {
+            // Unterminated quote: redact the remainder and stop.
+            out.push_str("<redacted>");
+            rest = "";
+            break;
         };
         out.push_str("<redacted>\"");
         rest = &rest[end + 1..];
@@ -269,15 +290,16 @@ mod tests {
             seq: i64,
         }
 
-        let secret = "dap-codec-super-secret-token";
-        let payload = format!(r#"{{"seq":"{secret}"}}"#);
+        let secret_suffix = "dap-codec-super-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
+        let payload = json!({ "seq": secret }).to_string();
         let framed = format!("Content-Length: {}\r\n\r\n{}", payload.len(), payload);
 
         let mut cursor = Cursor::new(framed.into_bytes());
         let err = read_json_message::<_, Dummy>(&mut cursor).unwrap_err();
         let message = err.to_string();
         assert!(
-            !message.contains(secret),
+            !message.contains(secret_suffix),
             "expected DAP codec JSON error message to omit string values: {message}"
         );
         assert!(
