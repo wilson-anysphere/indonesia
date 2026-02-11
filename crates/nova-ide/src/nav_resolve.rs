@@ -129,6 +129,9 @@ fn workspace_id_and_fingerprint(db: &dyn Database) -> (u64, u64) {
     let mut workspace_hasher = DefaultHasher::new();
     let mut fingerprint_hasher = DefaultHasher::new();
 
+    const SAMPLE: usize = 64;
+    const FULL_HASH_MAX: usize = 3 * SAMPLE;
+
     for file_id in file_ids {
         let Some(path) = db.file_path(file_id) else {
             continue;
@@ -140,14 +143,29 @@ fn workspace_id_and_fingerprint(db: &dyn Database) -> (u64, u64) {
         // Workspace identity is derived from the set of Java file paths.
         path.hash(&mut workspace_hasher);
 
-        // Best-effort content fingerprint: path + pointer + len.
-        //
-        // NOTE: We intentionally avoid hashing full contents here; this runs on every
-        // navigation request and would be prohibitively expensive in large workspaces.
+         // Best-effort content fingerprint: path + pointer + len.
+         //
+         // NOTE: We intentionally avoid hashing full contents here; this runs on every
+         // navigation request and would be prohibitively expensive in large workspaces.
         path.hash(&mut fingerprint_hasher);
         let text = db.file_content(file_id);
         text.len().hash(&mut fingerprint_hasher);
         text.as_ptr().hash(&mut fingerprint_hasher);
+        // Pointer/len hashing is fast, but can collide when short-lived buffers reuse the same
+        // allocations (common in tests) or when text is mutated in place. Mix in a small,
+        // content-dependent sample to make cache invalidation deterministic without hashing full
+        // contents for large files.
+        let bytes = text.as_bytes();
+        if bytes.len() <= FULL_HASH_MAX {
+            bytes.hash(&mut fingerprint_hasher);
+        } else {
+            bytes[..SAMPLE].hash(&mut fingerprint_hasher);
+            let mid = bytes.len() / 2;
+            let mid_start = mid.saturating_sub(SAMPLE / 2);
+            let mid_end = (mid_start + SAMPLE).min(bytes.len());
+            bytes[mid_start..mid_end].hash(&mut fingerprint_hasher);
+            bytes[bytes.len() - SAMPLE..].hash(&mut fingerprint_hasher);
+        }
     }
 
     (workspace_hasher.finish(), fingerprint_hasher.finish())
