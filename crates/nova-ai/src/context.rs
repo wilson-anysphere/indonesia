@@ -1050,6 +1050,13 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
         return false;
     }
     if bytes[amp + 1] != b'#' {
+        let name = &bytes[amp + 1..end_semicolon];
+        if name.eq_ignore_ascii_case(b"sol")
+            || name.eq_ignore_ascii_case(b"bsol")
+            || name.eq_ignore_ascii_case(b"backslash")
+        {
+            return true;
+        }
         return false;
     }
 
