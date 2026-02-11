@@ -833,6 +833,30 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         if prev == b'/' || prev == b'\\' {
             return true;
         }
+        // Identifiers that begin immediately after a percent marker (`%`, `u0025`, `&percnt;`,
+        // etc) are typically part of a percent-encoded path/URL. When the following two hex digits
+        // are obfuscated, token boundaries like `{` can split the escape across identifiers (e.g.
+        // `%u0032u{0046}home` becomes `%u0032u` + `{0046}home`), allowing low-signal fragments like
+        // `u0032u` to become semantic-search query tokens. Detect these by scanning backward for a
+        // percent marker that ends at `start` and decoding the percent-encoded byte beginning at
+        // `start`.
+        if parse_obfuscated_hex_digit(bytes, start).is_some() {
+            let scan_start = start.saturating_sub(128);
+            let mut i = start;
+            while i > scan_start {
+                i -= 1;
+                if percent_marker_end(bytes, i) == Some(start) {
+                    if let Some((value, _next)) =
+                        percent_encoded_byte_after_obfuscated_digits(bytes, start)
+                    {
+                        if percent_encoded_byte_is_path_like(value) {
+                            return true;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
         if percent_encoded_byte_before(bytes, start).is_some_and(percent_encoded_byte_is_path_like) {
             return true;
         }
@@ -849,17 +873,18 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         {
             return true;
         }
-        if prev == b';'
+        if matches!(prev, b';' | b'}')
             && percent_encoded_byte_ending_at(bytes, start).is_some_and(percent_encoded_byte_is_path_like)
         {
             return true;
         }
         // HTML numeric entities use `;` as a terminator, which is treated as a query-token
-        // boundary. That means mixed percent escapes like `%&#50;u0046home` can cause the second hex
-        // digit escape (`u0046`) to become part of the identifier token. Detect this by looking for
-        // a percent marker + first digit that ends right at `start` and a second digit that begins
-        // at `start`.
-        if prev == b';' {
+        // boundary. Braced unicode/hex escapes use `}` as a terminator, which is also treated as a
+        // query-token boundary. That means mixed percent escapes like `%&#50;u0046home` or
+        // `%u{0032}u0046home` can cause the second hex digit escape (`u0046`) to become part of the
+        // identifier token. Detect this by looking for a percent marker + first digit that ends
+        // right at `start` and a second digit that begins at `start`.
+        if matches!(prev, b';' | b'}') {
             if let Some((lo, _)) = parse_obfuscated_hex_digit(bytes, start) {
                 let scan_start = start.saturating_sub(128);
                 let mut i = start;
