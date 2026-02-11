@@ -144,6 +144,22 @@ fn contains_serde_json_error(err: &(dyn std::error::Error + 'static)) -> bool {
             return true;
         }
 
+        if let Some(build_err) = err.downcast_ref::<nova_build::BuildError>() {
+            match build_err {
+                nova_build::BuildError::Io(io_err) => {
+                    if contains_serde_json_error(io_err) {
+                        return true;
+                    }
+                }
+                nova_build::BuildError::Cache(cache_err) => {
+                    if contains_serde_json_error(cache_err) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+
         if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
             if let Some(inner) = io_err.get_ref() {
                 let inner: &(dyn std::error::Error + 'static) = inner;
@@ -260,6 +276,32 @@ mod json_error_sanitization_tests {
         let io_err = std::io::Error::new(std::io::ErrorKind::Other, serde_err);
 
         let err = Err::<(), _>(io_err)
+            .context("failed to parse JSON")
+            .expect_err("expected anyhow error");
+
+        let message = sanitize_anyhow_error_message(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized anyhow error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized anyhow error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn sanitize_anyhow_error_message_does_not_echo_string_values_when_wrapped_in_build_error() {
+        use anyhow::Context as _;
+
+        let secret_suffix = "nova-dap-build-error-secret";
+        let secret = format!("prefix\"{secret_suffix}");
+        let serde_err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, serde_err);
+        let build_err: nova_build::BuildError = io_err.into();
+
+        let err = Err::<(), _>(build_err)
             .context("failed to parse JSON")
             .expect_err("expected anyhow error");
 

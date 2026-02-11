@@ -117,6 +117,22 @@ fn contains_serde_json_error(err: &(dyn std::error::Error + 'static)) -> bool {
             return true;
         }
 
+        if let Some(build_err) = err.downcast_ref::<nova_build::BuildError>() {
+            match build_err {
+                nova_build::BuildError::Io(io_err) => {
+                    if contains_serde_json_error(io_err) {
+                        return true;
+                    }
+                }
+                nova_build::BuildError::Cache(cache_err) => {
+                    if contains_serde_json_error(cache_err) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+
         if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
             if let Some(inner) = io_err.get_ref() {
                 let inner: &(dyn std::error::Error + 'static) = inner;
@@ -1236,6 +1252,45 @@ mod tests {
 
         let io_err = std::io::Error::new(std::io::ErrorKind::Other, raw_err);
         let err: anyhow::Error = io_err.into();
+        let message = sanitize_anyhow_error_message(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized anyhow error to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized anyhow error to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn dap_server_anyhow_errors_do_not_echo_string_values_when_wrapped_in_build_error() {
+        #[derive(Debug, Deserialize)]
+        struct Dummy {
+            port: u16,
+        }
+
+        let secret_suffix = "nova-dap-legacy-build-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
+        let _ = Dummy { port: 0 }.port;
+
+        let raw_err = serde_json::from_value::<Dummy>(json!({ "port": secret }))
+            .expect_err("expected type mismatch");
+        let raw_message = raw_err.to_string();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw serde_json error to include the string value so this test would catch leaks: {raw_message}"
+        );
+
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, raw_err);
+        let build_err: nova_build::BuildError = io_err.into();
+        let build_message = build_err.to_string();
+        assert!(
+            build_message.contains(secret_suffix),
+            "expected raw BuildError to include the string value so this test would catch leaks: {build_message}"
+        );
+
+        let err: anyhow::Error = build_err.into();
         let message = sanitize_anyhow_error_message(&err);
         assert!(
             !message.contains(secret_suffix),
