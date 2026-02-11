@@ -1379,7 +1379,7 @@ fn braced_unicode_escape_is_path_separator(bytes: &[u8], end_brace: usize) -> bo
     let mut open_brace = None;
     let mut i = end_brace;
     let mut scanned = 0usize;
-    while i > 0 && scanned < 16 {
+    while i > 0 && scanned < 64 {
         i -= 1;
         scanned += 1;
         if bytes[i] == b'{' {
@@ -1399,7 +1399,10 @@ fn braced_unicode_escape_is_path_separator(bytes: &[u8], end_brace: usize) -> bo
         return false;
     }
 
-    let digits = &bytes[open_brace + 1..end_brace];
+    let mut digits = &bytes[open_brace + 1..end_brace];
+    while digits.first().is_some_and(|b| *b == b'0') {
+        digits = &digits[1..];
+    }
     if digits.is_empty() || digits.len() > 8 {
         return false;
     }
@@ -2763,21 +2766,25 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
 
         if bytes.get(j).is_some_and(|b| *b == b'{') {
             let mut value = 0u32;
-            let mut digits = 0usize;
+            let mut significant = 0usize;
             let mut k = j + 1;
-            while k < bytes.len() && digits < 8 {
+            while k < bytes.len() && significant < 8 {
                 if bytes[k] == b'}' {
                     break;
                 }
                 let Some(hex) = hex_value(bytes[k]) else {
                     break;
                 };
+                if significant == 0 && hex == 0 {
+                    k += 1;
+                    continue;
+                }
                 value = (value << 4) | hex as u32;
-                digits += 1;
+                significant += 1;
                 k += 1;
             }
 
-            if digits > 0
+            if significant > 0
                 && k < bytes.len()
                 && bytes[k] == b'}'
                 && html_entity_codepoint_is_path_separator(value)
@@ -2855,21 +2862,25 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
 
         if bytes.get(i + 1).is_some_and(|b| *b == b'{') {
             let mut value = 0u32;
-            let mut digits = 0usize;
+            let mut significant = 0usize;
             let mut j = i + 2;
-            while j < bytes.len() && digits < 8 {
+            while j < bytes.len() && significant < 8 {
                 if bytes[j] == b'}' {
                     break;
                 }
                 let Some(hex) = hex_value(bytes[j]) else {
                     break;
                 };
+                if significant == 0 && hex == 0 {
+                    j += 1;
+                    continue;
+                }
                 value = (value << 4) | hex as u32;
-                digits += 1;
+                significant += 1;
                 j += 1;
             }
 
-            if digits > 0
+            if significant > 0
                 && j < bytes.len()
                 && bytes[j] == b'}'
                 && html_entity_codepoint_is_path_separator(value)
@@ -2878,14 +2889,18 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
             }
         } else {
             let mut value = 0u32;
-            let mut digits = 0usize;
+            let mut significant = 0usize;
             let mut j = i + 1;
-            while j < bytes.len() && digits < 8 {
+            while j < bytes.len() && significant < 8 {
                 let Some(hex) = hex_value(bytes[j]) else {
                     break;
                 };
+                if significant == 0 && hex == 0 {
+                    j += 1;
+                    continue;
+                }
                 value = (value << 4) | hex as u32;
-                digits += 1;
+                significant += 1;
                 j += 1;
                 if html_entity_codepoint_is_path_separator(value) {
                     return true;

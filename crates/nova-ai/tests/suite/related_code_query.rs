@@ -618,6 +618,7 @@ fn related_code_query_avoids_unicode_escaped_path_segments() {
         r"\u002Fhome\u002Fuser\u002Fmy-",
         r"\uu002Fhome\uuu002Fuser\uuuuu002Fmy-",
         r"\u{002F}home\u{002F}user\u{002F}my-",
+        r"\u{000000000000000000002F}home\u{000000000000000000002F}user\u{000000000000000000002F}my-",
     ] {
         let search = CapturingSearch::default();
         let private_segment = "NOVA_AI_PRIVATE_USER_12345";
@@ -791,7 +792,12 @@ fn related_code_query_avoids_hex_escaped_path_segments() {
     }
 
     let private_segment = "NOVA_AI_PRIVATE_USER_12345";
-    for prefix in [r"\x2Fhome\x2Fuser\x2Fmy-", r"\x{2F}home\x{2F}user\x{2F}my-"] {
+    for prefix in [
+        r"\x2Fhome\x2Fuser\x2Fmy-",
+        r"\x{2F}home\x{2F}user\x{2F}my-",
+        r"\x000000000000000000002Fhome\x000000000000000000002Fuser\x000000000000000000002Fmy-",
+        r"\x{000000000000000000002F}home\x{000000000000000000002F}user\x{000000000000000000002F}my-",
+    ] {
         let search = CapturingSearch::default();
         let focal_code = [
             prefix,
@@ -1763,6 +1769,8 @@ fn related_code_query_skips_unicode_escaped_path_only_selections() {
         r"\uu005Chome\uuu005Cuser\uuuuu005Csecret\uuuuuu005Ccredentials",
         r"\u{002F}home\u{002F}user\u{002F}secret\u{002F}credentials",
         r"\u{005C}home\u{005C}user\u{005C}secret\u{005C}credentials",
+        r"\u{000000000000000000002F}home\u{000000000000000000002F}user\u{000000000000000000002F}secret\u{000000000000000000002F}credentials",
+        r"\u{000000000000000000005C}home\u{000000000000000000005C}user\u{000000000000000000005C}secret\u{000000000000000000005C}credentials",
         r"\U0000002Fhome\U0000002Fuser\U0000002Fsecret\U0000002Fcredentials",
         r"\U0000005Chome\U0000005Cuser\U0000005Csecret\U0000005Ccredentials",
     ] {
@@ -1926,12 +1934,16 @@ fn related_code_query_skips_hex_escaped_path_only_selections() {
     for focal_code in [
         r"\x002Fhome",
         r"\x00002Fhome",
+        r"\x000000000000000000002Fhome",
         r"\x005Chome",
         r"\x00005Chome",
+        r"\x000000000000000000005Chome",
         r"\x2Fhome\x2Fuser\x2Fsecret\x2Fcredentials",
         r"\x5Chome\x5Cuser\x5Csecret\x5Ccredentials",
         r"\x{2F}home\x{2F}user\x{2F}secret\x{2F}credentials",
         r"\x{5C}home\x{5C}user\x{5C}secret\x{5C}credentials",
+        r"\x{000000000000000000002F}home\x{000000000000000000002F}user\x{000000000000000000002F}secret\x{000000000000000000002F}credentials",
+        r"\x{000000000000000000005C}home\x{000000000000000000005C}user\x{000000000000000000005C}secret\x{000000000000000000005C}credentials",
     ] {
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
         assert!(
