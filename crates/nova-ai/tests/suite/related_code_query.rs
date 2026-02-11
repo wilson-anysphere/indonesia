@@ -518,6 +518,26 @@ fn related_code_query_skips_file_uri_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_domain_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for domain-only selections");
+        }
+    }
+
+    let search = PanicSearch;
+    for focal_code in [r#""service.internal""#, r#""example.com""#] {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for domain-only focal code"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_percent_encoded_path_only_selections() {
     struct PanicSearch;
 

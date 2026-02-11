@@ -1093,6 +1093,11 @@ fn related_code_query_fallback(focal_code: &str) -> String {
         if looks_like_user_at_host_token(tok) {
             continue;
         }
+        // Domain/hostname tokens are low-signal for semantic code search and can leak infrastructure
+        // metadata when selections are log/config snippets rather than Java code.
+        if looks_like_domain_name_token(tok) {
+            continue;
+        }
         // Numeric literals are very low-signal as embedding queries and can contain unique IDs
         // (e.g. `0xDEADBEEF`) that we should not send to providers.
         if looks_like_numeric_literal_token(tok) {
@@ -1586,6 +1591,76 @@ fn looks_like_high_entropy_token(tok: &str) -> bool {
 
     let digits = token.bytes().filter(|b| b.is_ascii_digit()).count();
     digits >= 8 && is_mostly_alnum_or_symbols(token)
+}
+
+fn looks_like_domain_name_token(tok: &str) -> bool {
+    const PUBLIC_TLDS: &[&str] = &[
+        "com", "net", "org", "io", "edu", "gov", "co", "ai", "dev", "app", "cloud",
+    ];
+    const INTERNAL_TLDS: &[&str] = &["internal", "local", "localdomain", "lan", "corp", "home", "test"];
+
+    let token =
+        tok.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')));
+    if token.len() < 4 {
+        return false;
+    }
+    if token.starts_with('.') || token.ends_with('.') {
+        return false;
+    }
+    if !token.contains('.') {
+        return false;
+    }
+    if !token
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    {
+        return false;
+    }
+
+    let mut parts = token.split('.');
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    if first.is_empty() {
+        return false;
+    }
+    let mut last = first;
+    let mut count = 1usize;
+    for part in parts {
+        if part.is_empty() {
+            return false;
+        }
+        count += 1;
+        last = part;
+    }
+    if count < 2 {
+        return false;
+    }
+    if last.len() < 2 || last.len() > 24 {
+        return false;
+    }
+    if !last.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return false;
+    }
+
+    let is_known_tld = PUBLIC_TLDS
+        .iter()
+        .chain(INTERNAL_TLDS.iter())
+        .any(|cand| last.eq_ignore_ascii_case(cand));
+    if !is_known_tld {
+        return false;
+    }
+
+    // Avoid treating common language/library package qualifiers like `java.net` as domain names.
+    if count == 2
+        && ["java", "javax", "kotlin", "scala", "groovy"]
+            .iter()
+            .any(|cand| first.eq_ignore_ascii_case(cand))
+    {
+        return false;
+    }
+
+    true
 }
 
 fn token_contains_percent_encoded_path_separator(tok: &str) -> bool {
