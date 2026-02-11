@@ -401,93 +401,130 @@ pub fn deanonymize_java_like_code(
         return code.to_string();
     }
 
-    let mut out = String::with_capacity(code.len());
-    let mut chars = code.chars().peekable();
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum State {
+        Normal,
+        LineComment,
+        BlockComment,
+        String,
+        Char,
+    }
 
-    while let Some(ch) = chars.next() {
-        match ch {
-            // Line comment
-            '/' if chars.peek() == Some(&'/') => {
-                chars.next();
-                out.push('/');
-                out.push('/');
-                while let Some(c) = chars.next() {
-                    out.push(c);
-                    if c == '\n' || c == '\r' {
-                        break;
-                    }
+    let bytes = code.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    let mut state = State::Normal;
+
+    while i < bytes.len() {
+        match state {
+            State::Normal => match bytes[i] {
+                b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                    out.extend_from_slice(b"//");
+                    i += 2;
+                    state = State::LineComment;
                 }
-            }
-            // Block comment
-            '/' if chars.peek() == Some(&'*') => {
-                chars.next();
-                out.push('/');
-                out.push('*');
-                while let Some(c) = chars.next() {
-                    out.push(c);
-                    if c == '*' && chars.peek() == Some(&'/') {
-                        out.push('/');
-                        chars.next();
-                        break;
-                    }
+                b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                    out.extend_from_slice(b"/*");
+                    i += 2;
+                    state = State::BlockComment;
                 }
-            }
-            // String literal
-            '"' => {
-                out.push('"');
-                while let Some(c) = chars.next() {
-                    out.push(c);
-                    match c {
-                        '\\' => {
-                            if let Some(escaped) = chars.next() {
-                                out.push(escaped);
-                            }
+                b'"' => {
+                    out.push(b'"');
+                    i += 1;
+                    state = State::String;
+                }
+                b'\'' => {
+                    out.push(b'\'');
+                    i += 1;
+                    state = State::Char;
+                }
+                // NOTE: This scanner is intentionally byte-based (not char-based) and must remain
+                // ASCII-oriented. Using Unicode-aware identifier predicates on raw UTF-8 bytes can
+                // mis-detect non-ASCII bytes as identifier characters and lead to slicing panics
+                // when indexing `code` at non-UTF-8 boundaries.
+                b if is_ident_start_ascii_byte(b) => {
+                    let start = i;
+                    i += 1;
+                    while i < bytes.len() && is_ident_continue_ascii_byte(bytes[i]) {
+                        i += 1;
+                    }
+
+                    let ident_bytes = &bytes[start..i];
+                    if let Ok(ident) = std::str::from_utf8(ident_bytes) {
+                        if let Some(original) = reverse_identifiers.get(ident) {
+                            out.extend_from_slice(original.as_bytes());
+                        } else {
+                            out.extend_from_slice(ident_bytes);
                         }
-                        '"' => break,
-                        _ => {}
-                    }
-                }
-            }
-            // Char literal
-            '\'' => {
-                out.push('\'');
-                while let Some(c) = chars.next() {
-                    out.push(c);
-                    match c {
-                        '\\' => {
-                            if let Some(escaped) = chars.next() {
-                                out.push(escaped);
-                            }
-                        }
-                        '\'' => break,
-                        _ => {}
-                    }
-                }
-            }
-            // Identifier token
-            c if is_ident_start(c) => {
-                let mut ident = String::new();
-                ident.push(c);
-                while let Some(&next) = chars.peek() {
-                    if is_ident_continue(next) {
-                        ident.push(next);
-                        chars.next();
                     } else {
-                        break;
+                        // Defensive fallback: we should never hit this branch because the identifier
+                        // scanner only accepts ASCII bytes, but avoid panicking if the code changes.
+                        out.extend_from_slice(ident_bytes);
                     }
                 }
-
-                if let Some(original) = reverse_identifiers.get(&ident) {
-                    out.push_str(original);
-                } else {
-                    out.push_str(&ident);
+                other => {
+                    out.push(other);
+                    i += 1;
+                }
+            },
+            State::LineComment => {
+                let b = bytes[i];
+                out.push(b);
+                i += 1;
+                if b == b'\n' || b == b'\r' {
+                    state = State::Normal;
                 }
             }
-            other => out.push(other),
+            State::BlockComment => {
+                if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                    out.extend_from_slice(b"*/");
+                    i += 2;
+                    state = State::Normal;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            State::String => {
+                if bytes[i] == b'\\' {
+                    out.push(b'\\');
+                    i += 1;
+                    if i < bytes.len() {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                } else if bytes[i] == b'"' {
+                    out.push(b'"');
+                    i += 1;
+                    state = State::Normal;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            State::Char => {
+                if bytes[i] == b'\\' {
+                    out.push(b'\\');
+                    i += 1;
+                    if i < bytes.len() {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                } else if bytes[i] == b'\'' {
+                    out.push(b'\'');
+                    i += 1;
+                    state = State::Normal;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
         }
     }
 
-    out
+    // The output is a byte-for-byte copy of the input except where we splice in `reverse_identifiers`
+    // values. Both are valid UTF-8, so this conversion should never fail.
+    String::from_utf8(out).unwrap_or_else(|_| code.to_string())
 }
 
 /// Apply de-anonymization to all user-visible fields of a multi-token completion.
@@ -521,6 +558,15 @@ pub fn deanonymize_additional_edit(
         }
     }
 }
+
+fn is_ident_start_ascii_byte(b: u8) -> bool {
+    b == b'_' || b == b'$' || b.is_ascii_alphabetic()
+}
+
+fn is_ident_continue_ascii_byte(b: u8) -> bool {
+    is_ident_start_ascii_byte(b) || b.is_ascii_digit()
+}
+
 fn is_ident_start(c: char) -> bool {
     if c.is_ascii() {
         // Preserve the ASCII identifier rules used before Unicode-aware anonymization:
@@ -1186,6 +1232,22 @@ class Example {
         let out = deanonymize_java_like_code(code, &reverse);
 
         assert_eq!(out, "class Foo { void bar() { bar(); } }");
+    }
+
+    #[test]
+    fn deanonymize_handles_unicode_in_normal_code_without_panicking() {
+        let mut reverse = HashMap::new();
+        reverse.insert("id_0".to_string(), "Foo".to_string());
+
+        // This includes non-ASCII UTF-8 code points *in normal code* (not inside strings/comments),
+        // including directly adjacent to placeholders. The de-anonymizer must not panic on UTF-8
+        // boundary slicing and must preserve surrounding Unicode text byte-for-byte.
+        let code = "变量id_0 id_0变量 数据 id_0 数据";
+
+        let out = std::panic::catch_unwind(|| deanonymize_java_like_code(code, &reverse))
+            .expect("deanonymize_java_like_code should not panic on Unicode input");
+
+        assert_eq!(out, "变量Foo Foo变量 数据 Foo 数据");
     }
 
     #[test]
