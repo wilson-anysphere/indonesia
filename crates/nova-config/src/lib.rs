@@ -1984,11 +1984,13 @@ fn sanitize_plain_log_text(text: &str) -> String {
 fn sanitize_json_log_value(value: serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::String(s) => {
-            if log_line_contains_serde_json_error(&s) {
+            // Prioritize TOML snippet blocks because those can contain *unquoted* scalar values
+            // (notably numeric literals) that the JSON sanitizer would not redact.
+            if s.lines().any(log_line_looks_like_toml_snippet) {
+                serde_json::Value::String(sanitize_toml_error_message(&s))
+            } else if log_line_contains_serde_json_error(&s) {
                 serde_json::Value::String(sanitize_json_error_message(&s))
             } else if log_line_contains_toml_error_scalar(&s) {
-                serde_json::Value::String(sanitize_toml_error_message(&s))
-            } else if s.lines().any(log_line_looks_like_toml_snippet) {
                 serde_json::Value::String(sanitize_toml_error_message(&s))
             } else {
                 serde_json::Value::String(s)
@@ -2115,6 +2117,46 @@ mod bugreport_log_sanitization_tests {
         assert!(
             !sanitized.contains(&secret_number_text),
             "expected JSON log sanitizer to omit numeric values from TOML snippets: {sanitized}"
+        );
+
+        serde_json::from_str::<serde_json::Value>(&sanitized)
+            .expect("expected sanitized log line to remain valid JSON");
+    }
+
+    #[test]
+    fn sanitize_json_log_line_redacts_toml_snippet_blocks_even_when_message_contains_invalid_type() {
+        let secret_suffix = "nova-config-json-toml-snippet-secret-with-invalid-type";
+        let secret_number = 42_424_242u64;
+        let secret_number_text = secret_number.to_string();
+        let message = format!(
+            "TOML parse error at line 1, column 10\n1 | api_key = \"{secret_suffix}\"\n2 | enabled = {secret_number}\n  |          ^\ninvalid type: string \"{secret_suffix}\", expected boolean"
+        );
+        let line = serde_json::json!({ "message": message }).to_string();
+        assert!(
+            line.contains(secret_suffix),
+            "expected raw JSON log line to include the secret so this test catches leaks: {line}"
+        );
+        assert!(
+            line.contains(&secret_number_text),
+            "expected raw JSON log line to include the numeric value so this test catches leaks: {line}"
+        );
+
+        let sanitized = sanitize_json_log_line(&line);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected JSON log sanitizer to omit string values from TOML snippet blocks: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains(&secret_number_text),
+            "expected JSON log sanitizer to omit numeric values from TOML snippet blocks: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains("api_key ="),
+            "expected JSON log sanitizer to strip TOML snippet source lines: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("invalid type:"),
+            "expected JSON log sanitizer to preserve non-snippet trailing diagnostics: {sanitized}"
         );
 
         serde_json::from_str::<serde_json::Value>(&sanitized)
