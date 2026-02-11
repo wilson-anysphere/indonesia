@@ -1222,6 +1222,126 @@ class A {
 }
 
 #[test]
+fn completion_resolves_new_array_initializer_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    new int[]{1, 2}.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"length"),
+        "expected completion list to contain array.length for array initializer receiver; got {labels:?}"
+    );
+    assert!(
+        labels.contains(&"clone"),
+        "expected completion list to contain array.clone() for array initializer receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_new_array_initializer_element_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    new String[]{"x"}[0].<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"substring"),
+        "expected completion list to contain String.substring for array initializer element receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_anonymous_class_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  void bar() {}
+}
+
+class A {
+  void m() {
+    new Foo() { }.<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"bar"),
+        "expected completion list to contain Foo.bar for anonymous class receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_nested_constructor_call_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class Outer {
+  static class Inner {
+    void baz() {}
+  }
+}
+
+class A {
+  void m() {
+    new Outer.Inner().<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"baz"),
+        "expected completion list to contain Outer.Inner.baz for nested constructor receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_qualified_constructor_call_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+package p;
+
+class Bar {
+  void qux() {}
+}
+
+class A {
+  void m() {
+    new p.Bar().<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"qux"),
+        "expected completion list to contain p.Bar.qux for qualified constructor receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_resolves_array_access_receiver() {
     let (db, file, pos) = fixture(
         r#"

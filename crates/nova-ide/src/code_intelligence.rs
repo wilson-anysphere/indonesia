@@ -10826,7 +10826,7 @@ pub(crate) fn infer_receiver_type_before_dot(
 
         if bytes
             .get(array_expr_end - 1)
-            .is_some_and(|b| *b == b')' || *b == b']')
+            .is_some_and(|b| *b == b')' || *b == b']' || *b == b'}')
         {
             let array_ty = infer_receiver_type_before_dot(db, file, array_expr_end)?;
             return strip_one_array_dimension(array_ty.as_str());
@@ -10878,6 +10878,41 @@ pub(crate) fn infer_receiver_type_before_dot(
         return strip_one_array_dimension(array_ty.as_str());
     }
 
+    // Array initializers / anonymous class bodies: `new int[] { ... }.<cursor>` /
+    // `new Foo() { ... }.<cursor>`.
+    if bytes.get(end - 1) == Some(&b'}') {
+        let close_brace = end - 1;
+        let open_brace = find_matching_open_brace(bytes, close_brace)?;
+        let before_open = skip_whitespace_backwards(text, open_brace);
+        if before_open == 0 {
+            return None;
+        }
+
+        // Array initializer: `new int[] { ... }`.
+        if bytes.get(before_open - 1) == Some(&b']') {
+            if let Some(array_ty) = new_array_creation_type_name(text, before_open) {
+                return Some(array_ty);
+            }
+        }
+
+        // Anonymous class: `new Foo() { ... }`.
+        if bytes.get(before_open - 1) == Some(&b')') {
+            let close_paren_end = before_open;
+            if let Some(call) = analysis.calls.iter().find(|c| c.close_paren == close_paren_end) {
+                if is_constructor_call(&analysis, call) {
+                    return infer_call_return_type(db, file, text, &analysis, call);
+                }
+            }
+            if let Some(call) = scan_call_expr_ending_at(text, &analysis, close_paren_end) {
+                if is_constructor_call(&analysis, &call) {
+                    return infer_call_return_type(db, file, text, &analysis, &call);
+                }
+            }
+        }
+
+        return None;
+    }
+
     if bytes.get(end - 1) != Some(&b')') {
         return None;
     }
@@ -10904,7 +10939,7 @@ pub(crate) fn infer_receiver_type_before_dot(
 
     // If the inner expression ends with `]` (array access/creation), reuse the same inference logic
     // we use for top-level array receivers.
-    if end > 0 && bytes.get(end - 1) == Some(&b']') {
+    if end > 0 && bytes.get(end - 1).is_some_and(|b| *b == b']' || *b == b'}') {
         if let Some(ty) = infer_receiver_type_before_dot(db, file, end) {
             return Some(ty);
         }
@@ -11480,6 +11515,25 @@ fn find_matching_open_bracket(bytes: &[u8], close_bracket_idx: usize) -> Option<
     None
 }
 
+fn find_matching_open_brace(bytes: &[u8], close_brace_idx: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut i = close_brace_idx + 1;
+    while i > 0 {
+        i -= 1;
+        match bytes.get(i)? {
+            b'}' => depth += 1,
+            b'{' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn ident_chain_is_qualified_by_paren_expr(text: &str, chain_end: usize, max_segments: usize) -> bool {
     let bytes = text.as_bytes();
     let receiver_end = skip_whitespace_backwards(text, chain_end.min(bytes.len()));
@@ -11712,8 +11766,8 @@ fn infer_call_return_type(
 
     // `new Foo()` is tokenized as an `Ident` call (`Foo(` ... `)`), but for completion purposes we
     // want the constructed type, not overload resolution.
-    if is_constructor_call(analysis, call) {
-        let ty = parse_source_type_in_context(&mut types, &file_ctx, call.name.as_str());
+    if let Some(ctor_ty) = constructor_type_name_for_call(analysis, call) {
+        let ty = parse_source_type_in_context(&mut types, &file_ctx, &ctor_ty);
         return Some(format_type_fully_qualified(&types, &ty));
     }
 
@@ -11762,17 +11816,44 @@ fn fallback_receiver_type_for_call(name: &str) -> Option<String> {
 }
 
 fn is_constructor_call(analysis: &Analysis, call: &CallExpr) -> bool {
-    let Some(idx) = analysis
+    constructor_call_type_token_range(analysis, call).is_some()
+}
+
+fn constructor_call_type_token_range(analysis: &Analysis, call: &CallExpr) -> Option<(usize, usize)> {
+    let name_idx = analysis
         .tokens
         .iter()
-        .position(|t| t.span == call.name_span)
-    else {
-        return false;
-    };
-    if idx == 0 {
-        return false;
+        .position(|t| t.span == call.name_span)?;
+
+    // Walk backwards over dotted qualifiers (`com.example.Foo` / `Outer.Inner`) to find the start
+    // of the type name.
+    let mut start_idx = name_idx;
+    while start_idx >= 2
+        && analysis.tokens[start_idx - 1].kind == TokenKind::Symbol('.')
+        && analysis.tokens[start_idx - 2].kind == TokenKind::Ident
+    {
+        start_idx -= 2;
     }
-    analysis.tokens[idx - 1].kind == TokenKind::Ident && analysis.tokens[idx - 1].text == "new"
+    let new_idx = start_idx.checked_sub(1)?;
+    let new_tok = analysis.tokens.get(new_idx)?;
+    (new_tok.kind == TokenKind::Ident && new_tok.text == "new").then_some((start_idx, name_idx))
+}
+
+fn constructor_type_name_for_call(analysis: &Analysis, call: &CallExpr) -> Option<String> {
+    let (start_idx, end_idx) = constructor_call_type_token_range(analysis, call)?;
+    let mut out = String::new();
+    let mut first = true;
+    for tok in analysis.tokens.get(start_idx..=end_idx)?.iter() {
+        if tok.kind != TokenKind::Ident {
+            continue;
+        }
+        if !first {
+            out.push('.');
+        }
+        first = false;
+        out.push_str(tok.text.as_str());
+    }
+    (!first).then_some(out)
 }
 
 fn infer_call_receiver_lexical(
@@ -11985,7 +12066,7 @@ fn infer_receiver_type_of_expr_ending_at(
 
         let array_ty = if bytes
             .get(array_expr_end - 1)
-            .is_some_and(|b| *b == b')' || *b == b']')
+            .is_some_and(|b| *b == b')' || *b == b']' || *b == b'}')
         {
             infer_receiver_type_of_expr_ending_at(
                 types,
@@ -12049,18 +12130,64 @@ fn infer_receiver_type_of_expr_ending_at(
         };
     }
 
+    // Array initializers / anonymous class bodies: `new int[] { ... }` / `new Foo() { ... }`.
+    if bytes.get(end - 1) == Some(&b'}') {
+        let close_brace = end - 1;
+        let open_brace = find_matching_open_brace(bytes, close_brace)?;
+        let before_open = skip_whitespace_backwards(text, open_brace);
+        if before_open == 0 {
+            return None;
+        }
+
+        // Array initializer: `new int[] { ... }`.
+        if bytes.get(before_open - 1) == Some(&b']') {
+            if let Some(array_ty_name) = new_array_creation_type_name(text, before_open) {
+                let ty = parse_source_type_in_context(types, file_ctx, &array_ty_name);
+                return match ty {
+                    Type::Unknown | Type::Error => None,
+                    other => Some(other),
+                };
+            }
+        }
+
+        // Anonymous class: `new Foo() { ... }`.
+        if bytes.get(before_open - 1) == Some(&b')') {
+            let close_paren_end = before_open;
+            if let Some(call) = analysis.calls.iter().find(|c| c.close_paren == close_paren_end) {
+                if let Some(ctor_ty) = constructor_type_name_for_call(analysis, call) {
+                    let ty = parse_source_type_in_context(types, file_ctx, &ctor_ty);
+                    return match ty {
+                        Type::Unknown | Type::Error => None,
+                        other => Some(other),
+                    };
+                }
+            }
+            if let Some(call) = scan_call_expr_ending_at(text, analysis, close_paren_end) {
+                if let Some(ctor_ty) = constructor_type_name_for_call(analysis, &call) {
+                    let ty = parse_source_type_in_context(types, file_ctx, &ctor_ty);
+                    return match ty {
+                        Type::Unknown | Type::Error => None,
+                        other => Some(other),
+                    };
+                }
+            }
+        }
+
+        return None;
+    }
+
     if bytes.get(end - 1) != Some(&b')') {
         return None;
     }
 
     // Prefer constructor calls like `new Foo()`.
     if let Some(call) = analysis.calls.iter().find(|c| c.close_paren == end) {
-        if is_constructor_call(analysis, call) {
-            return Some(parse_source_type_in_context(
-                types,
-                file_ctx,
-                call.name.as_str(),
-            ));
+        if let Some(ctor_ty) = constructor_type_name_for_call(analysis, call) {
+            let ty = parse_source_type_in_context(types, file_ctx, &ctor_ty);
+            return match ty {
+                Type::Unknown | Type::Error => None,
+                other => Some(other),
+            };
         }
 
         // Fast path for common call-chain receivers where we can infer a well-known type without
@@ -12086,12 +12213,12 @@ fn infer_receiver_type_of_expr_ending_at(
 
     // Calls outside method bodies won't be in `analysis.calls`. Try scanning tokens.
     if let Some(call) = scan_call_expr_ending_at(text, analysis, end) {
-        if is_constructor_call(analysis, &call) {
-            return Some(parse_source_type_in_context(
-                types,
-                file_ctx,
-                call.name.as_str(),
-            ));
+        if let Some(ctor_ty) = constructor_type_name_for_call(analysis, &call) {
+            let ty = parse_source_type_in_context(types, file_ctx, &ctor_ty);
+            return match ty {
+                Type::Unknown | Type::Error => None,
+                other => Some(other),
+            };
         }
         if let Some(ty) = fallback_receiver_type_for_call(call.name.as_str()) {
             let resolved = match ty.as_str() {
@@ -12142,12 +12269,12 @@ fn infer_call_return_type_in_store(
 
     // `new Foo()` is tokenized as an `Ident` call (`Foo(` ... `)`), but for completion purposes
     // we want the constructed type, not overload resolution.
-    if is_constructor_call(analysis, call) {
-        return Some(parse_source_type_in_context(
-            types,
-            file_ctx,
-            call.name.as_str(),
-        ));
+    if let Some(ctor_ty) = constructor_type_name_for_call(analysis, call) {
+        let ty = parse_source_type_in_context(types, file_ctx, &ctor_ty);
+        return match ty {
+            Type::Unknown | Type::Error => None,
+            other => Some(other),
+        };
     }
 
     let (receiver_ty, call_kind) = infer_call_receiver_lexical(
@@ -22304,6 +22431,119 @@ class A {
 
         let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
         assert_eq!(ty.as_deref(), Some("int[]"));
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_new_array_initializer_type() {
+        let java = r#"
+class A {
+  void m() {
+    new int[]{1, 2}.
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("new int[]{1, 2}.")
+            .expect("expected `new int[]{...}.` in fixture")
+            + "new int[]{1, 2}".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert_eq!(ty.as_deref(), Some("int[]"));
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_anonymous_class_type() {
+        let java = r#"
+class Foo {
+  void bar() {}
+}
+
+class A {
+  void m() {
+    new Foo() { }.
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("new Foo() { }.")
+            .expect("expected `new Foo() { }.` in fixture")
+            + "new Foo() { }".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert!(
+            ty.as_deref().unwrap_or_default().contains("Foo"),
+            "expected receiver type to contain `Foo`, got {ty:?}"
+        );
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_nested_constructor_call_type() {
+        let java = r#"
+class Outer {
+  static class Inner {}
+}
+
+class A {
+  void m() {
+    new Outer.Inner().
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("new Outer.Inner().")
+            .expect("expected `new Outer.Inner().` in fixture")
+            + "new Outer.Inner()".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert!(
+            ty.as_deref().unwrap_or_default().contains("Outer.Inner"),
+            "expected receiver type to contain `Outer.Inner`, got {ty:?}"
+        );
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_qualified_constructor_call_type() {
+        let java = r#"
+package p;
+
+class Bar {}
+
+class A {
+  void m() {
+    new p.Bar().
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("new p.Bar().")
+            .expect("expected `new p.Bar().` in fixture")
+            + "new p.Bar()".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert!(
+            ty.as_deref().unwrap_or_default().contains("p.Bar"),
+            "expected receiver type to contain `p.Bar`, got {ty:?}"
+        );
     }
 
     #[test]

@@ -1007,6 +1007,126 @@ class A {
     }
 
     #[test]
+    fn new_array_initializer_receiver_type_and_methods_are_semantic() {
+        let ctx = ctx_for(
+            r#"
+class A {
+  void m() {
+    new int[]{1, 2}.<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.replace(' ', "").contains("int[]"),
+            "expected receiver type to contain `int[]`, got {receiver_ty:?}"
+        );
+        assert!(
+            ctx.available_methods.iter().any(|m| m == "clone"),
+            "expected array receiver to include clone(), got {:?}",
+            ctx.available_methods
+        );
+    }
+
+    #[test]
+    fn new_array_initializer_element_receiver_type_and_methods_are_semantic() {
+        let ctx = ctx_for(
+            r#"
+class A {
+  void m() {
+    new String[]{"x"}[0].<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
+    fn anonymous_class_receiver_type_and_methods_are_semantic() {
+        let ctx = ctx_for(
+            r#"
+class Foo {
+  void bar() {}
+}
+
+class A {
+  void m() {
+    new Foo() { }.<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Foo"),
+            "expected receiver type to contain `Foo`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "bar"));
+    }
+
+    #[test]
+    fn nested_constructor_call_receiver_type_and_methods_are_semantic() {
+        let ctx = ctx_for(
+            r#"
+class Outer {
+  static class Inner {
+    void baz() {}
+  }
+}
+
+class A {
+  void m() {
+    new Outer.Inner().<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Inner"),
+            "expected receiver type to contain `Inner`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "baz"));
+    }
+
+    #[test]
+    fn qualified_constructor_call_receiver_type_and_methods_are_semantic() {
+        let ctx = ctx_for(
+            r#"
+package p;
+
+class Bar {
+  void qux() {}
+}
+
+class A {
+  void m() {
+    new p.Bar().<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Bar"),
+            "expected receiver type to contain `Bar`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "qux"));
+    }
+
+    #[test]
     fn array_access_receiver_type_and_methods_are_semantic() {
         let ctx = ctx_for(
             r#"
