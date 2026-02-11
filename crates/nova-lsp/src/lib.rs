@@ -116,6 +116,17 @@ pub(crate) fn sanitize_serde_json_error(err: &serde_json::Error) -> String {
     sanitize_json_error_message(&err.to_string())
 }
 
+pub(crate) fn sanitize_anyhow_error_message(err: &anyhow::Error) -> String {
+    // Many Nova subsystems use `anyhow` and error chains. If a `serde_json::Error` appears anywhere
+    // in the chain, sanitize the overall stringified error to avoid echoing scalar values from the
+    // original JSON payload (e.g. `invalid type: string "..."`).
+    if err.chain().any(|source| source.is::<serde_json::Error>()) {
+        sanitize_json_error_message(&err.to_string())
+    } else {
+        err.to_string()
+    }
+}
+
 fn sanitize_json_error_message(message: &str) -> String {
     // `serde_json::Error` display strings can include user-provided scalar values (for example:
     // `invalid type: string "..."`). Conservatively redact all double-quoted substrings so secrets

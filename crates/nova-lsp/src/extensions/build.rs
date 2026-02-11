@@ -63,7 +63,7 @@ fn cached_bazel_workspace_for_root(workspace_root: &Path) -> Result<CachedBazelW
     let runner = nova_build_bazel::DefaultCommandRunner::default();
     let workspace = nova_build_bazel::BazelWorkspace::new(canonical.clone(), runner)
         .and_then(|ws| ws.with_cache_path(cache_path))
-        .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+        .map_err(|err| NovaLspError::Internal(crate::sanitize_anyhow_error_message(&err)))?;
     let workspace = Arc::new(Mutex::new(workspace));
 
     let mut map = cached_bazel_workspaces()
@@ -925,7 +925,7 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
 
             let info = workspace
                 .target_compile_info(&target)
-                .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+                .map_err(|err| NovaLspError::Internal(crate::sanitize_anyhow_error_message(&err)))?;
 
             let result = TargetClasspathResult {
                 project_root: workspace_root.to_string_lossy().to_string(),
@@ -1203,10 +1203,14 @@ pub fn handle_file_classpath(params: serde_json::Value) -> Result<serde_json::Va
         {
             Some(run_target) => workspace
                 .compile_info_for_file_in_run_target_closure(&path, run_target)
-                .map_err(|err| NovaLspError::Internal(err.to_string()))?,
+                .map_err(|err| {
+                    NovaLspError::Internal(crate::sanitize_anyhow_error_message(&err))
+                })?,
             None => workspace
                 .compile_info_for_file(&path)
-                .map_err(|err| NovaLspError::Internal(err.to_string()))?,
+                .map_err(|err| {
+                    NovaLspError::Internal(crate::sanitize_anyhow_error_message(&err))
+                })?,
         };
 
         let Some(info) = info else {
@@ -1332,13 +1336,15 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
 
             let targets = workspace
                 .java_targets()
-                .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+                .map_err(|err| NovaLspError::Internal(crate::sanitize_anyhow_error_message(&err)))?;
 
             let mut units = Vec::with_capacity(targets.len());
             for target in targets {
                 let info = workspace
                     .target_compile_info(&target)
-                    .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+                    .map_err(|err| {
+                        NovaLspError::Internal(crate::sanitize_anyhow_error_message(&err))
+                    })?;
                 units.push(ProjectModelUnit::Bazel {
                     target,
                     compile_classpath: info.classpath,
@@ -1904,7 +1910,7 @@ impl BazelBuildExecutor for BuildStatusBazelBuildExecutor {
                     status_guard.mark_success();
                 }
             }
-            Err(err) => status_guard.mark_failure(Some(err.to_string())),
+            Err(err) => status_guard.mark_failure(Some(crate::sanitize_anyhow_error_message(&err))),
         }
 
         result
@@ -2006,7 +2012,7 @@ pub fn handle_build_status(params: serde_json::Value) -> Result<serde_json::Valu
         status,
         last_error,
     })
-    .map_err(|err| NovaLspError::Internal(err.to_string()))
+    .map_err(|err| NovaLspError::Internal(crate::sanitize_serde_json_error(&err)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -2463,6 +2469,75 @@ mod tests {
                 .unwrap_or_default()
                 .contains("boom"),
             "expected lastError to include the runner error: {resp:?}"
+        );
+    }
+
+    #[test]
+    fn build_status_bazel_executor_errors_do_not_echo_serde_json_string_values() {
+        use std::sync::Arc;
+
+        #[derive(Debug)]
+        struct FailingBazelExecutor {
+            secret: String,
+        }
+
+        impl BazelBuildExecutor for FailingBazelExecutor {
+            fn compile(
+                &self,
+                _config: &BazelBspConfig,
+                _workspace_root: &Path,
+                _targets: &[String],
+                _cancellation: nova_process::CancellationToken,
+            ) -> anyhow::Result<BspCompileOutcome> {
+                let err = serde_json::from_value::<bool>(serde_json::json!(self.secret.clone()))
+                    .expect_err("expected type mismatch");
+                Err(anyhow::Error::new(err))
+            }
+        }
+
+        let secret_suffix = "nova-lsp-bazel-build-status-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
+        let raw_err = serde_json::from_value::<bool>(serde_json::json!(secret.clone()))
+            .expect_err("expected type mismatch");
+        let raw_message = raw_err.to_string();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw serde_json error message to include the string value so this test catches leaks: {raw_message}"
+        );
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        let executor = BuildStatusBazelBuildExecutor {
+            workspace_root: root.clone(),
+            inner: Arc::new(FailingBazelExecutor { secret }),
+        };
+
+        let config = BazelBspConfig {
+            program: "fake-bsp".to_string(),
+            args: Vec::new(),
+        };
+        let cancellation = nova_process::CancellationToken::new();
+        let targets = vec!["//java/com/example:lib".to_string()];
+        let _ = executor.compile(&config, &root, &targets, cancellation);
+
+        let resp = handle_build_status(serde_json::json!({
+            "projectRoot": root.to_string_lossy(),
+        }))
+        .unwrap();
+
+        assert_eq!(resp.get("status").and_then(|v| v.as_str()), Some("failed"));
+        let last_error = resp
+            .get("lastError")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            !last_error.contains(secret_suffix),
+            "expected build status errors to omit serde_json string values: {last_error}"
+        );
+        assert!(
+            last_error.contains("<redacted>"),
+            "expected build status errors to include redaction marker: {last_error}"
         );
     }
 
