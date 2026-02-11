@@ -2116,6 +2116,27 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 }
             }
 
+            // Skip identifiers inside numeric entities that decode to a `u`/`U` escape prefix when
+            // they are immediately followed by a unicode-escaped percent marker (e.g.
+            // `&#x75;0025u0032u0046home` == `u0025%2Fhome`). The semicolon terminator is treated as
+            // a query-token boundary, so the numeric fragment (`x75`) can otherwise leak into the
+            // semantic-search query.
+            if start > 1
+                && bytes[start - 2] == b'&'
+                && bytes[start - 1] == b'#'
+                && after.is_some_and(|b| *b == b';')
+                && numeric_fragment_after_hash_value(tok.as_bytes())
+                    .is_some_and(|value| matches!(value, 0x55 | 0x75))
+            {
+                if let Some(digits_start) = percent_marker_end(bytes, start - 2) {
+                    if percent_encoded_byte_after_obfuscated_digits(bytes, digits_start)
+                        .is_some_and(|(value, _)| percent_encoded_byte_is_path_like(value))
+                    {
+                        return true;
+                    }
+                }
+            }
+
             // Handle percent-encoded separators where the `%` itself is HTML-escaped, e.g.
             // `&#37;2Fhome...` or `&amp;#37;252Fhome...`. The surrounding token starts with the hex
             // digits (`2F`, `252F`, ...) and the entity delimiter `;` is treated as a boundary, so
@@ -4644,6 +4665,75 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
         Some(value)
     }
 
+    fn marker_end_after_unicode_escape_u_prefix(
+        bytes: &[u8],
+        mut idx: usize,
+        upper: bool,
+    ) -> Option<usize> {
+        if idx >= bytes.len() {
+            return None;
+        }
+
+        let (value, next) = if upper {
+            // `\UXXXXXXXX` style: expect 8 hex digits.
+            let mut value = 0u32;
+            for _ in 0..8 {
+                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, idx) else {
+                    return None;
+                };
+                value = (value << 4) | digit as u32;
+                idx = next;
+            }
+            (value, idx)
+        } else if bytes.get(idx).is_some_and(|b| *b == b'{') {
+            // `u{...}` style: up to 8 hex digits until `}`.
+            let mut value = 0u32;
+            let mut significant = 0usize;
+            idx += 1;
+            while idx < bytes.len() && significant < 8 {
+                if bytes[idx] == b'}' {
+                    break;
+                }
+                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, idx) else {
+                    break;
+                };
+                let digit = digit as u32;
+                if significant == 0 && digit == 0 {
+                    idx = next;
+                    continue;
+                }
+                value = (value << 4) | digit;
+                significant += 1;
+                idx = next;
+            }
+            if significant == 0 || idx >= bytes.len() || bytes[idx] != b'}' {
+                return None;
+            }
+            (value, idx + 1)
+        } else {
+            // `uXXXX` style: expect 4 hex digits.
+            let mut value = 0u32;
+            for _ in 0..4 {
+                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, idx) else {
+                    return None;
+                };
+                value = (value << 4) | digit as u32;
+                idx = next;
+            }
+            (value, idx)
+        };
+
+        if value == 0x25 {
+            return Some(next);
+        }
+        if value == 0x26 {
+            if let Some(next) = percent_entity_end_after_ampersand(bytes, next) {
+                return Some(next);
+            }
+        }
+        None
+    }
+
     fn marker_end_after_hex_escape_x_prefix(bytes: &[u8], mut idx: usize) -> Option<usize> {
         let mut value = 0u32;
         let mut significant = 0usize;
@@ -5404,6 +5494,16 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
                     // paths obfuscated via nested HTML + hex + percent encoding cannot leak into
                     // semantic-search queries.
                     if let Some(end) = marker_end_after_hex_escape_x_prefix(bytes, j + 1) {
+                        return Some(end);
+                    }
+                }
+                Some(value @ (0x55 | 0x75)) => {
+                    // Unicode-escape prefixes can also be introduced via numeric entities (e.g.
+                    // `&#117;0025...` == `u0025...` after decoding). Treat these as percent markers
+                    // so nested HTML + unicode escapes cannot leak into semantic-search queries.
+                    if let Some(end) =
+                        marker_end_after_unicode_escape_u_prefix(bytes, j + 1, value == 0x55)
+                    {
                         return Some(end);
                     }
                 }
