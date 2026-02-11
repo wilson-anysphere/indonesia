@@ -528,12 +528,18 @@ fn related_code_query_skips_percent_encoded_path_only_selections() {
     }
 
     let search = PanicSearch;
-    let focal_code = "%2Fhome%2Fuser%2Fsecret%2Fcredentials";
-    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
-    assert!(
-        req.related_code.is_empty(),
-        "expected no related code for percent-encoded path-only focal code"
-    );
+    for focal_code in [
+        "%2Fhome%2Fuser%2Fsecret%2Fcredentials",
+        "%5Chome%5Cuser%5Csecret%5Ccredentials",
+        "%252Fhome%252Fuser%252Fsecret%252Fcredentials",
+        "%255Chome%255Cuser%255Csecret%255Ccredentials",
+    ] {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for percent-encoded path-only focal code"
+        );
+    }
 }
 
 #[test]
@@ -1005,6 +1011,25 @@ fn related_code_query_skips_github_pat_only_selections() {
     assert!(
         req.related_code.is_empty(),
         "expected no related code for GitHub PAT-only focal code"
+    );
+}
+
+#[test]
+fn related_code_query_skips_gitlab_pat_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for GitLab PAT related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = "glpat-ABCDEFGHIJKLMNOPQRST";
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for GitLab PAT-only focal code"
     );
 }
 
