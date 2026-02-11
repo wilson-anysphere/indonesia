@@ -472,9 +472,16 @@ fn related_code_query_avoids_double_escaped_html_entity_path_segments() {
         "&amp;#x2F;",
         "&amp;#92;",
         "&amp;#x5C;",
+        "&amp;amp;#47;",
+        "&amp;amp;#x2F;",
+        "&amp;amp;#92;",
+        "&amp;amp;#x5C;",
         "&amp;sol;",
         "&amp;bsol;",
         "&amp;Backslash;",
+        "&amp;amp;sol;",
+        "&amp;amp;bsol;",
+        "&amp;amp;Backslash;",
     ] {
         let search = CapturingSearch::default();
         let focal_code = format!(
@@ -903,9 +910,16 @@ fn related_code_query_skips_double_escaped_html_entity_path_only_selections() {
         "&amp;#x2F;home&amp;#x2F;user&amp;#x2F;secret&amp;#x2F;credentials",
         "&amp;#92;home&amp;#92;user&amp;#92;secret&amp;#92;credentials",
         "&amp;#x5C;home&amp;#x5C;user&amp;#x5C;secret&amp;#x5C;credentials",
+        "&amp;amp;#47;home&amp;amp;#47;user&amp;amp;#47;secret&amp;amp;#47;credentials",
+        "&amp;amp;#x2F;home&amp;amp;#x2F;user&amp;amp;#x2F;secret&amp;amp;#x2F;credentials",
+        "&amp;amp;#92;home&amp;amp;#92;user&amp;amp;#92;secret&amp;amp;#92;credentials",
+        "&amp;amp;#x5C;home&amp;amp;#x5C;user&amp;amp;#x5C;secret&amp;amp;#x5C;credentials",
         "&amp;sol;home&amp;sol;user&amp;sol;secret&amp;sol;credentials",
         "&amp;bsol;home&amp;bsol;user&amp;bsol;secret&amp;bsol;credentials",
         "&amp;Backslash;home&amp;Backslash;user&amp;Backslash;secret&amp;Backslash;credentials",
+        "&amp;amp;sol;home&amp;amp;sol;user&amp;amp;sol;secret&amp;amp;sol;credentials",
+        "&amp;amp;bsol;home&amp;amp;bsol;user&amp;amp;bsol;secret&amp;amp;bsol;credentials",
+        "&amp;amp;Backslash;home&amp;amp;Backslash;user&amp;amp;Backslash;secret&amp;amp;Backslash;credentials",
     ] {
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
         assert!(

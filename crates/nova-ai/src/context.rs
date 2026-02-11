@@ -894,12 +894,6 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         let bounds = surrounding_token_bounds(text, start, end);
         if !bounds.is_empty() {
             let token = &text[bounds.clone()];
-            // Avoid emitting HTML-entity artifacts like `amp` into semantic-search queries when the
-            // focal selection is HTML-escaped content (e.g. `&amp;#47;home...`). This keeps
-            // path-only selections from producing a low-signal query like `amp`.
-            if token.eq_ignore_ascii_case("&amp") {
-                return true;
-            }
             if looks_like_email_address(token)
                 || looks_like_ipv4_address(token)
                 || looks_like_mac_address_token(token)
@@ -925,6 +919,24 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
             let before_idx = bounds.start.checked_sub(1);
             let before = before_idx.and_then(|idx| bytes.get(idx));
             let after = bytes.get(bounds.end);
+
+            // Avoid emitting HTML-entity artifacts like `amp` into semantic-search queries when the
+            // focal selection is HTML-escaped content (e.g. `&amp;#47;home...`). This keeps
+            // path-only selections from producing a low-signal query like `amp`.
+            if after.is_some_and(|b| *b == b';')
+                && (token.eq_ignore_ascii_case("&amp") || token.eq_ignore_ascii_case("amp"))
+            {
+                let mut j = bounds.end + 1;
+                // Allow a few nested escapes like `&amp;amp;#47;` by scanning for the *next* entity
+                // terminator and checking whether it encodes a path separator.
+                let scan_end = (j + 64).min(bytes.len());
+                while j < scan_end {
+                    if bytes[j] == b';' && html_entity_is_path_separator(bytes, j) {
+                        return true;
+                    }
+                    j += 1;
+                }
+            }
 
             let before_is_sep = before.is_some_and(|b| *b == b'/' || *b == b'\\')
                 || before_idx.is_some_and(|idx| braced_unicode_escape_is_path_separator(bytes, idx))
@@ -1040,7 +1052,9 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
     let mut amp = None;
     let mut i = end_semicolon;
     let mut scanned = 0usize;
-    while i > 0 && scanned < 16 {
+    // Support nested escapes like `&amp;amp;Backslash;` which can push the leading `&` further
+    // away from the terminating `;`.
+    while i > 0 && scanned < 64 {
         i -= 1;
         scanned += 1;
         if bytes[i] == b'&' {
