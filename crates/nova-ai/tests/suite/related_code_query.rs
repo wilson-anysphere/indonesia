@@ -2826,6 +2826,30 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_wit
         "&percentu{0035}u{0043}",  // %5C
         "&amp;percntu0032u0046",   // `&amp;` layer + missing semicolon.
         "&amp;percntu{0032}u{0046}",
+        // Numeric percent entities without semicolons (`&#37...` / `&#x25...`) followed by escaped
+        // hex digits.
+        "&#37u0032u0046",      // %2F
+        "&#37u{0032}u{0046}",  // %2F (braced digits)
+        "&#37u0035u0043",      // %5C
+        "&#37u{0035}u{0043}",  // %5C (braced digits)
+        "&#x25u0032u0046",     // %2F (hex entity)
+        "&#x25u{0032}u{0046}", // %2F
+        "&#x25u0035u0043",     // %5C
+        "&#x25u{0035}u{0043}", // %5C
+        // `&amp;` layer where the numeric entity's leading `&` has been escaped away.
+        "&amp;#37u0032u0046",      // %2F
+        "&amp;#37u{0032}u{0046}",  // %2F
+        "&amp;#37u0035u0043",      // %5C
+        "&amp;#37u{0035}u{0043}",  // %5C
+        "&amp;#x25u0032u0046",     // %2F
+        "&amp;#x25u{0032}u{0046}", // %2F
+        "&amp;#x25u0035u0043",     // %5C
+        "&amp;#x25u{0035}u{0043}", // %5C
+        // Missing semicolons on the outer `&amp` escape.
+        "&amp#37u0032u0046",    // %2F
+        "&amp#x25u0032u0046",   // %2F
+        "&amppercntu0032u0046", // %2F (`&amp` + missing semicolon)
+        "&amppercentu0032u0046",
     ] {
         let search = PanicSearch { sep };
         let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");

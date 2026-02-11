@@ -1774,13 +1774,17 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                         significant += 1;
                         k += 1;
                         if value == 37 {
-                            let mut tail = bytes.get(k..).unwrap_or_default();
-                            if tail.first().is_some_and(|b| *b == b';') {
-                                tail = &tail[1..];
+                            let mut digits_start = k;
+                            if bytes.get(digits_start).is_some_and(|b| *b == b';') {
+                                digits_start += 1;
                             }
-                            return tail.get(..2).is_some_and(|prefix| {
-                                prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit()
-                            });
+                            return bytes
+                                .get(digits_start..digits_start + 2)
+                                .is_some_and(|prefix| {
+                                    prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit()
+                                })
+                                || percent_encoded_byte_after_obfuscated_digits(bytes, digits_start)
+                                    .is_some();
                         }
                     }
                     false
@@ -4749,6 +4753,50 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
     // Handle percent markers whose leading `&` was HTML-escaped as `&amp;`, yielding patterns like
     // `&amp;percnt2F...` or `&amp;percntu0032u0046...`.
     if idx >= 5 && bytes[idx - 5..idx].eq_ignore_ascii_case(b"&amp;") {
+        // Numeric percent entities whose leading `&` was escaped away, yielding patterns like
+        // `&amp;#372F...` or `&amp;#37u0032u0046...` (no semicolon after `37`).
+        if bytes.get(idx) == Some(&b'#') {
+            let mut j = idx + 1;
+            let base = match bytes.get(j) {
+                Some(b'x') | Some(b'X') => {
+                    j += 1;
+                    16u32
+                }
+                _ => 10u32,
+            };
+            let mut value = 0u32;
+            let mut significant = 0usize;
+            while j < bytes.len() && significant < 8 {
+                let b = bytes[j];
+                let digit = if base == 16 {
+                    let Some(v) = hex_value(b) else {
+                        break;
+                    };
+                    v as u32
+                } else if b.is_ascii_digit() {
+                    (b - b'0') as u32
+                } else {
+                    break;
+                };
+                if significant == 0 && digit == 0 {
+                    j += 1;
+                    continue;
+                }
+                value = value
+                    .checked_mul(base)
+                    .and_then(|v| v.checked_add(digit))
+                    .unwrap_or(u32::MAX);
+                significant += 1;
+                j += 1;
+                if value == 37 {
+                    if bytes.get(j).is_some_and(|b| *b == b';') {
+                        j += 1;
+                    }
+                    return Some(j);
+                }
+            }
+        }
+
         if bytes
             .get(idx..idx + 6)
             .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percnt"))
