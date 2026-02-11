@@ -838,6 +838,17 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         }
     }
 
+    // IPv6 addresses contain hex-like "identifiers" separated by `:` characters. Avoid leaking
+    // these fragments (e.g. `db8`) into semantic-search queries.
+    if identifier_looks_like_ipv6_segment(text, start, end, tok) {
+        return true;
+    }
+
+    // Host:port patterns (`localhost:8080`) are low-signal and can leak infrastructure metadata.
+    if end + 1 < bytes.len() && bytes[end] == b':' && bytes[end + 1].is_ascii_digit() {
+        return true;
+    }
+
     // Treat URI schemes like `file:///...` or `https://...` as path-like so we don't end up with
     // low-signal queries such as `file` when the selection is primarily a path/URL.
     if end < bytes.len() && bytes[end] == b':' {
@@ -907,6 +918,33 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
     }
 
     false
+}
+
+fn identifier_looks_like_ipv6_segment(text: &str, start: usize, end: usize, tok: &str) -> bool {
+    // IPv6 segments are 1-4 hex digits.
+    if tok.is_empty() || tok.len() > 4 {
+        return false;
+    }
+    if !tok.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return false;
+    }
+
+    let bytes = text.as_bytes();
+    let prev_colon = start > 0 && bytes[start - 1] == b':';
+    let next_colon = end < bytes.len() && bytes[end] == b':';
+    if !(prev_colon || next_colon) {
+        return false;
+    }
+
+    // Require at least two `:` bytes in the surrounding window so we don't treat single-colon
+    // constructs like `label:` as IPv6.
+    let window_start = start.saturating_sub(32);
+    let window_end = (end + 32).min(bytes.len());
+    let colon_count = bytes[window_start..window_end]
+        .iter()
+        .filter(|b| **b == b':')
+        .count();
+    colon_count >= 2
 }
 
 fn identifier_in_file_name_token(text: &str, start: usize, end: usize, _tok: &str) -> bool {
@@ -1025,6 +1063,11 @@ fn related_code_query_fallback(focal_code: &str) -> String {
         // Numeric literals are very low-signal as embedding queries and can contain unique IDs
         // (e.g. `0xDEADBEEF`) that we should not send to providers.
         if looks_like_numeric_literal_token(tok) {
+            continue;
+        }
+        // Network endpoints (IPv6, host:port) are similarly low-signal and can leak infrastructure
+        // metadata.
+        if looks_like_ipv6_address_token(tok) || looks_like_host_port_token(tok) {
             continue;
         }
         if tok
@@ -1182,6 +1225,111 @@ fn looks_like_numeric_literal_token(tok: &str) -> bool {
     }
 
     i == bytes.len()
+}
+
+fn looks_like_host_port_token(tok: &str) -> bool {
+    let (host, port) = match tok.split_once(':') {
+        Some(parts) => parts,
+        None => return false,
+    };
+    if host.is_empty() || port.is_empty() {
+        return false;
+    }
+    // IPv6 uses multiple `:` separators.
+    if tok.as_bytes().iter().filter(|b| **b == b':').count() != 1 {
+        return false;
+    }
+    if !host.bytes().any(|b| b.is_ascii_alphabetic()) {
+        return false;
+    }
+    if host.starts_with('.') || host.ends_with('.') {
+        return false;
+    }
+    if !host
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    {
+        return false;
+    }
+    if port.len() > 5 || !port.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let Ok(port_num) = port.parse::<u32>() else {
+        return false;
+    };
+    (1..=65_535).contains(&port_num)
+}
+
+fn looks_like_ipv6_address_token(tok: &str) -> bool {
+    let mut token = tok;
+    if let Some(idx) = token.find(']') {
+        token = &token[..idx];
+    }
+    if token.starts_with('[') {
+        token = &token[1..];
+    }
+    if let Some(idx) = token.find('%') {
+        token = &token[..idx];
+    }
+    if token.is_empty() {
+        return false;
+    }
+
+    let bytes = token.as_bytes();
+    let colon_count = bytes.iter().filter(|b| **b == b':').count();
+    if colon_count < 2 {
+        return false;
+    }
+
+    // Avoid obviously invalid tokens.
+    if bytes
+        .windows(3)
+        .any(|window| window == [b':', b':', b':'])
+    {
+        return false;
+    }
+
+    // Common embedded IPv4 form: `::ffff:192.168.0.1`.
+    if token.contains('.') {
+        if let Some(last) = token.rsplit(':').next() {
+            if looks_like_ipv4_address(last) {
+                return true;
+            }
+        }
+        // For other `:`+`.` tokens, treat them as non-IPv6 and let other heuristics handle them.
+        return false;
+    }
+
+    let mut double_colon_runs = 0usize;
+    for (idx, window) in bytes.windows(2).enumerate() {
+        if window == [b':', b':'] && (idx == 0 || bytes[idx - 1] != b':') {
+            double_colon_runs += 1;
+        }
+    }
+    if double_colon_runs > 1 {
+        return false;
+    }
+    let has_double_colon = double_colon_runs == 1;
+
+    let mut segments = 0usize;
+    for part in token.split(':') {
+        if part.is_empty() {
+            continue;
+        }
+        if part.len() > 4 || !part.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return false;
+        }
+        segments += 1;
+        if segments > 8 {
+            return false;
+        }
+    }
+
+    if has_double_colon {
+        segments <= 8
+    } else {
+        segments == 8
+    }
 }
 
 fn push_query_token(out: &mut String, tok: &str, max_bytes: usize) -> bool {
