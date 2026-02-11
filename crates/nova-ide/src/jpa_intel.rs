@@ -289,12 +289,9 @@ fn fingerprint_sources<DB: ?Sized + FileDatabase>(
         // entire workspace worth of Java sources would be prohibitively
         // expensive.
         //
-        // The `nova_db::Database` implementations used by Nova replace the
-        // underlying `String` on edits (rather than mutating in-place), so using
-        // the content pointer/len is a cheap best-effort invalidation signal.
-        //
-        // This means the cache may produce stale results if a database were to
-        // mutate strings in place *and* keep the allocation stable.
+        // The `nova_db::Database` implementations used by Nova typically replace the underlying
+        // `String` on edits (rather than mutating in place), so hashing `(len, ptr)` is a cheap
+        // best-effort invalidation signal.
         text.len().hash(&mut hasher);
         text.as_ptr().hash(&mut hasher);
         // Pointer/len hashing is fast, but can collide when short-lived buffers reuse the same
