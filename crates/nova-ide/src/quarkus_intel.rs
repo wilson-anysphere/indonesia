@@ -246,6 +246,8 @@ fn collect_java_files(
 
 fn fingerprint_sources(db: &dyn Database, files: &[(PathBuf, FileId)]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    const SAMPLE: usize = 64;
+    const FULL_HASH_MAX: usize = 3 * SAMPLE;
     for (path, file_id) in files {
         path.hash(&mut hasher);
         let text = db.file_content(*file_id);
@@ -256,8 +258,114 @@ fn fingerprint_sources(db: &dyn Database, files: &[(PathBuf, FileId)]) -> u64 {
         // edits, so (ptr,len) is a cheap best-effort invalidation signal.
         text.len().hash(&mut hasher);
         text.as_ptr().hash(&mut hasher);
+        // Pointer/len hashing is fast, but can collide when short-lived buffers reuse the same
+        // allocations (common in tests) or when text is mutated in place. Mix in a small,
+        // content-dependent sample to make invalidation deterministic without hashing full
+        // contents for large files.
+        let bytes = text.as_bytes();
+        if bytes.len() <= FULL_HASH_MAX {
+            bytes.hash(&mut hasher);
+        } else {
+            bytes[..SAMPLE].hash(&mut hasher);
+            let mid = bytes.len() / 2;
+            let mid_start = mid.saturating_sub(SAMPLE / 2);
+            let mid_end = (mid_start + SAMPLE).min(bytes.len());
+            bytes[mid_start..mid_end].hash(&mut hasher);
+            bytes[bytes.len() - SAMPLE..].hash(&mut hasher);
+        }
     }
     hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn cache_invalidates_when_file_text_changes_in_place_with_same_ptr_and_len() {
+        struct MutableDb {
+            file_id: FileId,
+            path: PathBuf,
+            text: String,
+        }
+
+        impl Database for MutableDb {
+            fn file_content(&self, file_id: FileId) -> &str {
+                if file_id == self.file_id {
+                    self.text.as_str()
+                } else {
+                    ""
+                }
+            }
+
+            fn file_path(&self, file_id: FileId) -> Option<&std::path::Path> {
+                (file_id == self.file_id).then_some(self.path.as_path())
+            }
+
+            fn all_file_ids(&self) -> Vec<FileId> {
+                vec![self.file_id]
+            }
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        let root = PathBuf::from(format!("/quarkus-cache-inplace-mutation-test-{unique}"));
+        let path = root.join("src/main/java/Foo.java");
+        let file_id = FileId::from_raw(0);
+
+        let prefix = "class Foo { /*";
+        let suffix = "*/ }\n";
+        let mut text = String::new();
+        text.push_str(prefix);
+        text.push_str(&"a".repeat(1024));
+        text.push_str(suffix);
+
+        let mut db = MutableDb { file_id, path, text };
+
+        let project1 = project_for_file(&db, file_id).expect("expected project");
+        let project2 = project_for_file(&db, file_id).expect("expected cache hit");
+        assert!(
+            Arc::ptr_eq(&project1, &project2),
+            "expected quarkus project to be reused from cache"
+        );
+
+        // Mutate a byte in the middle of the buffer, preserving the allocation + length.
+        let ptr_before = db.text.as_ptr();
+        let len_before = db.text.len();
+        let mid_idx = len_before / 2;
+        assert!(
+            mid_idx > 64 && mid_idx + 64 < len_before,
+            "expected mutation index to be outside the sampled prefix/suffix regions"
+        );
+        unsafe {
+            let bytes = db.text.as_mut_vec();
+            assert_eq!(
+                bytes[mid_idx], b'a',
+                "expected mutation index to fall within the repeated marker content"
+            );
+            bytes[mid_idx] = b'b';
+        }
+        assert_eq!(
+            ptr_before,
+            db.text.as_ptr(),
+            "expected in-place mutation to keep the same allocation"
+        );
+        assert_eq!(
+            len_before,
+            db.text.len(),
+            "expected in-place mutation to keep the same length"
+        );
+
+        let project3 = project_for_file(&db, file_id).expect("expected rebuild");
+        assert!(
+            !Arc::ptr_eq(&project2, &project3),
+            "expected quarkus project cache to invalidate when file text changes, even when pointer/len are stable"
+        );
+    }
 }
 
 fn is_quarkus_applicable(root: &Path, sources: &[&str]) -> bool {

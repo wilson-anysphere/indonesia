@@ -700,6 +700,13 @@ impl FrameworkWorkspaceCache {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         build_fingerprint.hash(&mut hasher);
 
+        // Pointer/len hashing is a cheap best-effort invalidation signal, but it can collide when
+        // short-lived buffers reuse allocations (common in tests) or when text is mutated in place.
+        // Mix in a small content-dependent sample to make invalidation deterministic without
+        // hashing full contents for large files.
+        const SAMPLE: usize = 64;
+        const FULL_HASH_MAX: usize = 3 * SAMPLE;
+
         for file_id in db.all_file_ids() {
             if cancel.is_cancelled() {
                 if let Some(existing) = lock_unpoison(&self.spring_workspace).get_cloned(&key) {
@@ -740,6 +747,17 @@ impl FrameworkWorkspaceCache {
             path.hash(&mut hasher);
             text.len().hash(&mut hasher);
             text.as_ptr().hash(&mut hasher);
+            let bytes = text.as_bytes();
+            if bytes.len() <= FULL_HASH_MAX {
+                bytes.hash(&mut hasher);
+            } else {
+                bytes[..SAMPLE].hash(&mut hasher);
+                let mid = bytes.len() / 2;
+                let mid_start = mid.saturating_sub(SAMPLE / 2);
+                let mid_end = (mid_start + SAMPLE).min(bytes.len());
+                bytes[mid_start..mid_end].hash(&mut hasher);
+                bytes[bytes.len() - SAMPLE..].hash(&mut hasher);
+            }
 
             files.push((path.to_path_buf(), file_id, kind));
         }
@@ -885,6 +903,9 @@ impl FrameworkWorkspaceCache {
         // Fingerprint sources (cheap pointer/len hashing).
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         build_fingerprint.hash(&mut hasher);
+        // See `spring_workspace` for sampling rationale.
+        const SAMPLE: usize = 64;
+        const FULL_HASH_MAX: usize = 3 * SAMPLE;
         for (path, file_id) in &files {
             if cancel.is_cancelled() {
                 return lock_unpoison(&self.quarkus).get_cloned(&key);
@@ -893,6 +914,17 @@ impl FrameworkWorkspaceCache {
             let text = db.file_content(*file_id);
             text.len().hash(&mut hasher);
             text.as_ptr().hash(&mut hasher);
+            let bytes = text.as_bytes();
+            if bytes.len() <= FULL_HASH_MAX {
+                bytes.hash(&mut hasher);
+            } else {
+                bytes[..SAMPLE].hash(&mut hasher);
+                let mid = bytes.len() / 2;
+                let mid_start = mid.saturating_sub(SAMPLE / 2);
+                let mid_end = (mid_start + SAMPLE).min(bytes.len());
+                bytes[mid_start..mid_end].hash(&mut hasher);
+                bytes[bytes.len() - SAMPLE..].hash(&mut hasher);
+            }
         }
         let fingerprint = hasher.finish();
 
@@ -1480,4 +1512,216 @@ fn is_escaped_quote(bytes: &[u8], idx: usize) -> bool {
 
 fn is_ident_continue(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spring_workspace_cache_invalidates_when_file_text_changes_in_place_with_same_ptr_and_len() {
+        struct MutableDb {
+            java_id: FileId,
+            java_path: PathBuf,
+            java_text: String,
+            cfg_id: FileId,
+            cfg_path: PathBuf,
+            cfg_text: String,
+        }
+
+        impl Database for MutableDb {
+            fn file_content(&self, file_id: FileId) -> &str {
+                if file_id == self.java_id {
+                    self.java_text.as_str()
+                } else if file_id == self.cfg_id {
+                    self.cfg_text.as_str()
+                } else {
+                    ""
+                }
+            }
+
+            fn file_path(&self, file_id: FileId) -> Option<&Path> {
+                if file_id == self.java_id {
+                    Some(self.java_path.as_path())
+                } else if file_id == self.cfg_id {
+                    Some(self.cfg_path.as_path())
+                } else {
+                    None
+                }
+            }
+
+            fn all_file_ids(&self) -> Vec<FileId> {
+                vec![self.java_id, self.cfg_id]
+            }
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        let root = PathBuf::from(format!("/framework-cache-spring-inplace-mutation-test-{unique}"));
+        let java_path = root.join("src/main/java/Foo.java");
+        let cfg_path = root.join("src/main/resources/application.properties");
+        let java_id = FileId::from_raw(0);
+        let cfg_id = FileId::from_raw(1);
+
+        // Include both Spring applicability + `@Value` marker so the workspace index is built.
+        let prefix = "import org.springframework.beans.factory.annotation.Value;\nclass Foo { @Value(\"${foo}\") String x; /*";
+        let suffix = "*/ }\n";
+        let mut java_text = String::new();
+        java_text.push_str(prefix);
+        java_text.push_str(&"a".repeat(1024));
+        java_text.push_str(suffix);
+
+        let cfg_text = "foo=bar\n".to_string();
+
+        let mut db = MutableDb {
+            java_id,
+            java_path,
+            java_text,
+            cfg_id,
+            cfg_path,
+            cfg_text,
+        };
+
+        let cache = FrameworkWorkspaceCache::new();
+        let cancel = CancellationToken::new();
+
+        let workspace1 = cache.spring_workspace(&db, &root, &cancel);
+        assert!(workspace1.is_spring, "expected spring workspace to be applicable");
+        let workspace2 = cache.spring_workspace(&db, &root, &cancel);
+        assert!(
+            Arc::ptr_eq(&workspace1.index, &workspace2.index),
+            "expected spring workspace index to be reused from cache"
+        );
+
+        // Mutate a byte in the middle of the Java buffer, preserving the allocation + length.
+        let ptr_before = db.java_text.as_ptr();
+        let len_before = db.java_text.len();
+        let mid_idx = len_before / 2;
+        assert!(
+            mid_idx > 64 && mid_idx + 64 < len_before,
+            "expected mutation index to be outside the sampled prefix/suffix regions"
+        );
+        unsafe {
+            let bytes = db.java_text.as_mut_vec();
+            assert_eq!(
+                bytes[mid_idx], b'a',
+                "expected mutation index to fall within the repeated marker content"
+            );
+            bytes[mid_idx] = b'b';
+        }
+        assert_eq!(
+            ptr_before,
+            db.java_text.as_ptr(),
+            "expected in-place mutation to keep the same allocation"
+        );
+        assert_eq!(
+            len_before,
+            db.java_text.len(),
+            "expected in-place mutation to keep the same length"
+        );
+
+        let workspace3 = cache.spring_workspace(&db, &root, &cancel);
+        assert!(
+            !Arc::ptr_eq(&workspace2.index, &workspace3.index),
+            "expected spring workspace cache to invalidate when file text changes, even when pointer/len are stable"
+        );
+    }
+
+    #[test]
+    fn quarkus_analysis_cache_invalidates_when_file_text_changes_in_place_with_same_ptr_and_len() {
+        struct MutableDb {
+            file_id: FileId,
+            path: PathBuf,
+            text: String,
+        }
+
+        impl Database for MutableDb {
+            fn file_content(&self, file_id: FileId) -> &str {
+                if file_id == self.file_id {
+                    self.text.as_str()
+                } else {
+                    ""
+                }
+            }
+
+            fn file_path(&self, file_id: FileId) -> Option<&Path> {
+                (file_id == self.file_id).then_some(self.path.as_path())
+            }
+
+            fn all_file_ids(&self) -> Vec<FileId> {
+                vec![self.file_id]
+            }
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        let root = PathBuf::from(format!("/framework-cache-quarkus-inplace-mutation-test-{unique}"));
+        let path = root.join("src/main/java/Foo.java");
+        let file_id = FileId::from_raw(0);
+
+        // Include a Quarkus marker so applicability succeeds without build metadata.
+        let prefix = "class Foo { String prop = \"quarkus.http.port\"; /*";
+        let suffix = "*/ }\n";
+        let mut text = String::new();
+        text.push_str(prefix);
+        text.push_str(&"a".repeat(1024));
+        text.push_str(suffix);
+
+        let mut db = MutableDb { file_id, path, text };
+        let cache = FrameworkWorkspaceCache::new();
+        let cancel = CancellationToken::new();
+
+        let entry1 = cache
+            .quarkus_analysis(&db, &root, &cancel, None)
+            .expect("expected quarkus workspace");
+        let analysis1 = entry1.analysis.as_ref().expect("expected quarkus analysis");
+        let entry2 = cache
+            .quarkus_analysis(&db, &root, &cancel, None)
+            .expect("expected cache hit");
+        let analysis2 = entry2.analysis.as_ref().expect("expected quarkus analysis");
+        assert!(
+            Arc::ptr_eq(analysis1, analysis2),
+            "expected quarkus analysis to be reused from cache"
+        );
+
+        // Mutate a byte in the middle of the buffer, preserving the allocation + length.
+        let ptr_before = db.text.as_ptr();
+        let len_before = db.text.len();
+        let mid_idx = len_before / 2;
+        assert!(
+            mid_idx > 64 && mid_idx + 64 < len_before,
+            "expected mutation index to be outside the sampled prefix/suffix regions"
+        );
+        unsafe {
+            let bytes = db.text.as_mut_vec();
+            assert_eq!(
+                bytes[mid_idx], b'a',
+                "expected mutation index to fall within the repeated marker content"
+            );
+            bytes[mid_idx] = b'b';
+        }
+        assert_eq!(
+            ptr_before,
+            db.text.as_ptr(),
+            "expected in-place mutation to keep the same allocation"
+        );
+        assert_eq!(
+            len_before,
+            db.text.len(),
+            "expected in-place mutation to keep the same length"
+        );
+
+        let entry3 = cache
+            .quarkus_analysis(&db, &root, &cancel, None)
+            .expect("expected rebuild");
+        let analysis3 = entry3.analysis.as_ref().expect("expected quarkus analysis");
+        assert!(
+            !Arc::ptr_eq(analysis2, analysis3),
+            "expected quarkus analysis cache to invalidate when file text changes, even when pointer/len are stable"
+        );
+    }
 }

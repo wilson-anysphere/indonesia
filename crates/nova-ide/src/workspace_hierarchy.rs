@@ -375,6 +375,9 @@ fn workspace_identity(db: &dyn Database) -> (WorkspaceId, u64) {
     let mut workspace_hasher = DefaultHasher::new();
     let mut fingerprint_hasher = DefaultHasher::new();
 
+    const SAMPLE: usize = 64;
+    const FULL_HASH_MAX: usize = 3 * SAMPLE;
+
     for file in files {
         match file.path {
             Some(path) => {
@@ -393,6 +396,21 @@ fn workspace_identity(db: &dyn Database) -> (WorkspaceId, u64) {
         let text = db.file_content(file.file_id);
         text.len().hash(&mut fingerprint_hasher);
         text.as_ptr().hash(&mut fingerprint_hasher);
+        // Pointer/len hashing is fast, but can collide when short-lived buffers reuse the same
+        // allocations (common in tests) or when text is mutated in place. Mix in a small,
+        // content-dependent sample to make invalidation deterministic without hashing full
+        // contents for large files.
+        let bytes = text.as_bytes();
+        if bytes.len() <= FULL_HASH_MAX {
+            bytes.hash(&mut fingerprint_hasher);
+        } else {
+            bytes[..SAMPLE].hash(&mut fingerprint_hasher);
+            let mid = bytes.len() / 2;
+            let mid_start = mid.saturating_sub(SAMPLE / 2);
+            let mid_end = (mid_start + SAMPLE).min(bytes.len());
+            bytes[mid_start..mid_end].hash(&mut fingerprint_hasher);
+            bytes[bytes.len() - SAMPLE..].hash(&mut fingerprint_hasher);
+        }
     }
 
     (
@@ -445,7 +463,12 @@ mod tests {
 
     use nova_db::InMemoryFileStore;
 
-    fn reset_rebuild_counter() {
+    static WORKSPACE_HIERARCHY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn reset_rebuild_counter() -> std::sync::MutexGuard<'static, ()> {
+        let guard = WORKSPACE_HIERARCHY_TEST_LOCK
+            .lock()
+            .expect("workspace hierarchy test lock poisoned");
         WORKSPACE_HIERARCHY_REBUILDS.store(0, std::sync::atomic::Ordering::Relaxed);
         // Ensure the cache doesn't carry state across unrelated unit tests.
         let mut cache = WORKSPACE_HIERARCHY_INDEX_CACHE
@@ -453,11 +476,12 @@ mod tests {
             .unwrap_or_else(|err| err.into_inner());
         cache.map.clear();
         cache.order.clear();
+        guard
     }
 
     #[test]
     fn workspace_hierarchy_index_is_cached_across_type_hierarchy_requests() {
-        reset_rebuild_counter();
+        let _guard = reset_rebuild_counter();
 
         let mut db = InMemoryFileStore::new();
 
@@ -494,6 +518,102 @@ mod tests {
             WORKSPACE_HIERARCHY_REBUILDS.load(std::sync::atomic::Ordering::Relaxed),
             2,
             "expected hierarchy index to rebuild after a file edit"
+        );
+    }
+
+    #[test]
+    fn workspace_hierarchy_cache_invalidates_when_file_text_changes_in_place_with_same_ptr_and_len() {
+        struct MutableDb {
+            file_id: FileId,
+            path: std::path::PathBuf,
+            text: String,
+        }
+
+        impl Database for MutableDb {
+            fn file_content(&self, file_id: FileId) -> &str {
+                if file_id == self.file_id {
+                    self.text.as_str()
+                } else {
+                    ""
+                }
+            }
+
+            fn file_path(&self, file_id: FileId) -> Option<&std::path::Path> {
+                (file_id == self.file_id).then_some(self.path.as_path())
+            }
+
+            fn all_file_ids(&self) -> Vec<FileId> {
+                vec![self.file_id]
+            }
+        }
+
+        let _guard = reset_rebuild_counter();
+
+        let file_id = FileId::from_raw(0);
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        let root = std::path::PathBuf::from(format!(
+            "/workspace-hierarchy-inplace-mutation-test-{unique}"
+        ));
+        let path = root.join("A.java");
+
+        let prefix = "class A { /*";
+        let suffix = "*/ }\n";
+        let mut text = String::new();
+        text.push_str(prefix);
+        text.push_str(&"a".repeat(1024));
+        text.push_str(suffix);
+
+        let mut db = MutableDb { file_id, path, text };
+
+        let first = WorkspaceHierarchyIndex::get_cached(&db);
+        let second = WorkspaceHierarchyIndex::get_cached(&db);
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "expected workspace hierarchy index to be reused from cache"
+        );
+        assert_eq!(
+            WORKSPACE_HIERARCHY_REBUILDS.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+
+        // Mutate a byte in the middle of the buffer, preserving the allocation + length.
+        let ptr_before = db.text.as_ptr();
+        let len_before = db.text.len();
+        let mid_idx = len_before / 2;
+        assert!(
+            mid_idx > 64 && mid_idx + 64 < len_before,
+            "expected mutation index to be outside the sampled prefix/suffix regions"
+        );
+        unsafe {
+            let bytes = db.text.as_mut_vec();
+            assert_eq!(
+                bytes[mid_idx], b'a',
+                "expected mutation index to fall within the repeated marker content"
+            );
+            bytes[mid_idx] = b'b';
+        }
+        assert_eq!(
+            ptr_before,
+            db.text.as_ptr(),
+            "expected in-place mutation to keep the same allocation"
+        );
+        assert_eq!(
+            len_before,
+            db.text.len(),
+            "expected in-place mutation to keep the same length"
+        );
+
+        let third = WorkspaceHierarchyIndex::get_cached(&db);
+        assert!(
+            !Arc::ptr_eq(&second, &third),
+            "expected workspace hierarchy cache to invalidate when file text changes, even when pointer/len are stable"
+        );
+        assert_eq!(
+            WORKSPACE_HIERARCHY_REBUILDS.load(std::sync::atomic::Ordering::Relaxed),
+            2
         );
     }
 }

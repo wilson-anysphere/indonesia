@@ -447,7 +447,10 @@ fn root_fingerprint(
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     build_fp.hash(&mut hasher);
 
-    // Pointer/len hashing for cheap invalidation (see `jpa_intel.rs` for rationale).
+    // Pointer/len hashing for cheap invalidation, plus a small content sample for determinism when
+    // allocations are reused or text is mutated in place.
+    const SAMPLE: usize = 64;
+    const FULL_HASH_MAX: usize = 3 * SAMPLE;
     for (path, file_id) in java_files {
         if cancel.is_cancelled() {
             return None;
@@ -456,6 +459,17 @@ fn root_fingerprint(
         let text = db.file_content(*file_id);
         text.len().hash(&mut hasher);
         text.as_ptr().hash(&mut hasher);
+        let bytes = text.as_bytes();
+        if bytes.len() <= FULL_HASH_MAX {
+            bytes.hash(&mut hasher);
+        } else {
+            bytes[..SAMPLE].hash(&mut hasher);
+            let mid = bytes.len() / 2;
+            let mid_start = mid.saturating_sub(SAMPLE / 2);
+            let mid_end = (mid_start + SAMPLE).min(bytes.len());
+            bytes[mid_start..mid_end].hash(&mut hasher);
+            bytes[bytes.len() - SAMPLE..].hash(&mut hasher);
+        }
     }
 
     Some(hasher.finish())
@@ -895,6 +909,115 @@ mod tests {
             "expected framework db adapter to never panic on unknown ClassId"
         );
         assert_eq!(result.unwrap(), "<unknown>");
+    }
+
+    #[test]
+    fn invalidates_when_file_text_changes_in_place_with_same_ptr_and_len() {
+        use std::cell::UnsafeCell;
+
+        struct MutableDb {
+            file_id: FileId,
+            path: PathBuf,
+            text: UnsafeCell<String>,
+        }
+
+        // `UnsafeCell<String>` makes this type `!Sync`; for this unit test we ensure all access is
+        // single-threaded (mutation occurs between calls into the cache).
+        unsafe impl Send for MutableDb {}
+        unsafe impl Sync for MutableDb {}
+
+        impl HostDatabase for MutableDb {
+            fn file_content(&self, file_id: FileId) -> &str {
+                if file_id == self.file_id {
+                    // SAFETY: The test mutates the string only between cache calls, ensuring no
+                    // outstanding borrows exist when we take a mutable reference.
+                    unsafe { &*self.text.get() }.as_str()
+                } else {
+                    ""
+                }
+            }
+
+            fn file_path(&self, file_id: FileId) -> Option<&Path> {
+                (file_id == self.file_id).then_some(self.path.as_path())
+            }
+
+            fn all_file_ids(&self) -> Vec<FileId> {
+                vec![self.file_id]
+            }
+
+            fn file_id(&self, path: &Path) -> Option<FileId> {
+                (path == self.path).then_some(self.file_id)
+            }
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        let root = PathBuf::from(format!("/framework-db-inplace-mutation-test-{unique}"));
+        let path = root.join("src/Main.java");
+        let file_id = FileId::from_raw(0);
+
+        let prefix = "package test; class Main { /*";
+        let suffix = "*/ }\n";
+        let mut text = String::new();
+        text.push_str(prefix);
+        text.push_str(&"a".repeat(1024));
+        text.push_str(suffix);
+
+        let db = Arc::new(MutableDb {
+            file_id,
+            path,
+            text: UnsafeCell::new(text),
+        });
+        let host_db: Arc<dyn HostDatabase + Send + Sync> = db.clone();
+        let cancel = CancellationToken::new();
+
+        let shared1 = shared_db_for_file(Arc::clone(&host_db), file_id, &cancel)
+            .expect("expected framework db");
+        let shared2 = shared_db_for_file(Arc::clone(&host_db), file_id, &cancel)
+            .expect("expected cache hit");
+        assert!(
+            Arc::ptr_eq(&shared1, &shared2),
+            "expected framework db shared state to be reused from cache"
+        );
+
+        // Mutate a byte in the middle of the buffer, preserving the allocation + length.
+        let text_ref = unsafe { &*db.text.get() };
+        let ptr_before = text_ref.as_ptr();
+        let len_before = text_ref.len();
+        let mid_idx = len_before / 2;
+        assert!(
+            mid_idx > 64 && mid_idx + 64 < len_before,
+            "expected mutation index to be outside the sampled prefix/suffix regions"
+        );
+        unsafe {
+            let bytes = (&mut *db.text.get()).as_mut_vec();
+            assert_eq!(
+                bytes[mid_idx], b'a',
+                "expected mutation index to fall within the repeated marker content"
+            );
+            bytes[mid_idx] = b'b';
+        }
+
+        let text_after = unsafe { &*db.text.get() };
+        assert_eq!(
+            ptr_before,
+            text_after.as_ptr(),
+            "expected in-place mutation to keep the same allocation"
+        );
+        assert_eq!(
+            len_before,
+            text_after.len(),
+            "expected in-place mutation to keep the same length"
+        );
+
+        let shared3 = shared_db_for_file(Arc::clone(&host_db), file_id, &cancel)
+            .expect("expected rebuild");
+        assert!(
+            !Arc::ptr_eq(&shared2, &shared3),
+            "expected framework db cache to invalidate when file text changes, even when pointer/len are stable"
+        );
     }
 }
 
