@@ -2074,6 +2074,48 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 return true;
             }
 
+            // Skip identifiers inside numeric entities that decode to an `x`/`X` escape prefix when
+            // they are immediately followed by a hex-escaped percent marker. For example,
+            // `&#x78;25u0032u0046home` decodes to `x25%2Fhome` and should be treated as path-like so
+            // fragments like `x78` do not become semantic-search query tokens.
+            if start > 1
+                && bytes[start - 2] == b'&'
+                && bytes[start - 1] == b'#'
+                && after.is_some_and(|b| *b == b';')
+                && numeric_fragment_after_hash_value(tok.as_bytes())
+                    .is_some_and(|value| matches!(value, 0x58 | 0x78))
+            {
+                fn hex_escape_percent_marker_end(bytes: &[u8], mut idx: usize) -> Option<usize> {
+                    let mut value = 0u32;
+                    let mut significant = 0usize;
+                    while idx < bytes.len() && significant < 8 {
+                        let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, idx) else {
+                            break;
+                        };
+                        let digit = digit as u32;
+                        if significant == 0 && digit == 0 {
+                            idx = next;
+                            continue;
+                        }
+                        value = (value << 4) | digit;
+                        significant += 1;
+                        idx = next;
+                        if value == 0x25 {
+                            return Some(idx);
+                        }
+                    }
+                    None
+                }
+
+                if let Some(marker_end) = hex_escape_percent_marker_end(bytes, bounds.end + 1) {
+                    if percent_encoded_byte_after_obfuscated_digits(bytes, marker_end)
+                        .is_some_and(|(value, _)| percent_encoded_byte_is_path_like(value))
+                    {
+                        return true;
+                    }
+                }
+            }
+
             // Handle percent-encoded separators where the `%` itself is HTML-escaped, e.g.
             // `&#37;2Fhome...` or `&amp;#37;252Fhome...`. The surrounding token starts with the hex
             // digits (`2F`, `252F`, ...) and the entity delimiter `;` is treated as a boundary, so
@@ -4539,6 +4581,69 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
         }
     }
 
+    fn html_entity_numeric_codepoint_value(bytes: &[u8], end_semicolon: usize) -> Option<u32> {
+        if end_semicolon >= bytes.len() || bytes[end_semicolon] != b';' {
+            return None;
+        }
+
+        // Scan backwards for the entity start.
+        let mut amp = None;
+        let mut i = end_semicolon;
+        let mut scanned = 0usize;
+        while i > 0 && scanned < 256 {
+            i -= 1;
+            scanned += 1;
+            if bytes[i] == b'&' {
+                amp = Some(i);
+                break;
+            }
+        }
+        let amp = amp?;
+        if amp + 2 >= end_semicolon || bytes[amp + 1] != b'#' {
+            return None;
+        }
+
+        let mut j = amp + 2;
+        let base = match bytes.get(j) {
+            Some(b'x') | Some(b'X') => {
+                j += 1;
+                16u32
+            }
+            _ => 10u32,
+        };
+        if j >= end_semicolon {
+            return None;
+        }
+
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        while j < end_semicolon && significant < 8 {
+            let digit = if base == 16 {
+                hex_value(bytes[j])? as u32
+            } else if bytes[j].is_ascii_digit() {
+                (bytes[j] - b'0') as u32
+            } else {
+                return None;
+            };
+            if significant == 0 && digit == 0 {
+                j += 1;
+                continue;
+            }
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+            significant += 1;
+            j += 1;
+        }
+
+        if j != end_semicolon || significant == 0 {
+            return None;
+        }
+
+        Some(value)
+    }
+
     fn marker_end_after_hex_escape_x_prefix(bytes: &[u8], mut idx: usize) -> Option<usize> {
         let mut value = 0u32;
         let mut significant = 0usize;
@@ -5285,10 +5390,24 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
             if bytes[j] != b';' {
                 continue;
             }
-            if html_entity_is_percent(bytes, j)
-                || html_entity_obfuscated_numeric_reference_value(bytes, j) == Some(37)
-            {
+            if html_entity_is_percent(bytes, j) {
                 return Some(j + 1);
+            }
+            match html_entity_obfuscated_numeric_reference_value(bytes, j) {
+                Some(37) => return Some(j + 1),
+                _ => {}
+            }
+            match html_entity_numeric_codepoint_value(bytes, j) {
+                Some(0x58) | Some(0x78) => {
+                    // Hex-escape prefixes can be introduced by HTML numeric entities (e.g.
+                    // `&#120;25...` == `x25...` after decoding). Treat these as percent markers so
+                    // paths obfuscated via nested HTML + hex + percent encoding cannot leak into
+                    // semantic-search queries.
+                    if let Some(end) = marker_end_after_hex_escape_x_prefix(bytes, j + 1) {
+                        return Some(end);
+                    }
+                }
+                _ => {}
             }
         }
 
