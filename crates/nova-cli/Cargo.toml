@@ -43,6 +43,7 @@ nova-ext = { path = "../nova-ext", optional = true }
 nova-index = { path = "../nova-index" }
 nova-project = { path = "../nova-project" }
 nova-router = { path = "../nova-router" }
+nova-build = { path = "../nova-build" }
 tracing = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 tokio-util = "0.7"
