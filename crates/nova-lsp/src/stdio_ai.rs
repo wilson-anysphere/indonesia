@@ -1246,7 +1246,7 @@ fn apply_code_action_outcome<O: RpcOut>(
   match outcome {
     CodeActionOutcome::WorkspaceEdit(edit) => {
       let id: RequestId = serde_json::from_value(json!(state.next_outgoing_id()))
-        .map_err(|e| (-32603, e.to_string(), None))?;
+        .map_err(|e| (-32603, sanitize_serde_json_error(&e), None))?;
       rpc_out
         .send_request(
           id,
