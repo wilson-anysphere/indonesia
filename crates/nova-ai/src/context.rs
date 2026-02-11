@@ -873,6 +873,109 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         }
     }
 
+    // Percent sign escape artifacts like `u0025` / `x25` (and braced forms like `u{0025}`) are
+    // extremely low-signal and commonly show up when paths are obfuscated via percent encoding.
+    // Treat them as path-like so path-only selections cannot trigger semantic search via queries
+    // such as `u0025`.
+    {
+        fn hex_value(b: u8) -> Option<u8> {
+            match b {
+                b'0'..=b'9' => Some(b - b'0'),
+                b'a'..=b'f' => Some(b - b'a' + 10),
+                b'A'..=b'F' => Some(b - b'A' + 10),
+                _ => None,
+            }
+        }
+
+        let tok_bytes = tok.as_bytes();
+        let mut u_prefix = 0usize;
+        while u_prefix < tok_bytes.len() && tok_bytes[u_prefix] == b'u' {
+            u_prefix += 1;
+        }
+        if u_prefix > 0 && tok_bytes.len() >= u_prefix + 4 {
+            let mut value = 0u32;
+            let mut ok = true;
+            for &b in &tok_bytes[u_prefix..u_prefix + 4] {
+                let Some(hex) = hex_value(b) else {
+                    ok = false;
+                    break;
+                };
+                value = (value << 4) | hex as u32;
+            }
+            if ok && value == 0x25 {
+                return true;
+            }
+        }
+
+        if tok_bytes.len() >= 9 && tok_bytes[0] == b'U' {
+            let mut value = 0u32;
+            let mut ok = true;
+            for &b in &tok_bytes[1..9] {
+                let Some(hex) = hex_value(b) else {
+                    ok = false;
+                    break;
+                };
+                value = (value << 4) | hex as u32;
+            }
+            if ok && value == 0x25 {
+                return true;
+            }
+        }
+
+        if tok_bytes.len() >= 2 && matches!(tok_bytes[0], b'x' | b'X') {
+            let mut digits = &tok_bytes[1..];
+            while digits.first().is_some_and(|b| *b == b'0') {
+                digits = &digits[1..];
+            }
+            if !digits.is_empty() && digits.len() <= 8 {
+                let mut value = 0u32;
+                let mut ok = true;
+                for &b in digits {
+                    let Some(hex) = hex_value(b) else {
+                        ok = false;
+                        break;
+                    };
+                    value = (value << 4) | hex as u32;
+                }
+                if ok && value == 0x25 {
+                    return true;
+                }
+            }
+        }
+
+        // Brace-delimited forms (e.g. `u{0025}` / `x{25}`) can split the escape prefix into its
+        // own identifier token (`u`/`x`). Treat these as path-like when the braced value decodes to
+        // `%`.
+        if end < bytes.len() && bytes[end] == b'{' {
+            let is_u_prefix = tok_bytes.iter().all(|b| *b == b'u');
+            let is_x_prefix = tok_bytes.iter().all(|b| matches!(*b, b'x' | b'X'));
+            if is_u_prefix || is_x_prefix {
+                let mut value = 0u32;
+                let mut significant = 0usize;
+                let mut j = end + 1;
+                let scan_end = (j + 1024).min(bytes.len());
+                while j < scan_end && significant < 8 {
+                    if bytes[j] == b'}' {
+                        break;
+                    }
+                    let Some(hex) = hex_value(bytes[j]) else {
+                        break;
+                    };
+                    if significant == 0 && hex == 0 {
+                        j += 1;
+                        continue;
+                    }
+                    value = (value << 4) | hex as u32;
+                    significant += 1;
+                    j += 1;
+                }
+                if significant > 0 && j < bytes.len() && bytes[j] == b'}' && value == 0x25 {
+                    return true;
+                }
+            }
+        }
+    }
+
     // IPv6 addresses contain hex-like "identifiers" separated by `:` characters. Avoid leaking
     // these fragments (e.g. `db8`) into semantic-search queries.
     if identifier_looks_like_ipv6_segment(text, start, end, tok) {
@@ -3427,6 +3530,240 @@ fn percent_encoded_byte_before(bytes: &[u8], idx: usize) -> Option<u8> {
         value == 37
     }
 
+    fn ends_with_unicode_percent_escape(bytes: &[u8], cursor: usize) -> bool {
+        // 8-digit `UXXXXXXXX` escapes.
+        if cursor >= 9 && bytes[cursor - 9] == b'U' {
+            let mut value = 0u32;
+            for &b in &bytes[cursor - 8..cursor] {
+                let Some(hex) = hex_value(b) else {
+                    value = u32::MAX;
+                    break;
+                };
+                value = (value << 4) | hex as u32;
+            }
+            if value == 0x25 {
+                return true;
+            }
+        }
+
+        // Braced escapes like `u{0025}` (including very long zero padding like `u{000...25}`).
+        if cursor > 0 && bytes[cursor - 1] == b'}' {
+            let brace_end = cursor - 1;
+            let mut brace_start = None;
+            let mut i = brace_end;
+            let mut scanned = 0usize;
+            while i > 0 && scanned < 1024 {
+                i -= 1;
+                scanned += 1;
+                if bytes[i] == b'{' {
+                    brace_start = Some(i);
+                    break;
+                }
+                if hex_value(bytes[i]).is_none() {
+                    break;
+                }
+            }
+
+            if let Some(brace_start) = brace_start {
+                let mut value = 0u32;
+                let mut significant = 0usize;
+                let mut j = brace_start + 1;
+                while j < brace_end && significant < 8 {
+                    let Some(hex) = hex_value(bytes[j]) else {
+                        return false;
+                    };
+                    if significant == 0 && hex == 0 {
+                        j += 1;
+                        continue;
+                    }
+                    value = (value << 4) | hex as u32;
+                    significant += 1;
+                    j += 1;
+                }
+                // Fail closed: reject escapes with more than 8 significant digits.
+                if j < brace_end {
+                    return false;
+                }
+                if significant == 0 || value != 0x25 {
+                    return false;
+                }
+
+                let mut u_start = brace_start;
+                while u_start > 0 && bytes[u_start - 1] == b'u' {
+                    u_start -= 1;
+                }
+                if u_start == brace_start {
+                    return false;
+                }
+                return true;
+            }
+        }
+
+        // 4-digit `uXXXX` escapes (including multiple `u` bytes like `uu0025`).
+        if cursor >= 5 {
+            let mut value = 0u32;
+            for &b in &bytes[cursor - 4..cursor] {
+                let Some(hex) = hex_value(b) else {
+                    value = u32::MAX;
+                    break;
+                };
+                value = (value << 4) | hex as u32;
+            }
+            if value == 0x25 {
+                let digits_start = cursor - 4;
+                let mut u_start = digits_start;
+                while u_start > 0 && bytes[u_start - 1] == b'u' {
+                    u_start -= 1;
+                }
+                if u_start < digits_start {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    fn ends_with_hex_percent_escape(bytes: &[u8], cursor: usize) -> bool {
+        // Braced escapes like `x{25}`.
+        if cursor > 0 && bytes[cursor - 1] == b'}' {
+            let brace_end = cursor - 1;
+            let mut brace_start = None;
+            let mut i = brace_end;
+            let mut scanned = 0usize;
+            while i > 0 && scanned < 256 {
+                i -= 1;
+                scanned += 1;
+                if bytes[i] == b'{' {
+                    brace_start = Some(i);
+                    break;
+                }
+                if hex_value(bytes[i]).is_none() {
+                    break;
+                }
+            }
+
+            if let Some(brace_start) = brace_start {
+                if brace_start == 0 {
+                    return false;
+                }
+                let x_idx = brace_start - 1;
+                if !matches!(bytes[x_idx], b'x' | b'X') {
+                    return false;
+                }
+
+                let mut value = 0u32;
+                let mut significant = 0usize;
+                let mut j = brace_start + 1;
+                while j < brace_end && significant < 8 {
+                    let Some(hex) = hex_value(bytes[j]) else {
+                        return false;
+                    };
+                    if significant == 0 && hex == 0 {
+                        j += 1;
+                        continue;
+                    }
+                    value = (value << 4) | hex as u32;
+                    significant += 1;
+                    j += 1;
+                }
+                if j < brace_end {
+                    return false;
+                }
+                return significant > 0 && value == 0x25;
+            }
+        }
+
+        // Plain `x25` / `x000025` suffixes.
+        let mut start = cursor;
+        let mut digits = 0usize;
+        while start > 0 && digits < 8 {
+            if hex_value(bytes[start - 1]).is_some() {
+                start -= 1;
+                digits += 1;
+                continue;
+            }
+            break;
+        }
+        if digits == 0 || start == 0 {
+            return false;
+        }
+        let x_idx = start - 1;
+        if !matches!(bytes[x_idx], b'x' | b'X') {
+            return false;
+        }
+
+        let mut frag = &bytes[start..cursor];
+        while frag.first().is_some_and(|b| *b == b'0') {
+            frag = &frag[1..];
+        }
+        if frag.is_empty() {
+            return false;
+        }
+        let mut value = 0u32;
+        for &b in frag {
+            let Some(hex) = hex_value(b) else {
+                return false;
+            };
+            value = (value << 4) | hex as u32;
+        }
+        value == 0x25
+    }
+
+    fn ends_with_backslash_hex_percent_escape(bytes: &[u8], cursor: usize) -> bool {
+        let mut start = cursor;
+        let mut digits = 0usize;
+        while start > 0 && digits < 6 {
+            if hex_value(bytes[start - 1]).is_some() {
+                start -= 1;
+                digits += 1;
+                continue;
+            }
+            break;
+        }
+        if digits == 0 || start == 0 || bytes[start - 1] != b'\\' {
+            return false;
+        }
+
+        let mut frag = &bytes[start..cursor];
+        while frag.first().is_some_and(|b| *b == b'0') {
+            frag = &frag[1..];
+        }
+        if frag.is_empty() {
+            return false;
+        }
+        let mut value = 0u32;
+        for &b in frag {
+            let Some(hex) = hex_value(b) else {
+                return false;
+            };
+            value = (value << 4) | hex as u32;
+        }
+        value == 0x25
+    }
+
+    fn ends_with_backslash_octal_percent_escape(bytes: &[u8], cursor: usize) -> bool {
+        let mut start = cursor;
+        let mut digits = 0usize;
+        while start > 0 && digits < 3 {
+            let b = bytes[start - 1];
+            if (b'0'..=b'7').contains(&b) {
+                start -= 1;
+                digits += 1;
+                continue;
+            }
+            break;
+        }
+        if digits == 0 || start == 0 || bytes[start - 1] != b'\\' {
+            return false;
+        }
+        let mut value = 0u32;
+        for &b in &bytes[start..cursor] {
+            value = (value << 3) | (b - b'0') as u32;
+        }
+        value == 37
+    }
+
     fn html_numeric_entity_value(bytes: &[u8], end_semicolon: usize) -> Option<(usize, u32)> {
         if end_semicolon >= bytes.len() || bytes[end_semicolon] != b';' {
             return None;
@@ -3553,6 +3890,17 @@ fn percent_encoded_byte_before(bytes: &[u8], idx: usize) -> Option<u8> {
     // treated as path separators to avoid leaking path segments into semantic-search queries.
     if ends_with_named_percent_entity_without_semicolon(bytes, cursor)
         || ends_with_numeric_percent_entity_without_semicolon(bytes, cursor)
+    {
+        return Some((hi << 4) | lo);
+    }
+
+    // Handle percent signs that are themselves escaped (unicode/hex/octal/backslash-hex), e.g.
+    // `u00252F`, `x252F`, `\\252F`, `\\0452F`, as well as variants where the hex digits are HTML
+    // entities (e.g. `u0025&#50;&#70;home`).
+    if ends_with_unicode_percent_escape(bytes, cursor)
+        || ends_with_hex_percent_escape(bytes, cursor)
+        || ends_with_backslash_hex_percent_escape(bytes, cursor)
+        || ends_with_backslash_octal_percent_escape(bytes, cursor)
     {
         return Some((hi << 4) | lo);
     }

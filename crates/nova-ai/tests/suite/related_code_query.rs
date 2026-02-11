@@ -2050,6 +2050,50 @@ fn related_code_query_skips_escaped_percent_encoded_path_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_escaped_percent_encoded_path_only_selections_with_hex_digit_entities() {
+    struct PanicSearch<'a> {
+        sep: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for escaped percent-encoded path selections with hex digit entities (sep={}); got query={query}",
+                self.sep
+            );
+        }
+    }
+
+    for sep in [
+        // Unicode/hex escapes for `%` with entity-encoded hex digits.
+        "u0025&#50;&#70;", // u0025 + &#50; (2) + &#70; (F) -> %2F
+        "u0025&#53;&#67;", // -> %5C
+        "x25&#50;&#70;",
+        "x25&#53;&#67;",
+        // Braced variants where the escape marker token (`u`/`x`) is separated from the digits by
+        // `{}` delimiters.
+        "u{0025}&#50;&#70;",
+        "x{25}&#50;&#70;",
+        // Backslash-hex / octal escapes for `%`.
+        r"\25&#50;&#70;",
+        r"\25&#53;&#67;",
+        r"\045&#50;&#70;",
+        r"\045&#53;&#67;",
+        // Backslash + `x25` escape for `%`.
+        r"\x25&#50;&#70;",
+        r"\x25&#53;&#67;",
+    ] {
+        let search = PanicSearch { sep };
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for escaped percent-encoded path-only focal code with hex digit entities"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_escaped_percent_encoded_unicode_separator_path_only_selections() {
     struct PanicSearch;
 
