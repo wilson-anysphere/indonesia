@@ -900,6 +900,7 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 || looks_like_domain_name_token(token)
                 || token_contains_percent_encoded_path_separator(token)
                 || token_contains_unicode_escaped_path_separator(token)
+                || token_contains_hex_escaped_path_separator(token)
                 || token_contains_obvious_secret_fragment(token)
                 || token_contains_sensitive_assignment(token)
             {
@@ -1078,6 +1079,9 @@ fn related_code_query_fallback(focal_code: &str) -> String {
             continue;
         }
         if token_contains_unicode_escaped_path_separator(raw_tok) {
+            continue;
+        }
+        if token_contains_hex_escaped_path_separator(raw_tok) {
             continue;
         }
 
@@ -1784,6 +1788,36 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
                 (b'2', b'f' | b'F') | (b'5', b'c' | b'C') => return true,
                 _ => {}
             }
+        }
+
+        i += 1;
+    }
+
+    false
+}
+
+fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
+    let bytes = tok.as_bytes();
+    if bytes.len() < 3 {
+        return false;
+    }
+
+    let mut i = 0usize;
+    while i + 2 < bytes.len() {
+        let b = bytes[i];
+        if b != b'x' && b != b'X' {
+            i += 1;
+            continue;
+        }
+
+        if i > 0 && bytes[i - 1].is_ascii_alphanumeric() {
+            i += 1;
+            continue;
+        }
+
+        match (bytes[i + 1], bytes[i + 2]) {
+            (b'2', b'f' | b'F') | (b'5', b'c' | b'C') => return true,
+            _ => {}
         }
 
         i += 1;

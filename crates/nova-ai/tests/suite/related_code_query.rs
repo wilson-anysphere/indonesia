@@ -320,6 +320,44 @@ fn related_code_query_avoids_unicode_escaped_path_segments() {
 }
 
 #[test]
+fn related_code_query_avoids_hex_escaped_path_segments() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let search = CapturingSearch::default();
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+    let focal_code = format!(
+        "\\x2Fhome\\x2Fuser\\x2Fmy-{private_segment}-project\\x2Fsrc\\x2Fmain\\x2Fjava\nreturn foo.bar();\n"
+    );
+
+    let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+    let query = search
+        .last_query
+        .lock()
+        .expect("lock poisoned")
+        .clone()
+        .expect("query captured");
+
+    assert!(
+        !query.contains(private_segment),
+        "query should not include hex-escaped path fragments: {query}"
+    );
+    assert!(
+        query.contains("foo") || query.contains("bar"),
+        "expected query to retain non-path identifiers, got: {query}"
+    );
+}
+
+#[test]
 fn related_code_query_does_not_drop_identifiers_due_to_inline_string_paths() {
     #[derive(Default)]
     struct CapturingSearch {
@@ -626,6 +664,29 @@ fn related_code_query_skips_unicode_escaped_path_only_selections() {
         assert!(
             req.related_code.is_empty(),
             "expected no related code for unicode-escaped path-only focal code"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_hex_escaped_path_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for hex-escaped path selections");
+        }
+    }
+
+    let search = PanicSearch;
+    for focal_code in [
+        r"\x2Fhome\x2Fuser\x2Fsecret\x2Fcredentials",
+        r"\x5Chome\x5Cuser\x5Csecret\x5Ccredentials",
+    ] {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for hex-escaped path-only focal code"
         );
     }
 }
