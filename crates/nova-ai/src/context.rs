@@ -894,6 +894,7 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 || looks_like_jwt_token(token)
                 || token_contains_long_hex_run(token)
                 || looks_like_base64_token(token)
+                || looks_like_base32_token(token)
                 || looks_like_high_entropy_token(token)
                 || looks_like_user_at_host_token(token)
                 || looks_like_domain_name_token(token)
@@ -1586,6 +1587,36 @@ fn looks_like_base64_token(tok: &str) -> bool {
     token
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+}
+
+fn looks_like_base32_token(tok: &str) -> bool {
+    let token =
+        tok.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '=' | '-' | '_')));
+    if token.len() < 32 {
+        return false;
+    }
+
+    // Base32 secrets often appear as long runs of uppercase letters + digits `2..=7` (optionally
+    // padded with `=`). These are low-signal for semantic search and can leak secrets/IDs when the
+    // focal selection is log/config text rather than Java code.
+    let mut has_letter = false;
+    let mut digit_count = 0usize;
+    for b in token.bytes() {
+        if b == b'=' {
+            continue;
+        }
+        if b.is_ascii_uppercase() {
+            has_letter = true;
+            continue;
+        }
+        if matches!(b, b'2' | b'3' | b'4' | b'5' | b'6' | b'7') {
+            digit_count += 1;
+            continue;
+        }
+        return false;
+    }
+
+    has_letter && digit_count >= 2
 }
 
 fn looks_like_high_entropy_token(tok: &str) -> bool {

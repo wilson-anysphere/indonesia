@@ -1063,6 +1063,25 @@ fn related_code_query_skips_base64_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_base32_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for base32-only related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for base32-only focal code"
+    );
+}
+
+#[test]
 fn related_code_query_skips_google_api_key_only_selections() {
     struct PanicSearch;
 
