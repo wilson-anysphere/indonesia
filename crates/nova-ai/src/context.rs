@@ -963,6 +963,71 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                     numeric_fragment_after_hash_value(fragment)
                         .is_some_and(html_entity_codepoint_is_path_separator)
                 }
+
+                fn numeric_fragment_after_hash_is_percent_encoded(fragment: &[u8]) -> bool {
+                    fn hex_value(b: u8) -> Option<u8> {
+                        match b {
+                            b'0'..=b'9' => Some(b - b'0'),
+                            b'a'..=b'f' => Some(b - b'a' + 10),
+                            b'A'..=b'F' => Some(b - b'A' + 10),
+                            _ => None,
+                        }
+                    }
+
+                    if fragment.is_empty() {
+                        return false;
+                    }
+
+                    let mut j = 0usize;
+                    let base = match fragment.get(0) {
+                        Some(b'x') | Some(b'X') => {
+                            j += 1;
+                            16u32
+                        }
+                        _ => 10u32,
+                    };
+                    if j >= fragment.len() {
+                        return false;
+                    }
+
+                    let mut value = 0u32;
+                    let mut significant = 0usize;
+                    while j < fragment.len() && significant < 8 {
+                        let b = fragment[j];
+                        let digit = if base == 16 {
+                            let Some(v) = hex_value(b) else {
+                                break;
+                            };
+                            v as u32
+                        } else if b.is_ascii_digit() {
+                            (b - b'0') as u32
+                        } else {
+                            break;
+                        };
+                        if significant == 0 && digit == 0 {
+                            j += 1;
+                            continue;
+                        }
+                        value = value
+                            .checked_mul(base)
+                            .and_then(|v| v.checked_add(digit))
+                            .unwrap_or(u32::MAX);
+                        significant += 1;
+                        j += 1;
+
+                        if value == 37 {
+                            let mut tail = fragment.get(j..).unwrap_or_default();
+                            if tail.first().is_some_and(|b| *b == b';') {
+                                tail = &tail[1..];
+                            }
+                            return tail.get(..2).is_some_and(|prefix| {
+                                prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit()
+                            });
+                        }
+                    }
+
+                    false
+                }
                 if looks_like_email_address(token)
                     || looks_like_ipv4_address(token)
                     || looks_like_mac_address_token(token)
@@ -1516,6 +1581,13 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                         {
                             return true;
                         }
+                        if html_entity_is_number_sign(bytes, j)
+                            && bytes
+                                .get(j + 1..)
+                                .is_some_and(numeric_fragment_after_hash_is_percent_encoded)
+                        {
+                            return true;
+                        }
                         if html_entity_is_percent(bytes, j)
                             && bytes
                                 .get(j + 1..j + 3)
@@ -1532,13 +1604,23 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
             // immediately followed by numeric escape fragments representing a path separator (e.g.
             // `&num;47;...`, which decodes to `#47;...` after one pass and then to `/...` after a
             // second HTML-decode pass).
-            if after.is_some_and(|b| *b == b';')
-                && html_entity_is_number_sign(bytes, bounds.end)
-                && bytes
+            if after.is_some_and(|b| *b == b';') && html_entity_is_number_sign(bytes, bounds.end) {
+                if bytes
                     .get(bounds.end + 1..)
                     .is_some_and(numeric_fragment_after_hash_is_path_separator)
-            {
-                return true;
+                {
+                    return true;
+                }
+
+                // The number sign escape can also be used to build percent entities (e.g.
+                // `&#x23;37;2Fhome`, which decodes to `&#37;2Fhome`). Treat these as path-like so
+                // artifacts like `x23`/`num` do not become semantic-search query tokens.
+                if bytes
+                    .get(bounds.end + 1..)
+                    .is_some_and(numeric_fragment_after_hash_is_percent_encoded)
+                {
+                    return true;
+                }
             }
 
             // Skip identifiers inside percent entities (`&percnt;`, `&#37;`, `&amp;#37;`) when they
@@ -1580,6 +1662,9 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
             // look at the preceding entity to decide whether this identifier is a path segment.
             if before_idx.is_some_and(|idx| html_entity_is_number_sign(bytes, idx)) {
                 if numeric_fragment_after_hash_is_path_separator(token.as_bytes()) {
+                    return true;
+                }
+                if numeric_fragment_after_hash_is_percent_encoded(token.as_bytes()) {
                     return true;
                 }
             }
@@ -2628,6 +2713,56 @@ fn html_entity_is_percent(bytes: &[u8], end_semicolon: usize) -> bool {
         }
     }
 
+    fn fragment_after_hash_is_percent(fragment: &[u8]) -> bool {
+        if fragment.is_empty() {
+            return false;
+        }
+
+        let mut j = 0usize;
+        let base = match fragment.get(0) {
+            Some(b'x') | Some(b'X') => {
+                j += 1;
+                16u32
+            }
+            _ => 10u32,
+        };
+        if j >= fragment.len() {
+            return false;
+        }
+
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        while j < fragment.len() && significant < 8 {
+            let b = fragment[j];
+            let digit = if base == 16 {
+                let Some(v) = hex_value(b) else {
+                    break;
+                };
+                v as u32
+            } else if b.is_ascii_digit() {
+                (b - b'0') as u32
+            } else {
+                break;
+            };
+            if significant == 0 && digit == 0 {
+                j += 1;
+                continue;
+            }
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+            significant += 1;
+            j += 1;
+            // Fail closed: treat any prefix that produces the percent sign codepoint as a percent
+            // sign, even if additional digits follow (e.g. `x252F`/`372F` with missing semicolons).
+            if value == 37 {
+                return true;
+            }
+        }
+        false
+    }
+
     fn fragment_is_percent(mut fragment: &[u8]) -> bool {
         let is_named_percent = |bytes: &[u8]| {
             bytes.eq_ignore_ascii_case(b"percnt") || bytes.eq_ignore_ascii_case(b"percent")
@@ -2676,6 +2811,14 @@ fn html_entity_is_percent(bytes: &[u8], end_semicolon: usize) -> bool {
             return true;
         }
 
+        if let Some(inner_semicolon) = fragment.iter().position(|b| *b == b';') {
+            let prefix = &fragment[..inner_semicolon];
+            let tail = &fragment[inner_semicolon + 1..];
+            if prefix.eq_ignore_ascii_case(b"num") && fragment_after_hash_is_percent(tail) {
+                return true;
+            }
+        }
+
         for _ in 0..8 {
             if fragment.len() >= 4 && fragment[..3].eq_ignore_ascii_case(b"amp") && fragment[3] == b';' {
                 fragment = &fragment[4..];
@@ -2697,7 +2840,19 @@ fn html_entity_is_percent(bytes: &[u8], end_semicolon: usize) -> bool {
             break;
         }
 
-        is_named_percent(fragment) || parse_numeric(fragment) == Some(37)
+        if is_named_percent(fragment) || parse_numeric(fragment) == Some(37) {
+            return true;
+        }
+
+        if let Some(inner_semicolon) = fragment.iter().position(|b| *b == b';') {
+            let prefix = &fragment[..inner_semicolon];
+            let tail = &fragment[inner_semicolon + 1..];
+            if prefix.eq_ignore_ascii_case(b"num") && fragment_after_hash_is_percent(tail) {
+                return true;
+            }
+        }
+
+        false
     }
 
     if end_semicolon >= bytes.len() || bytes[end_semicolon] != b';' {
@@ -2778,11 +2933,16 @@ fn html_entity_is_percent(bytes: &[u8], end_semicolon: usize) -> bool {
                 .unwrap_or(u32::MAX);
         }
 
-        if value != 38 {
-            return false;
+        if value == 38 {
+            return fragment_is_percent(fragment);
         }
-
-        return fragment_is_percent(fragment);
+        // Some escape layers encode the `#` of a numeric percent entity as its own entity (e.g.
+        // `&#35;37;` decodes to `#37;`). Treat these as percent escapes so percent-encoded paths do
+        // not leak into semantic-search queries.
+        if value == 35 {
+            return fragment_after_hash_is_percent(fragment);
+        }
+        return false;
     }
 
     // Handle cases where the numeric `&` entity omits its own `;` terminator, e.g. `&#38percnt;` or
@@ -4553,9 +4713,134 @@ fn token_contains_html_entity_percent_encoded_path_separator(tok: &str) -> bool 
         None
     }
 
+    fn html_numeric_fragment_after_number_sign_is_percent(bytes: &[u8], start: usize) -> Option<usize> {
+        if start >= bytes.len() {
+            return None;
+        }
+
+        let mut j = start;
+        let base = match bytes.get(j) {
+            Some(b'x') | Some(b'X') => {
+                j += 1;
+                16u32
+            }
+            _ => 10u32,
+        };
+        if j >= bytes.len() {
+            return None;
+        }
+
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        while j < bytes.len() && significant < 8 {
+            let b = bytes[j];
+            let digit = if base == 16 {
+                let Some(v) = hex_value(b) else {
+                    break;
+                };
+                v as u32
+            } else if b.is_ascii_digit() {
+                (b - b'0') as u32
+            } else {
+                break;
+            };
+            if significant == 0 && digit == 0 {
+                j += 1;
+                continue;
+            }
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+            significant += 1;
+            j += 1;
+            if value == 37 {
+                return Some(j);
+            }
+        }
+
+        None
+    }
+
+    fn find_ampersand_before(bytes: &[u8], idx: usize) -> Option<usize> {
+        let mut i = idx;
+        let mut scanned = 0usize;
+        while i > 0 && scanned < 256 {
+            i -= 1;
+            scanned += 1;
+            if bytes[i] == b'&' {
+                return Some(i);
+            }
+        }
+        None
+    }
+
     let bytes = tok.as_bytes();
     if !bytes.contains(&b'&') {
         return false;
+    }
+
+    let mut base: std::borrow::Cow<'_, str> = std::borrow::Cow::Borrowed(tok);
+    {
+        // Convert semicolon-terminated percent entities (including nested/obfuscated variants like
+        // `&#38;#37;` and `&amp;&#35;37;`) into literal `%` so we can reuse the normal
+        // percent-decoder.
+        let mut normalized: Vec<u8> = Vec::new();
+        let mut changed = false;
+        let mut last = 0usize;
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if bytes[i] != b';' {
+                i += 1;
+                continue;
+            }
+
+            if html_entity_is_number_sign(bytes, i) {
+                if let Some(next) = html_numeric_fragment_after_number_sign_is_percent(bytes, i + 1) {
+                    let mut end = next;
+                    if bytes.get(end).is_some_and(|b| *b == b';') {
+                        end += 1;
+                    }
+                    if let Some(start) = find_ampersand_before(bytes, i) {
+                        if !changed {
+                            normalized = Vec::with_capacity(bytes.len());
+                        }
+                        normalized.extend_from_slice(&bytes[last..start]);
+                        normalized.push(b'%');
+                        changed = true;
+                        last = end;
+                        i = end;
+                        continue;
+                    }
+                }
+            }
+
+            if html_entity_is_percent(bytes, i) {
+                if let Some(start) = find_ampersand_before(bytes, i) {
+                    if !changed {
+                        normalized = Vec::with_capacity(bytes.len());
+                    }
+                    normalized.extend_from_slice(&bytes[last..start]);
+                    normalized.push(b'%');
+                    changed = true;
+                    last = i + 1;
+                    i = i + 1;
+                    continue;
+                }
+            }
+
+            i += 1;
+        }
+
+        if changed {
+            normalized.extend_from_slice(&bytes[last..]);
+            let normalized = std::string::String::from_utf8_lossy(&normalized);
+            base = std::borrow::Cow::Owned(normalized.into_owned());
+
+            if token_contains_percent_encoded_path_separator(base.as_ref()) {
+                return true;
+            }
+        }
     }
 
     // Convert HTML-escaped percent signs (`&#37;`, `&percnt;`, etc) into literal `%` so we can reuse
@@ -4564,6 +4849,11 @@ fn token_contains_html_entity_percent_encoded_path_separator(tok: &str) -> bool 
     //
     // Note: semicolons are treated as token boundaries elsewhere in the query extractor, so we
     // also support percent entities without a trailing `;` (e.g. `&#37E2` or `&percntE2`).
+    let bytes = base.as_bytes();
+    if !bytes.contains(&b'&') {
+        return false;
+    }
+
     let mut normalized: Vec<u8> = Vec::new();
     let mut changed = false;
     let mut last = 0usize;
@@ -6522,6 +6812,30 @@ class Foo {
             "&amp#x252Fhome",
             "&amppercnt;2Fhome",
             "&amppercent2Fhome",
+        ] {
+            assert!(
+                token_contains_html_entity_percent_encoded_path_separator(tok),
+                "expected token to be treated as percent-encoded path separator: {tok}"
+            );
+        }
+    }
+
+    #[test]
+    fn html_entity_percent_encoded_path_detection_handles_encoded_number_signs() {
+        for tok in [
+            "&amp;&#35;37;2Fhome",
+            "&amp;&#x23;37;2Fhome",
+            "&amp;&num;37;2Fhome",
+            "&amp;&#35;x25;2Fhome",
+            "&amp;&num;x25;2Fhome",
+            "&amp;&#35;372Fhome",
+            "&amp;&#35;x252Fhome",
+            "&amp;&num;372Fhome",
+            "&amp;&num;x252Fhome",
+            "&amp;&#35;37;5Chome",
+            "&amp;&num;37;5Chome",
+            "&amp;&#35;375Chome",
+            "&amp;&num;375Chome",
         ] {
             assert!(
                 token_contains_html_entity_percent_encoded_path_separator(tok),
