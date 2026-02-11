@@ -1583,6 +1583,60 @@ class A {
 }
 
 #[test]
+fn completion_resolves_method_reference_type_receiver_with_trailing_block_comment() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  static void s() {}
+  void i() {}
+}
+
+class A {
+  void m() {
+    java.util.function.Supplier<Foo> sup = Foo/*comment*/::<|>;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    for expected in ["s", "i", "new"] {
+        assert!(
+            labels.contains(&expected),
+            "expected completion list to contain {expected} for `Foo/*comment*/::`; got {labels:?}"
+        );
+    }
+}
+
+#[test]
+fn completion_resolves_method_reference_type_receiver_with_leading_block_comment_after_colons() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  static void s() {}
+  void i() {}
+}
+
+class A {
+  void m() {
+    java.util.function.Supplier<Foo> sup = Foo::/*comment*/<|>;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    for expected in ["s", "i", "new"] {
+        assert!(
+            labels.contains(&expected),
+            "expected completion list to contain {expected} for `Foo::/*comment*/`; got {labels:?}"
+        );
+    }
+}
+
+#[test]
 fn completion_resolves_array_access_receiver() {
     let (db, file, pos) = fixture(
         r#"

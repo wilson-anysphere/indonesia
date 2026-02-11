@@ -22070,12 +22070,12 @@ fn find_matching_open_angle(bytes: &[u8], close_angle_idx: usize) -> Option<usiz
 
 fn method_reference_double_colon_offset(text: &str, prefix_start: usize) -> Option<usize> {
     let bytes = text.as_bytes();
-    let mut before = skip_whitespace_backwards(text, prefix_start);
+    let mut before = skip_trivia_backwards(text, prefix_start);
 
     // Handle `Foo::<T>bar` where `<T>` provides explicit method type arguments.
     if before > 0 && bytes.get(before - 1) == Some(&b'>') {
         let open = find_matching_open_angle(bytes, before - 1)?;
-        before = skip_whitespace_backwards(text, open);
+        before = skip_trivia_backwards(text, open);
     }
 
     // Note: `bool::then_some` eagerly evaluates its argument, so we must not write
@@ -22108,7 +22108,7 @@ pub(crate) fn receiver_before_dot(text: &str, dot_offset: usize) -> String {
 
 pub(crate) fn receiver_before_double_colon(text: &str, double_colon_offset: usize) -> String {
     let bytes = text.as_bytes();
-    let end = skip_whitespace_backwards(text, double_colon_offset.min(bytes.len()));
+    let end = skip_trivia_backwards(text, double_colon_offset.min(bytes.len()));
 
     let mut start = end;
     while start > 0 {
@@ -23137,6 +23137,24 @@ class A {
 
         // Basic happy-path: `Foo::` ends with a method reference delimiter.
         assert_eq!(method_reference_double_colon_offset("Foo::", 5), Some(3));
+    }
+
+    #[test]
+    fn method_reference_double_colon_offset_skips_trailing_block_comments() {
+        let text = "Foo::/*comment*/";
+        assert_eq!(
+            method_reference_double_colon_offset(text, text.len()),
+            Some(3),
+            "expected `Foo::/*comment*/` to resolve method reference delimiter"
+        );
+
+        let text = "Foo::<T>/*comment*/bar";
+        let prefix_start = text.find("bar").expect("expected `bar` in fixture");
+        assert_eq!(
+            method_reference_double_colon_offset(text, prefix_start),
+            Some(3),
+            "expected block comments after method type args to be skipped"
+        );
     }
 
     #[test]
