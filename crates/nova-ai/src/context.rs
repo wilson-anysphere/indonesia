@@ -2428,12 +2428,74 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
 }
 
 fn token_contains_html_entity_path_separator(tok: &str) -> bool {
+    fn hex_value(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+
     let bytes = tok.as_bytes();
     for (idx, b) in bytes.iter().enumerate() {
         if *b == b';' && html_entity_is_path_separator(bytes, idx) {
             return true;
         }
     }
+
+    // Some HTML emitters omit the trailing semicolon in numeric entities (e.g. `&#47home`).
+    // Treat these as path separators so encoded paths do not leak into semantic-search queries.
+    let mut i = 0usize;
+    while i + 3 < bytes.len() {
+        if bytes[i] != b'&' || bytes[i + 1] != b'#' {
+            i += 1;
+            continue;
+        }
+
+        let mut j = i + 2;
+        let base = match bytes.get(j) {
+            Some(b'x') | Some(b'X') => {
+                j += 1;
+                16u32
+            }
+            _ => 10u32,
+        };
+
+        let digits_start = j;
+        let mut value = 0u32;
+        let mut digits = 0usize;
+        while j < bytes.len() && digits < 8 {
+            let b = bytes[j];
+            let digit = if base == 16 {
+                let Some(v) = hex_value(b) else {
+                    break;
+                };
+                v as u32
+            } else if b.is_ascii_digit() {
+                (b - b'0') as u32
+            } else {
+                break;
+            };
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+            digits += 1;
+            j += 1;
+        }
+
+        if digits > 0 && matches!(value, 47 | 92) {
+            return true;
+        }
+
+        if digits_start == j {
+            i += 1;
+        } else {
+            i = j;
+        }
+    }
+
     false
 }
 
