@@ -2037,6 +2037,52 @@ fn related_code_query_skips_percent_encoded_html_entity_path_only_selections_wit
 }
 
 #[test]
+fn related_code_query_skips_unicode_escape_path_only_selections_with_entity_digits() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for unicode-escaped path selections with entity-encoded digits; got query={query}"
+            );
+        }
+    }
+
+    let search = PanicSearch;
+    // `u002F` with each digit emitted via an HTML numeric entity.
+    let sep = "u&#x30;&#x30;&#x32;&#x46;";
+    let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+    let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for unicode-escaped path-only focal code with entity digits"
+    );
+}
+
+#[test]
+fn related_code_query_skips_hex_escape_path_only_selections_with_entity_digits() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for hex-escaped path selections with entity-encoded digits; got query={query}"
+            );
+        }
+    }
+
+    let search = PanicSearch;
+    // `x2F` with each digit emitted via an HTML numeric entity.
+    let sep = "x&#x32;&#x46;";
+    let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+    let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for hex-escaped path-only focal code with entity digits"
+    );
+}
+
+#[test]
 fn related_code_query_skips_escaped_percent_encoded_path_only_selections() {
     struct PanicSearch;
 

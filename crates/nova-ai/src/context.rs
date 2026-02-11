@@ -1262,7 +1262,10 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         let whitespace_bounds = surrounding_whitespace_token_bounds(text, start, end);
         if !whitespace_bounds.is_empty() {
             let token = &text[whitespace_bounds.clone()];
-            if token_contains_percent_encoded_path_separator(token) {
+            if token_contains_percent_encoded_path_separator(token)
+                || token_contains_unicode_escaped_path_separator(token)
+                || token_contains_hex_escaped_path_separator(token)
+            {
                 return true;
             }
         }
@@ -6955,15 +6958,6 @@ fn token_contains_obfuscated_percent_marker_path_separator(tok: &str) -> bool {
 }
 
 fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
-    fn hex_value(b: u8) -> Option<u8> {
-        match b {
-            b'0'..=b'9' => Some(b - b'0'),
-            b'a'..=b'f' => Some(b - b'a' + 10),
-            b'A'..=b'F' => Some(b - b'A' + 10),
-            _ => None,
-        }
-    }
-
     let bytes = tok.as_bytes();
     if bytes.len() < 5 {
         return false;
@@ -6990,74 +6984,79 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
         if bytes.get(j).is_some_and(|b| *b == b'{') {
             let mut value = 0u32;
             let mut significant = 0usize;
-            let mut k = j + 1;
-            while k < bytes.len() && significant < 8 {
-                if bytes[k] == b'}' {
+            let mut cursor = j + 1;
+            let scan_end = (cursor + 1024).min(bytes.len());
+            while cursor < scan_end && significant < 8 {
+                if bytes[cursor] == b'}' {
                     break;
                 }
-                let Some(hex) = hex_value(bytes[k]) else {
+                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
                     break;
                 };
-                if significant == 0 && hex == 0 {
-                    k += 1;
+                if significant == 0 && digit == 0 {
+                    cursor = next;
                     continue;
                 }
-                value = (value << 4) | hex as u32;
+                value = (value << 4) | digit as u32;
                 significant += 1;
-                k += 1;
+                cursor = next;
             }
 
-            if significant > 0 && k < bytes.len() && bytes[k] == b'}' {
+            if significant > 0 && cursor < bytes.len() && bytes[cursor] == b'}' {
                 if html_entity_codepoint_is_path_separator(value) {
                     return true;
                 }
                 // Percent-encoded separators can hide the `%` via unicode escapes (e.g.
                 // `\u00252Fhome` → `%2Fhome`). Treat these as path-like so segments do not leak into
                 // semantic-search queries.
-                if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, k + 1).is_some() {
+                if value == 37
+                    && percent_encoded_byte_after_obfuscated_digits(bytes, cursor + 1).is_some()
+                {
                     return true;
                 }
             }
         }
 
         if b == b'u' {
-            if j + 3 < bytes.len() {
-                let mut value = 0u32;
-                let mut ok = true;
-                for &b in &bytes[j..j + 4] {
-                    let Some(hex) = hex_value(b) else {
-                        ok = false;
-                        break;
-                    };
-                    value = (value << 4) | hex as u32;
-                }
-                if ok {
-                    if html_entity_codepoint_is_path_separator(value) {
-                        return true;
-                    }
-                    if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, j + 4).is_some() {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        // 8-digit escapes like `\U0000002F` (common in some languages) also decode to separators.
-        if b == b'U' && i + 8 < bytes.len() {
+            let mut cursor = j;
             let mut value = 0u32;
             let mut ok = true;
-            for &b in &bytes[i + 1..i + 9] {
-                let Some(hex) = hex_value(b) else {
+            for _ in 0..4 {
+                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
                     ok = false;
                     break;
                 };
-                value = (value << 4) | hex as u32;
+                value = (value << 4) | digit as u32;
+                cursor = next;
             }
             if ok {
                 if html_entity_codepoint_is_path_separator(value) {
                     return true;
                 }
-                if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, i + 9).is_some() {
+                if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, cursor).is_some() {
+                    return true;
+                }
+            }
+        }
+
+        // 8-digit escapes like `\U0000002F` (common in some languages) also decode to separators.
+        if b == b'U' {
+            let mut cursor = i + 1;
+            let mut value = 0u32;
+            let mut ok = true;
+            for _ in 0..8 {
+                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
+                    ok = false;
+                    break;
+                };
+                value = (value << 4) | digit as u32;
+                cursor = next;
+            }
+            if ok {
+                if html_entity_codepoint_is_path_separator(value) {
+                    return true;
+                }
+                if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, cursor).is_some() {
                     return true;
                 }
             }
@@ -7070,15 +7069,6 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
 }
 
 fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
-    fn hex_value(b: u8) -> Option<u8> {
-        match b {
-            b'0'..=b'9' => Some(b - b'0'),
-            b'a'..=b'f' => Some(b - b'a' + 10),
-            b'A'..=b'F' => Some(b - b'A' + 10),
-            _ => None,
-        }
-    }
-
     let bytes = tok.as_bytes();
     if bytes.len() < 3 {
         return false;
@@ -7104,24 +7094,25 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
         if bytes.get(i + 1).is_some_and(|b| *b == b'{') {
             let mut value = 0u32;
             let mut significant = 0usize;
-            let mut j = i + 2;
-            while j < bytes.len() && significant < 8 {
-                if bytes[j] == b'}' {
+            let mut cursor = i + 2;
+            let scan_end = (cursor + 1024).min(bytes.len());
+            while cursor < scan_end && significant < 8 {
+                if bytes[cursor] == b'}' {
                     break;
                 }
-                let Some(hex) = hex_value(bytes[j]) else {
+                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
                     break;
                 };
-                if significant == 0 && hex == 0 {
-                    j += 1;
+                if significant == 0 && digit == 0 {
+                    cursor = next;
                     continue;
                 }
-                value = (value << 4) | hex as u32;
+                value = (value << 4) | digit as u32;
                 significant += 1;
-                j += 1;
+                cursor = next;
             }
 
-            if significant > 0 && j < bytes.len() && bytes[j] == b'}' {
+            if significant > 0 && cursor < bytes.len() && bytes[cursor] == b'}' {
                 if html_entity_codepoint_is_path_separator(value) {
                     if !embedded {
                         return true;
@@ -7132,7 +7123,7 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
                     }
                 }
                 if value == 37
-                    && percent_encoded_byte_after_obfuscated_digits(bytes, j + 1).is_some()
+                    && percent_encoded_byte_after_obfuscated_digits(bytes, cursor + 1).is_some()
                 {
                     if !embedded {
                         return true;
@@ -7146,18 +7137,18 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
         } else {
             let mut value = 0u32;
             let mut significant = 0usize;
-            let mut j = i + 1;
-            while j < bytes.len() && significant < 8 {
-                let Some(hex) = hex_value(bytes[j]) else {
+            let mut cursor = i + 1;
+            while cursor < bytes.len() && significant < 8 {
+                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
                     break;
                 };
-                if significant == 0 && hex == 0 {
-                    j += 1;
+                if significant == 0 && digit == 0 {
+                    cursor = next;
                     continue;
                 }
-                value = (value << 4) | hex as u32;
+                value = (value << 4) | digit as u32;
                 significant += 1;
-                j += 1;
+                cursor = next;
                 if html_entity_codepoint_is_path_separator(value) {
                     if !embedded {
                         return true;
@@ -7169,7 +7160,7 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
                     break;
                 }
                 if value == 37
-                    && percent_encoded_byte_after_obfuscated_digits(bytes, j).is_some()
+                    && percent_encoded_byte_after_obfuscated_digits(bytes, cursor).is_some()
                 {
                     if !embedded {
                         return true;
