@@ -1054,6 +1054,52 @@ fn related_code_query_skips_gitlab_pat_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_slack_token_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for Slack token related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    // These tokens are constructed from parts so we can exercise the secret-detection heuristics
+    // without committing a literal that trips GitHub push-protection scanners.
+    let focal_codes = [
+        ["xox", "b", "-", "not", "-", "a", "-", "real", "-", "token", "-but-long-enough"].concat(),
+        ["xap", "p", "-", "1", "-", "not", "-", "a", "-", "real", "-", "token", "-but-long-enough"]
+            .concat(),
+    ];
+    for focal_code in &focal_codes {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for Slack token-only focal code"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_google_oauth_token_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for OAuth token related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = ["ya29", ".", "a0ARrdaM", "-", "not-a-real-token-but-long-enough"].concat();
+    let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for OAuth token-only focal code"
+    );
+}
+
+#[test]
 fn related_code_query_skips_high_entropy_token_only_selections() {
     struct PanicSearch;
 

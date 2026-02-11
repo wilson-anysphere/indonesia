@@ -1883,6 +1883,20 @@ fn looks_like_obvious_secret_token(tok: &str) -> bool {
     }
 
     let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("ya29.") && trimmed.len() >= 20 {
+        return true;
+    }
+
+    if (lower.starts_with("xoxb-")
+        || lower.starts_with("xoxp-")
+        || lower.starts_with("xoxa-")
+        || lower.starts_with("xoxr-")
+        || lower.starts_with("xoxs-")
+        || lower.starts_with("xapp-"))
+        && trimmed.len() >= 20
+    {
+        return true;
+    }
     if lower.starts_with("glpat-") && trimmed.len() >= 20 {
         return true;
     }
@@ -1928,6 +1942,20 @@ fn looks_like_secret_token(tok: &str) -> bool {
     }
 
     let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("ya29.") && trimmed.len() >= 20 {
+        return true;
+    }
+
+    if (lower.starts_with("xoxb-")
+        || lower.starts_with("xoxp-")
+        || lower.starts_with("xoxa-")
+        || lower.starts_with("xoxr-")
+        || lower.starts_with("xoxs-")
+        || lower.starts_with("xapp-"))
+        && trimmed.len() >= 20
+    {
+        return true;
+    }
     if lower.starts_with("glpat-") && trimmed.len() >= 20 {
         return true;
     }
