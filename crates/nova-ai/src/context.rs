@@ -2764,7 +2764,7 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
                 value = (value << 4) | hex as u32;
                 digits += 1;
                 j += 1;
-                if matches!(value, 0x2F | 0x5C) {
+                if html_entity_codepoint_is_path_separator(value) {
                     return true;
                 }
             }
