@@ -4526,14 +4526,103 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
         }
     }
 
-    fn numeric_percent_entity_end_after_number_sign(bytes: &[u8], mut idx: usize) -> Option<usize> {
-        let base = match bytes.get(idx) {
-            Some(b'x') | Some(b'X') => {
-                idx += 1;
-                16u32
+    fn marker_end_after_hex_escape_x_prefix(bytes: &[u8], mut idx: usize) -> Option<usize> {
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        while idx < bytes.len() && significant < 8 {
+            let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, idx) else {
+                break;
+            };
+            let digit = digit as u32;
+            if significant == 0 && digit == 0 {
+                idx = next;
+                continue;
             }
-            _ => 10u32,
-        };
+            value = (value << 4) | digit;
+            significant += 1;
+            idx = next;
+            if value == 0x25 {
+                return Some(idx);
+            }
+            if value == 0x26 {
+                if let Some(next) = percent_entity_end_after_ampersand(bytes, idx) {
+                    return Some(next);
+                }
+                return None;
+            }
+        }
+
+        None
+    }
+
+    fn hex_base_prefix_end(bytes: &[u8], idx: usize) -> Option<usize> {
+        if bytes.get(idx).is_some_and(|b| matches!(*b, b'x' | b'X')) {
+            return Some(idx + 1);
+        }
+
+        if bytes.get(idx).is_some_and(|b| matches!(*b, b'u' | b'U')) {
+            if let Some((value, next)) = parse_unicode_escape(bytes, idx) {
+                if matches!(value, 0x58 | 0x78) {
+                    return Some(next);
+                }
+            }
+        }
+
+        if bytes.get(idx) == Some(&b'\\') {
+            if bytes
+                .get(idx + 1)
+                .is_some_and(|b| matches!(*b, b'u' | b'U'))
+            {
+                if let Some((value, next)) = parse_unicode_escape(bytes, idx + 1) {
+                    if matches!(value, 0x58 | 0x78) {
+                        return Some(next);
+                    }
+                }
+            }
+            if bytes
+                .get(idx + 1)
+                .is_some_and(|b| matches!(*b, b'x' | b'X'))
+            {
+                if let Some((value, next)) = parse_hex_escape(bytes, idx + 1) {
+                    if matches!(value, 0x58 | 0x78) {
+                        return Some(next);
+                    }
+                }
+            }
+            if let Some((value, next)) = parse_backslash_octal_escape(bytes, idx) {
+                if matches!(value, 0x58 | 0x78) {
+                    return Some(next);
+                }
+            }
+            if let Some((value, next)) = parse_backslash_hex_escape(bytes, idx) {
+                if matches!(value, 0x58 | 0x78) {
+                    return Some(next);
+                }
+            }
+        }
+
+        if bytes.get(idx) == Some(&b'&') {
+            let scan_end = (idx + 128).min(bytes.len());
+            for j in idx + 1..scan_end {
+                if bytes[j] != b';' {
+                    continue;
+                }
+                match html_entity_obfuscated_numeric_reference_value(bytes, j) {
+                    Some(0x58) | Some(0x78) => return Some(j + 1),
+                    _ => {}
+                }
+            }
+        }
+
+        None
+    }
+
+    fn numeric_percent_entity_end_after_number_sign(bytes: &[u8], mut idx: usize) -> Option<usize> {
+        let mut base = 10u32;
+        if let Some(next) = hex_base_prefix_end(bytes, idx) {
+            base = 16u32;
+            idx = next;
+        }
 
         let mut value = 0u32;
         let mut significant = 0usize;
@@ -5036,6 +5125,11 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
             if value == 0x25 {
                 return Some(next);
             }
+            if matches!(value, 0x58 | 0x78) {
+                if let Some(end) = marker_end_after_hex_escape_x_prefix(bytes, next) {
+                    return Some(end);
+                }
+            }
             if value == 0x23 {
                 // Numeric percent entities can also be constructed by emitting the number sign
                 // (`#`) via an escape sequence (e.g. `u0023u0033u0037...` == `#37...` after
@@ -5058,6 +5152,11 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
             if value == 0x25 {
                 return Some(next);
             }
+            if matches!(value, 0x58 | 0x78) {
+                if let Some(end) = marker_end_after_hex_escape_x_prefix(bytes, next) {
+                    return Some(end);
+                }
+            }
             if value == 0x23 {
                 if let Some(end) = numeric_percent_entity_end_after_number_sign(bytes, next) {
                     return Some(end);
@@ -5077,6 +5176,11 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
                 if value == 0x25 {
                     return Some(next);
                 }
+                if matches!(value, 0x58 | 0x78) {
+                    if let Some(end) = marker_end_after_hex_escape_x_prefix(bytes, next) {
+                        return Some(end);
+                    }
+                }
                 if value == 0x23 {
                     if let Some(end) = numeric_percent_entity_end_after_number_sign(bytes, next) {
                         return Some(end);
@@ -5094,6 +5198,11 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
                 if value == 0x25 {
                     return Some(next);
                 }
+                if matches!(value, 0x58 | 0x78) {
+                    if let Some(end) = marker_end_after_hex_escape_x_prefix(bytes, next) {
+                        return Some(end);
+                    }
+                }
                 if value == 0x23 {
                     if let Some(end) = numeric_percent_entity_end_after_number_sign(bytes, next) {
                         return Some(end);
@@ -5110,6 +5219,11 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
             if value == 37 {
                 return Some(next);
             }
+            if matches!(value, 0x58 | 0x78) {
+                if let Some(end) = marker_end_after_hex_escape_x_prefix(bytes, next) {
+                    return Some(end);
+                }
+            }
             if value == 35 {
                 if let Some(end) = numeric_percent_entity_end_after_number_sign(bytes, next) {
                     return Some(end);
@@ -5124,6 +5238,11 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
         if let Some((value, next)) = parse_backslash_hex_escape(bytes, idx) {
             if value == 0x25 {
                 return Some(next);
+            }
+            if matches!(value, 0x58 | 0x78) {
+                if let Some(end) = marker_end_after_hex_escape_x_prefix(bytes, next) {
+                    return Some(end);
+                }
             }
             if value == 0x23 {
                 if let Some(end) = numeric_percent_entity_end_after_number_sign(bytes, next) {
@@ -5169,40 +5288,8 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
 
         // Semicolon-less numeric percent entities (`&#37...` / `&#x25...`).
         if bytes.get(idx + 1) == Some(&b'#') {
-            let mut j = idx + 2;
-            let base = match bytes.get(j) {
-                Some(b'x') | Some(b'X') => {
-                    j += 1;
-                    16u32
-                }
-                _ => 10u32,
-            };
-            let mut value = 0u32;
-            let mut significant = 0usize;
-            while j < bytes.len() && significant < 8 {
-                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, j) else {
-                    break;
-                };
-                if base == 10 && digit >= 10 {
-                    break;
-                }
-                let digit = digit as u32;
-                if significant == 0 && digit == 0 {
-                    j = next;
-                    continue;
-                }
-                value = value
-                    .checked_mul(base)
-                    .and_then(|v| v.checked_add(digit))
-                    .unwrap_or(u32::MAX);
-                significant += 1;
-                j = next;
-                if value == 37 {
-                    if bytes.get(j).is_some_and(|b| *b == b';') {
-                        j += 1;
-                    }
-                    return Some(j);
-                }
+            if let Some(end) = numeric_percent_entity_end_after_number_sign(bytes, idx + 2) {
+                return Some(end);
             }
         }
     }
@@ -5213,40 +5300,8 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
         // Numeric percent entities whose leading `&` was escaped away, yielding patterns like
         // `&amp;#372F...` or `&amp;#37u0032u0046...` (no semicolon after `37`).
         if bytes.get(idx) == Some(&b'#') {
-            let mut j = idx + 1;
-            let base = match bytes.get(j) {
-                Some(b'x') | Some(b'X') => {
-                    j += 1;
-                    16u32
-                }
-                _ => 10u32,
-            };
-            let mut value = 0u32;
-            let mut significant = 0usize;
-            while j < bytes.len() && significant < 8 {
-                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, j) else {
-                    break;
-                };
-                if base == 10 && digit >= 10 {
-                    break;
-                }
-                let digit = digit as u32;
-                if significant == 0 && digit == 0 {
-                    j = next;
-                    continue;
-                }
-                value = value
-                    .checked_mul(base)
-                    .and_then(|v| v.checked_add(digit))
-                    .unwrap_or(u32::MAX);
-                significant += 1;
-                j = next;
-                if value == 37 {
-                    if bytes.get(j).is_some_and(|b| *b == b';') {
-                        j += 1;
-                    }
-                    return Some(j);
-                }
+            if let Some(end) = numeric_percent_entity_end_after_number_sign(bytes, idx + 1) {
+                return Some(end);
             }
         }
 

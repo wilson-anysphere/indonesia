@@ -2851,6 +2851,9 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_wit
         // Number sign emitted via unicode escape (`u0023` == `#`) before the `37` digits.
         "&amp;u0023u0033u0037u0032u0046", // %2F
         "&amp;u0023u0033u0037u0035u0043", // %5C
+        // Hex numeric entity marker (`#x25`) with the base-indicator `x` emitted via escapes.
+        "&amp;#u007825u0032u0046", // %2F (`u0078` == `x`)
+        "&amp;#u007825u0035u0043", // %5C
         // Number sign emitted via hex/backslash escapes before the `37` digits.
         "&amp;x23u0033u0037u0032u0046", // %2F
         "&amp;x23u0033u0037u0035u0043", // %5C
