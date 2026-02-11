@@ -2861,6 +2861,17 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_wit
         // Missing semicolons on the numeric ampersand entity itself.
         "&#38percntu0032u0046",
         "&#x26percntu0032u0046",
+        // Ampersand emitted via unicode/hex escapes (as seen when `\u0026` / `\x26` escapes are
+        // stripped), yielding patterns like `u0026percnt...` == `&percnt...`.
+        "u0026percntu0032u0046",       // %2F
+        "u0026percntu{0032}u{0046}",   // %2F
+        "u0026percntu0035u0043",       // %5C
+        "u0026percntu{0035}u{0043}",   // %5C
+        "u{0026}percntu0032u0046",     // %2F (braced ampersand)
+        "x26percntu0032u0046",         // %2F (hex escape ampersand)
+        "x{26}percntu{0032}u{0046}",   // %2F (braced hex ampersand + braced digits)
+        // Unicode-escaped ampersand followed by a numeric percent entity (`#37`), missing its `&`.
+        "u0026#37u0032u0046",          // %2F
     ] {
         let search = PanicSearch { sep };
         let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");

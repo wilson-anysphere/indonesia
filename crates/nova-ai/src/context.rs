@@ -838,6 +838,47 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         return true;
     }
 
+    // Percent-encoded separators can appear *inside* identifier tokens when obfuscated escape
+    // sequences are concatenated without boundaries (e.g. `homeu0026percntu{0032}u{0046}user`).
+    // Scan within the identifier range for any percent marker that decodes to a path-like byte and
+    // treat the whole identifier as path-like so low-signal fragments never become semantic-search
+    // query tokens.
+    {
+        let scan_end = end.min(bytes.len());
+        let mut i = start;
+        while i < scan_end {
+            let b = bytes[i];
+            let maybe_marker = match b {
+                b'%' | b'&' | b'\\' => true,
+                b'u' | b'U' => bytes
+                    .get(i + 1)
+                    .is_some_and(|next| *next == b'{' || *next == b'u' || next.is_ascii_hexdigit()),
+                b'x' | b'X' => bytes
+                    .get(i + 1)
+                    .is_some_and(|next| *next == b'{' || next.is_ascii_hexdigit()),
+                b'p' | b'P' => bytes
+                    .get(i..i + 6)
+                    .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percnt"))
+                    || bytes
+                        .get(i..i + 7)
+                        .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percent")),
+                _ => false,
+            };
+            if !maybe_marker {
+                i += 1;
+                continue;
+            }
+
+            if percent_marker_end(bytes, i)
+                .and_then(|digits_start| percent_encoded_byte_after_obfuscated_digits(bytes, digits_start))
+                .is_some_and(|(value, _)| percent_encoded_byte_is_path_like(value))
+            {
+                return true;
+            }
+            i += 1;
+        }
+    }
+
     // HTML percent entities without semicolons (`&percnt...`, `&percent...`) are treated as a
     // percent marker by the decoder, but the leading `&` is not part of an identifier token. When
     // braced escapes are used for the hex digits (e.g. `&percntu{0032}u{0046}home`), the entity
@@ -4449,6 +4490,92 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
         }
     }
 
+    fn percent_entity_end_after_ampersand(bytes: &[u8], mut idx: usize) -> Option<usize> {
+        // Nested escaping can insert literal `amp` fragments after decoding `&` (e.g.
+        // `u0026amp;percnt2F` decodes to `&amp;percnt2F`). Skip a few layers.
+        for _ in 0..8 {
+            if bytes
+                .get(idx..idx + 3)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+            {
+                idx += 3;
+                if bytes.get(idx).is_some_and(|b| *b == b';') {
+                    idx += 1;
+                }
+                continue;
+            }
+            break;
+        }
+
+        if bytes
+            .get(idx..idx + 6)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percnt"))
+        {
+            let mut next = idx + 6;
+            if bytes.get(next).is_some_and(|b| *b == b';') {
+                next += 1;
+            }
+            return Some(next);
+        }
+        if bytes
+            .get(idx..idx + 7)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percent"))
+        {
+            let mut next = idx + 7;
+            if bytes.get(next).is_some_and(|b| *b == b';') {
+                next += 1;
+            }
+            return Some(next);
+        }
+
+        // Numeric percent entities whose leading `&` has been emitted via a separate escape, e.g.
+        // `u0026#372F...` (aka `&#37...` after one decode pass).
+        if bytes.get(idx) == Some(&b'#') {
+            let mut j = idx + 1;
+            let base = match bytes.get(j) {
+                Some(b'x') | Some(b'X') => {
+                    j += 1;
+                    16u32
+                }
+                _ => 10u32,
+            };
+
+            let mut value = 0u32;
+            let mut significant = 0usize;
+            while j < bytes.len() && significant < 8 {
+                let b = bytes[j];
+                let digit = if base == 16 {
+                    let Some(v) = hex_value(b) else {
+                        break;
+                    };
+                    v as u32
+                } else if b.is_ascii_digit() {
+                    (b - b'0') as u32
+                } else {
+                    break;
+                };
+                if significant == 0 && digit == 0 {
+                    j += 1;
+                    continue;
+                }
+                value = value
+                    .checked_mul(base)
+                    .and_then(|v| v.checked_add(digit))
+                    .unwrap_or(u32::MAX);
+                significant += 1;
+                j += 1;
+                if value == 37 {
+                    if bytes.get(j).is_some_and(|b| *b == b';') {
+                        j += 1;
+                    }
+                    return Some(j);
+                }
+            }
+        }
+
+        None
+    }
+
     fn parse_unicode_escape(bytes: &[u8], idx: usize) -> Option<(u32, usize)> {
         let bytes_len = bytes.len();
         if idx >= bytes_len {
@@ -4642,6 +4769,11 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
             if value == 0x25 {
                 return Some(next);
             }
+            if value == 0x26 {
+                if let Some(next) = percent_entity_end_after_ampersand(bytes, next) {
+                    return Some(next);
+                }
+            }
         }
     }
 
@@ -4649,6 +4781,11 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
         if let Some((value, next)) = parse_hex_escape(bytes, idx) {
             if value == 0x25 {
                 return Some(next);
+            }
+            if value == 0x26 {
+                if let Some(next) = percent_entity_end_after_ampersand(bytes, next) {
+                    return Some(next);
+                }
             }
         }
     }
@@ -4659,6 +4796,11 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
                 if value == 0x25 {
                     return Some(next);
                 }
+                if value == 0x26 {
+                    if let Some(next) = percent_entity_end_after_ampersand(bytes, next) {
+                        return Some(next);
+                    }
+                }
             }
         }
         if bytes.get(idx + 1).is_some_and(|b| matches!(*b, b'x' | b'X')) {
@@ -4666,16 +4808,31 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
                 if value == 0x25 {
                     return Some(next);
                 }
+                if value == 0x26 {
+                    if let Some(next) = percent_entity_end_after_ampersand(bytes, next) {
+                        return Some(next);
+                    }
+                }
             }
         }
         if let Some((value, next)) = parse_backslash_octal_escape(bytes, idx) {
             if value == 37 {
                 return Some(next);
             }
+            if value == 38 {
+                if let Some(next) = percent_entity_end_after_ampersand(bytes, next) {
+                    return Some(next);
+                }
+            }
         }
         if let Some((value, next)) = parse_backslash_hex_escape(bytes, idx) {
             if value == 0x25 {
                 return Some(next);
+            }
+            if value == 0x26 {
+                if let Some(next) = percent_entity_end_after_ampersand(bytes, next) {
+                    return Some(next);
+                }
             }
         }
     }
@@ -4972,6 +5129,52 @@ fn percent_marker_end(bytes: &[u8], idx: usize) -> Option<usize> {
         }
     }
 
+    // Handle percent markers where the leading `&` is itself emitted via an escape that ends right
+    // before the entity name, yielding patterns like `u{0026}percnt2F...` and `x{26}percntu0032u0046...`.
+    if idx > 0 && bytes[idx - 1] == b'}' {
+        let brace_end = idx - 1;
+        let mut brace_start = None;
+        let mut i = brace_end;
+        let mut scanned = 0usize;
+        while i > 0 && scanned < 1024 {
+            i -= 1;
+            scanned += 1;
+            if bytes[i] == b'{' {
+                brace_start = Some(i);
+                break;
+            }
+            if hex_value(bytes[i]).is_none() {
+                break;
+            }
+        }
+
+        if let Some(brace_start) = brace_start {
+            if brace_start > 0 && matches!(bytes[brace_start - 1], b'u' | b'x' | b'X') {
+                let mut value = 0u32;
+                let mut significant = 0usize;
+                let mut j = brace_start + 1;
+                while j < brace_end && significant < 8 {
+                    let Some(hex) = hex_value(bytes[j]) else {
+                        break;
+                    };
+                    if significant == 0 && hex == 0 {
+                        j += 1;
+                        continue;
+                    }
+                    value = (value << 4) | (hex as u32);
+                    significant += 1;
+                    j += 1;
+                }
+                // Fail closed: reject escapes with more than 8 significant digits.
+                if j >= brace_end && significant > 0 && value == 0x26 {
+                    if let Some(next) = percent_entity_end_after_ampersand(bytes, idx) {
+                        return Some(next);
+                    }
+                }
+            }
+        }
+    }
+
     None
 }
 
@@ -5140,6 +5343,9 @@ fn related_code_query_fallback(focal_code: &str) -> String {
     let mut out = String::new();
 
     for raw_tok in redacted.split_whitespace() {
+        if token_contains_obfuscated_percent_marker_path_separator(raw_tok) {
+            continue;
+        }
         if token_contains_percent_encoded_path_separator(raw_tok) {
             continue;
         }
@@ -5932,6 +6138,52 @@ fn token_contains_percent_encoded_path_separator(tok: &str) -> bool {
             return true;
         }
         std::mem::swap(&mut current, &mut next);
+    }
+
+    false
+}
+
+fn token_contains_obfuscated_percent_marker_path_separator(tok: &str) -> bool {
+    // Detect percent-encoded separators even when the percent marker is obfuscated (e.g.
+    // `u0026percnt...` == `&percnt...` == `%...`) and when hex digits are emitted via escape
+    // sequences. This is used by the query fallback, which operates on whitespace-delimited tokens
+    // and therefore needs to fail closed on path-only selections.
+    let bytes = tok.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        let maybe_marker = match b {
+            b'%' | b'&' | b'\\' => true,
+            b'u' | b'U' => bytes
+                .get(i + 1)
+                .is_some_and(|next| *next == b'{' || *next == b'u' || next.is_ascii_hexdigit()),
+            b'x' | b'X' => bytes
+                .get(i + 1)
+                .is_some_and(|next| *next == b'{' || next.is_ascii_hexdigit()),
+            b'p' | b'P' => bytes
+                .get(i..i + 6)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percnt"))
+                || bytes
+                    .get(i..i + 7)
+                    .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percent")),
+            _ => false,
+        };
+        if !maybe_marker {
+            i += 1;
+            continue;
+        }
+
+        if percent_marker_end(bytes, i)
+            .and_then(|digits_start| percent_encoded_byte_after_obfuscated_digits(bytes, digits_start))
+            .is_some_and(|(value, _)| percent_encoded_byte_is_path_like(value))
+        {
+            return true;
+        }
+        i += 1;
     }
 
     false
