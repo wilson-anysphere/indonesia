@@ -27,7 +27,7 @@ pub(super) fn perform_initialize_handshake(
             // (e.g. `invalid type: string "..."`); sanitize before surfacing via stderr/logs.
             io::Error::new(
                 io::ErrorKind::Other,
-                crate::stdio_sanitize::sanitize_json_error_message(&err.to_string()),
+                nova_lsp::sanitize_error_message(&err),
             )
         })?;
 
@@ -39,7 +39,7 @@ pub(super) fn perform_initialize_handshake(
         .map_err(|err| {
             io::Error::new(
                 io::ErrorKind::Other,
-                crate::stdio_sanitize::sanitize_json_error_message(&err.to_string()),
+                nova_lsp::sanitize_error_message(&err),
             )
         })?;
     metrics.record_request("initialize", init_start.elapsed());
