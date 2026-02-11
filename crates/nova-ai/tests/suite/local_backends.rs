@@ -22,6 +22,12 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+// See also the streaming timeout tests in `cloud_streaming.rs`. These values are intentionally
+// small so the tests run quickly, but large enough to avoid flakiness when the integration suite
+// runs with many threads under load.
+const STREAM_IDLE_TIMEOUT_MS: u64 = 250;
+const STREAM_CHUNK_DELAY_MS: u64 = 100;
+
 fn spawn_server<F, Fut>(handler: F) -> (SocketAddr, JoinHandle<()>)
 where
     F: Fn(Request<Body>) -> Fut + Clone + Send + 'static,
@@ -622,7 +628,7 @@ async fn ollama_stream_timeout_is_idle_based_not_total_duration() {
 
             for (idx, part) in parts.into_iter().enumerate() {
                 if idx != 0 {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    tokio::time::sleep(Duration::from_millis(STREAM_CHUNK_DELAY_MS)).await;
                 }
                 yield Ok::<_, std::io::Error>(hyper::body::Bytes::from_static(part));
             }
@@ -638,7 +644,7 @@ async fn ollama_stream_timeout_is_idle_based_not_total_duration() {
     let url = Url::parse(&format!("http://{addr}")).unwrap();
 
     let mut cfg = ollama_config(url);
-    cfg.provider.timeout_ms = 100;
+    cfg.provider.timeout_ms = STREAM_IDLE_TIMEOUT_MS;
 
     let client = AiClient::from_config(&cfg).unwrap();
     let mut stream = client
@@ -1055,7 +1061,7 @@ async fn openai_compatible_stream_timeout_is_idle_based_not_total_duration() {
 
             for (idx, part) in parts.into_iter().enumerate() {
                 if idx != 0 {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    tokio::time::sleep(Duration::from_millis(STREAM_CHUNK_DELAY_MS)).await;
                 }
                 yield Ok::<_, std::io::Error>(hyper::body::Bytes::from(part));
             }
@@ -1071,7 +1077,7 @@ async fn openai_compatible_stream_timeout_is_idle_based_not_total_duration() {
     let url = Url::parse(&format!("http://{addr}")).unwrap();
 
     let mut config = openai_config(url);
-    config.provider.timeout_ms = 100;
+    config.provider.timeout_ms = STREAM_IDLE_TIMEOUT_MS;
     let client = AiClient::from_config(&config).unwrap();
 
     let mut stream = client
@@ -1274,7 +1280,7 @@ async fn openai_compatible_stream_times_out_when_server_stalls() {
             ));
 
             // Stall long enough to exceed the client's idle timeout between chunks.
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            tokio::time::sleep(Duration::from_millis(STREAM_IDLE_TIMEOUT_MS * 2)).await;
 
             yield Ok::<_, std::io::Error>(hyper::body::Bytes::from(
                 "data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n",
@@ -1292,7 +1298,7 @@ async fn openai_compatible_stream_times_out_when_server_stalls() {
     let url = Url::parse(&format!("http://{addr}")).unwrap();
 
     let mut config = openai_config(url);
-    config.provider.timeout_ms = 100;
+    config.provider.timeout_ms = STREAM_IDLE_TIMEOUT_MS;
     let client = AiClient::from_config(&config).unwrap();
 
     let mut stream = client

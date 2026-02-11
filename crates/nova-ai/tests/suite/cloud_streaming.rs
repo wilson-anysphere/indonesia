@@ -11,6 +11,12 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+// Some streaming tests intentionally use a short idle timeout to exercise that the timeout is
+// enforced per-chunk (idle) rather than over the full stream duration. Keep the values large enough
+// to avoid flakiness when the integration suite runs with many threads under load.
+const STREAM_IDLE_TIMEOUT_MS: u64 = 250;
+const STREAM_CHUNK_DELAY_MS: u64 = 100;
+
 fn spawn_server<F, Fut>(handler: F) -> (SocketAddr, JoinHandle<()>)
 where
     F: Fn(Request<Body>) -> Fut + Clone + Send + 'static,
@@ -162,7 +168,7 @@ async fn anthropic_chat_stream_timeout_is_idle_based_not_total_duration() {
 
             for (idx, part) in parts.into_iter().enumerate() {
                 if idx != 0 {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    tokio::time::sleep(Duration::from_millis(STREAM_CHUNK_DELAY_MS)).await;
                 }
                 yield Ok::<_, std::io::Error>(hyper::body::Bytes::from(part));
             }
@@ -181,7 +187,7 @@ async fn anthropic_chat_stream_timeout_is_idle_based_not_total_duration() {
         "claude-3-5-sonnet-latest",
     );
     cfg.api_key = Some("test-key".to_string());
-    cfg.provider.timeout_ms = 100;
+    cfg.provider.timeout_ms = STREAM_IDLE_TIMEOUT_MS;
 
     let client = AiClient::from_config(&cfg).unwrap();
     let mut stream = client
@@ -317,7 +323,7 @@ async fn gemini_chat_stream_timeout_is_idle_based_not_total_duration() {
 
             for (idx, part) in parts.into_iter().enumerate() {
                 if idx != 0 {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    tokio::time::sleep(Duration::from_millis(STREAM_CHUNK_DELAY_MS)).await;
                 }
                 yield Ok::<_, std::io::Error>(hyper::body::Bytes::from(part));
             }
@@ -336,7 +342,7 @@ async fn gemini_chat_stream_timeout_is_idle_based_not_total_duration() {
         "gemini-1.5-flash",
     );
     cfg.api_key = Some("test-key".to_string());
-    cfg.provider.timeout_ms = 100;
+    cfg.provider.timeout_ms = STREAM_IDLE_TIMEOUT_MS;
 
     let client = AiClient::from_config(&cfg).unwrap();
     let mut stream = client
@@ -466,7 +472,7 @@ async fn azure_openai_chat_stream_timeout_is_idle_based_not_total_duration() {
 
             for (idx, part) in parts.into_iter().enumerate() {
                 if idx != 0 {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    tokio::time::sleep(Duration::from_millis(STREAM_CHUNK_DELAY_MS)).await;
                 }
                 yield Ok::<_, std::io::Error>(hyper::body::Bytes::from(part));
             }
@@ -487,7 +493,7 @@ async fn azure_openai_chat_stream_timeout_is_idle_based_not_total_duration() {
     cfg.api_key = Some("test-key".to_string());
     cfg.provider.azure_deployment = Some("my-deployment".to_string());
     cfg.provider.azure_api_version = Some("2024-02-01".to_string());
-    cfg.provider.timeout_ms = 100;
+    cfg.provider.timeout_ms = STREAM_IDLE_TIMEOUT_MS;
 
     let client = AiClient::from_config(&cfg).unwrap();
     let mut stream = client
@@ -606,7 +612,7 @@ async fn http_provider_chat_stream_timeout_is_idle_based_not_total_duration() {
 
             for (idx, part) in parts.into_iter().enumerate() {
                 if idx != 0 {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    tokio::time::sleep(Duration::from_millis(STREAM_CHUNK_DELAY_MS)).await;
                 }
                 yield Ok::<_, std::io::Error>(hyper::body::Bytes::from(part));
             }
@@ -624,7 +630,7 @@ async fn http_provider_chat_stream_timeout_is_idle_based_not_total_duration() {
         Url::parse(&format!("http://{addr}/complete")).unwrap(),
         "test-model",
     );
-    cfg.provider.timeout_ms = 100;
+    cfg.provider.timeout_ms = STREAM_IDLE_TIMEOUT_MS;
 
     let client = AiClient::from_config(&cfg).unwrap();
     let mut stream = client
@@ -792,7 +798,7 @@ async fn azure_openai_chat_stream_times_out_when_server_stalls() {
     cfg.api_key = Some("test-key".to_string());
     cfg.provider.azure_deployment = Some("my-deployment".to_string());
     cfg.provider.azure_api_version = Some("2024-02-01".to_string());
-    cfg.provider.timeout_ms = 100;
+    cfg.provider.timeout_ms = STREAM_IDLE_TIMEOUT_MS;
 
     let client = AiClient::from_config(&cfg).unwrap();
 
