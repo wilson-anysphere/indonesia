@@ -10794,11 +10794,66 @@ pub(crate) fn infer_receiver_type_before_dot(
     let text = db.file_content(file);
     let analysis = analyze(text);
 
+    fn strip_one_array_dimension(ty: &str) -> Option<String> {
+        let compact: String = ty.chars().filter(|ch| !ch.is_ascii_whitespace()).collect();
+        compact.strip_suffix("[]").map(|s| s.to_string())
+    }
+
     // `receiver_before_dot` returns empty for expressions ending in `)` (call chains / parenthesized
     // expressions). Try to infer the receiver type from the expression directly before the `.`.
     let end = skip_whitespace_backwards(text, dot_offset);
     let bytes = text.as_bytes();
-    if end == 0 || bytes.get(end - 1) != Some(&b')') {
+    if end == 0 {
+        return None;
+    }
+
+    // Array access receiver: `arr[0].<cursor>` / `((Foo[]) obj)[0].<cursor>`.
+    if bytes.get(end - 1) == Some(&b']') {
+        let close_bracket = end - 1;
+        let open_bracket = find_matching_open_bracket(bytes, close_bracket)?;
+        let array_expr_end = skip_whitespace_backwards(text, open_bracket);
+        if array_expr_end == 0 {
+            return None;
+        }
+
+        let array_ty = if bytes
+            .get(array_expr_end - 1)
+            .is_some_and(|b| *b == b')' || *b == b']')
+        {
+            infer_receiver_type_before_dot(db, file, array_expr_end)
+        } else {
+            let (seg_start, segment) = identifier_prefix(text, array_expr_end);
+            let segment = segment.trim();
+            if segment.is_empty() {
+                return None;
+            }
+
+            let (_qual_start, qualifier_prefix) = dotted_qualifier_prefix(text, seg_start);
+            let expr = format!("{qualifier_prefix}{segment}");
+            let expr = expr.trim();
+            if expr.is_empty() {
+                return None;
+            }
+
+            if expr.contains('.') {
+                infer_receiver_type_for_member_access(db, file, expr, dot_offset).and_then(
+                    |(ty, kind)| {
+                        let trimmed = ty.trim();
+                        let expr_trimmed = expr.trim();
+                        let is_unresolved_type_ref =
+                            kind == CallKind::Static && trimmed == expr_trimmed;
+                        (!is_unresolved_type_ref).then_some(ty)
+                    },
+                )
+            } else {
+                infer_ident_type_name(&analysis, expr, dot_offset)
+            }
+        }?;
+
+        return strip_one_array_dimension(array_ty.as_str());
+    }
+
+    if bytes.get(end - 1) != Some(&b')') {
         return None;
     }
 
@@ -11309,6 +11364,25 @@ fn find_matching_open_paren(bytes: &[u8], close_paren_idx: usize) -> Option<usiz
     None
 }
 
+fn find_matching_open_bracket(bytes: &[u8], close_bracket_idx: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut i = close_bracket_idx + 1;
+    while i > 0 {
+        i -= 1;
+        match bytes.get(i)? {
+            b']' => depth += 1,
+            b'[' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn unwrap_paren_expr(
     bytes: &[u8],
     open_paren: usize,
@@ -11729,6 +11803,81 @@ fn infer_receiver_type_of_expr_ending_at(
         return None;
     }
     let bytes = text.as_bytes();
+
+    // Array access receiver: `arr[0]` / `arr[0][1]` / `this.arr[0]` / `((Foo[]) obj)[0]`.
+    if bytes.get(end - 1) == Some(&b']') {
+        let close_bracket = end - 1;
+        let open_bracket = find_matching_open_bracket(bytes, close_bracket)?;
+        let array_expr_end = skip_whitespace_backwards(text, open_bracket);
+        if array_expr_end == 0 {
+            return None;
+        }
+
+        let array_ty = if bytes
+            .get(array_expr_end - 1)
+            .is_some_and(|b| *b == b')' || *b == b']')
+        {
+            infer_receiver_type_of_expr_ending_at(
+                types,
+                analysis,
+                file_ctx,
+                text,
+                array_expr_end,
+                budget.saturating_sub(1),
+            )?
+        } else {
+            let (seg_start, segment) = identifier_prefix(text, array_expr_end);
+            let segment = segment.trim();
+            if segment.is_empty() {
+                return None;
+            }
+
+            let (_qual_start, qualifier_prefix) = dotted_qualifier_prefix(text, seg_start);
+            let expr = format!("{qualifier_prefix}{segment}");
+            let expr = expr.trim();
+            if expr.is_empty() {
+                return None;
+            }
+
+            if expr.contains('.')
+                && expr
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.')
+            {
+                let parts: Vec<&str> = expr.split('.').filter(|p| !p.is_empty()).collect();
+                if parts.len() >= 2 {
+                    let (mut ty, mut kind) =
+                        infer_receiver(types, analysis, file_ctx, parts[0], expr_end);
+                    ty = ensure_local_class_receiver(types, analysis, ty);
+                    if matches!(ty, Type::Unknown | Type::Error) {
+                        return None;
+                    }
+
+                    for part in parts.into_iter().skip(1) {
+                        let Some(field_ty) = resolve_field_type_in_store(types, &ty, part, kind)
+                        else {
+                            return None;
+                        };
+                        ty = ensure_local_class_receiver(types, analysis, field_ty);
+                        kind = CallKind::Instance;
+                    }
+
+                    ty
+                } else {
+                    let (ty, _kind) = infer_receiver(types, analysis, file_ctx, expr, expr_end);
+                    ty
+                }
+            } else {
+                let (ty, _kind) = infer_receiver(types, analysis, file_ctx, expr, expr_end);
+                ty
+            }
+        };
+
+        return match array_ty {
+            Type::Array(inner) => Some(*inner),
+            _ => None,
+        };
+    }
 
     if bytes.get(end - 1) != Some(&b')') {
         return None;
@@ -21956,6 +22105,33 @@ class A {
             .find("((String) obj).")
             .expect("expected `((String) obj).` in fixture")
             + "((String) obj)".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert!(
+            ty.as_deref().unwrap_or_default().contains("String"),
+            "expected receiver type to contain `String`, got {ty:?}"
+        );
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_array_access_element_type() {
+        let java = r#"
+class A {
+  void m() {
+    String[] xs = new String[0];
+    xs[0].
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("xs[0].")
+            .expect("expected `xs[0].` in fixture")
+            + "xs[0]".len();
 
         let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
         assert!(

@@ -1198,6 +1198,27 @@ class A {
 }
 
 #[test]
+fn completion_resolves_array_access_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    String[] xs = new String[0];
+    xs[0].<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"substring"),
+        "expected completion list to contain String.substring for array element receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_at_eof_after_whitespace_is_deterministic() {
     let (db, file, pos) = fixture(
         r#"
