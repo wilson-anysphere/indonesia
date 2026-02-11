@@ -107,4 +107,35 @@ mod tests {
             "expected CacheError json message to include redaction marker: {message}"
         );
     }
+
+    #[test]
+    fn cache_error_json_does_not_echo_backticked_values() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OnlyFoo {
+            #[allow(dead_code)]
+            foo: u32,
+        }
+
+        let secret_suffix = "nova-cache-backticked-secret";
+        let secret = format!("prefix`, expected {secret_suffix}");
+        let json = format!(r#"{{"{secret}": 1}}"#);
+        let err = serde_json::from_str::<OnlyFoo>(&json).expect_err("expected unknown field error");
+        let raw_message = err.to_string();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw serde_json unknown-field error string to include the backticked value so this test catches leaks: {raw_message}"
+        );
+
+        let cache_err = CacheError::from(err);
+        let message = cache_err.to_string();
+        assert!(
+            !message.contains(secret_suffix),
+            "expected CacheError json message to omit backticked values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected CacheError json message to include redaction marker: {message}"
+        );
+    }
 }
