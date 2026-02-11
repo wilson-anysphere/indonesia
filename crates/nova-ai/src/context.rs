@@ -2750,9 +2750,19 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
                 return true;
             }
         } else {
-            match (bytes[i + 1], bytes[i + 2]) {
-                (b'2', b'f' | b'F') | (b'5', b'c' | b'C') => return true,
-                _ => {}
+            let mut value = 0u32;
+            let mut digits = 0usize;
+            let mut j = i + 1;
+            while j < bytes.len() && digits < 8 {
+                let Some(hex) = hex_value(bytes[j]) else {
+                    break;
+                };
+                value = (value << 4) | hex as u32;
+                digits += 1;
+                j += 1;
+                if matches!(value, 0x2F | 0x5C) {
+                    return true;
+                }
             }
         }
 

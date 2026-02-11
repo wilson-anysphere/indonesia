@@ -1463,6 +1463,10 @@ fn related_code_query_skips_hex_escaped_path_only_selections() {
 
     let search = PanicSearch;
     for focal_code in [
+        r"\x002Fhome",
+        r"\x00002Fhome",
+        r"\x005Chome",
+        r"\x00005Chome",
         r"\x2Fhome\x2Fuser\x2Fsecret\x2Fcredentials",
         r"\x5Chome\x5Cuser\x5Csecret\x5Ccredentials",
         r"\x{2F}home\x{2F}user\x{2F}secret\x{2F}credentials",
