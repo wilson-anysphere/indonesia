@@ -153,7 +153,7 @@ pub(super) fn handle_workspace_symbol(
                 Ok(Err(err)) => {
                     return Err((-32603, nova_lsp::sanitize_anyhow_error_message(&err)));
                 }
-                Err(err) => return Err((-32603, err.to_string())),
+                Err(err) => return Err((-32603, nova_lsp::sanitize_error_message(&err))),
             }
         }
 

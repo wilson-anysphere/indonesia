@@ -71,43 +71,10 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("{}", sanitize_io_error_message(&err));
+            eprintln!("{}", nova_lsp::sanitize_error_message(&err));
             ExitCode::FAILURE
         }
     }
-}
-
-fn sanitize_io_error_message(err: &std::io::Error) -> String {
-    // `serde_json::Error` display strings can include user-provided scalar values (e.g.
-    // `invalid type: string "..."`). Avoid echoing those values to stderr when the underlying
-    // transport or protocol layer bubbles `serde_json` failures up as `io::Error`.
-    if error_chain_contains_serde_json(err) {
-        stdio_sanitize::sanitize_json_error_message(&err.to_string())
-    } else {
-        err.to_string()
-    }
-}
-
-fn error_chain_contains_serde_json(err: &(dyn std::error::Error + 'static)) -> bool {
-    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
-    while let Some(err) = current {
-        if err.is::<serde_json::Error>() {
-            return true;
-        }
-
-        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
-            if let Some(inner) = io_err.get_ref() {
-                let inner: &(dyn std::error::Error + 'static) = inner;
-                if error_chain_contains_serde_json(inner) {
-                    return true;
-                }
-            }
-        }
-
-        current = err.source();
-    }
-
-    false
 }
 
 fn run() -> std::io::Result<()> {
