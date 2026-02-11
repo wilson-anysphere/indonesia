@@ -11182,6 +11182,15 @@ pub(crate) fn infer_receiver_type_before_dot(
         return Some("java.lang.String".to_string());
     }
 
+    // Parenthesized class literal receiver: `(String.class).<cursor>` / `(String.class)::<cursor>`.
+    let (class_start, class_ident) = identifier_prefix(text, end);
+    if class_ident == "class" {
+        let before_class = skip_trivia_backwards(text, class_start);
+        if before_class > 0 && bytes.get(before_class - 1) == Some(&b'.') {
+            return Some("java.lang.Class".to_string());
+        }
+    }
+
     // If the inner expression ends with `]` (array access/creation), reuse the same inference logic
     // we use for top-level array receivers.
     if end > 0 && bytes.get(end - 1).is_some_and(|b| *b == b']' || *b == b'}') {

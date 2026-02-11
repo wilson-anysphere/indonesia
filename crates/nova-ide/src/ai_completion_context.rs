@@ -1898,6 +1898,26 @@ class A {
     }
 
     #[test]
+    fn parenthesized_class_literal_receiver_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class A {
+  void m() {
+    (String.class).<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Class"),
+            "expected receiver type to contain `Class`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "getName"));
+    }
+
+    #[test]
     fn text_block_receiver_with_url_across_lines_is_semantic() {
         let ctx = ctx_for(
             r#"
