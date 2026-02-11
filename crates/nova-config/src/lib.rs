@@ -1532,72 +1532,7 @@ pub enum ConfigError {
 }
 
 fn sanitize_toml_error_message(message: &str) -> String {
-    // `toml::de::Error::message()` can still include user-provided scalar values, e.g.
-    // `invalid type: string "secret", expected a boolean`.
-    //
-    // Config parsing errors are commonly surfaced through CLI/LSP diagnostics and logs, so redact
-    // quoted substrings to avoid leaking arbitrary config string values (including secrets) even
-    // when no snippet is included.
-    static QUOTED_STRING_RE: OnceLock<regex::Regex> = OnceLock::new();
-    static SINGLE_QUOTED_STRING_RE: OnceLock<regex::Regex> = OnceLock::new();
-
-    // Handle escaped quotes (e.g. `\"`) inside the quoted substring. `toml::de::Error::message()`
-    // includes string values using a debug-like escaping style, so an embedded quote will appear as
-    // `\"`. A naive `"[^"]*"` pattern would stop at the escaped quote and leak the remainder.
-    let re = QUOTED_STRING_RE.get_or_init(|| {
-        regex::Regex::new(r#""(?:\\.|[^"\\])*""#)
-            .expect("quoted-string regex should compile")
-    });
-
-    let mut out = re.replace_all(message, r#""<redacted>""#).into_owned();
-    let re_single = SINGLE_QUOTED_STRING_RE.get_or_init(|| {
-        regex::Regex::new(r#"'(?:\\.|[^'\\])*'"#)
-            .expect("single-quoted-string regex should compile")
-    });
-    out = re_single
-        .replace_all(&out, "'<redacted>'")
-        .into_owned();
-
-    // `serde` uses backticks in a few different diagnostics:
-    //
-    // - `unknown field `secret`, expected ...` (user-controlled key → redact)
-    // - `unknown variant `secret`, expected ...` (user-controlled variant → redact)
-    // - `invalid type: integer `123`, expected ...` (user-controlled scalar → redact)
-    // - `missing field `foo`` (schema field name → keep)
-    //
-    // Redact only when the backticked segment is known to contain user-controlled content.
-    let mut start = ["unknown field `", "unknown variant `"]
-        .iter()
-        .filter_map(|pattern| out.find(pattern).map(|pos| pos + pattern.len().saturating_sub(1)))
-        .min();
-    if start.is_none() && (out.contains("invalid type:") || out.contains("invalid value:")) {
-        // `invalid type/value` errors include the unexpected scalar value before `, expected ...`.
-        // Redact only backticked values in that prefix so we don't hide schema names in the
-        // expected portion.
-        let boundary = out.find(", expected").unwrap_or(out.len());
-        start = out[..boundary].find('`');
-        if start.is_none() && boundary == out.len() {
-            // Some serde errors omit the `, expected ...` suffix. Fall back to the first backtick.
-            start = out.find('`');
-        }
-    }
-    if let Some(start) = start {
-        let after_start = &out[start.saturating_add(1)..];
-        let end = if let Some(end_rel) = after_start.rfind("`, expected") {
-            Some(start.saturating_add(1).saturating_add(end_rel))
-        } else if let Some(end_rel) = after_start.rfind('`') {
-            Some(start.saturating_add(1).saturating_add(end_rel))
-        } else {
-            None
-        };
-        if let Some(end) = end {
-            if start + 1 <= end && end <= out.len() {
-                out.replace_range(start + 1..end, "<redacted>");
-            }
-        }
-    }
-
-    out
+    nova_core::sanitize_toml_error_message(message)
 }
 
 impl From<toml::de::Error> for ConfigError {

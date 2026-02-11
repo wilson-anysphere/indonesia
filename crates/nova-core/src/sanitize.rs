@@ -98,6 +98,70 @@ pub fn sanitize_json_error_message(message: &str) -> String {
     out
 }
 
+/// Best-effort sanitizer for `toml` error messages.
+///
+/// `toml::de::Error::message()` avoids the default `Display` output (which includes an offending
+/// source snippet) but can still embed user-controlled scalar values, for example:
+/// - `invalid type: string "..."` or
+/// - `invalid semver version '...'`.
+///
+/// This helper conservatively redacts:
+/// - all double-quoted substrings (via [`sanitize_json_error_message`]),
+/// - all single-quoted substrings (handling escaped quotes), and
+/// - backticked segments when they are known to contain user-controlled content (unknown
+///   fields/variants or invalid type/value scalars) (via [`sanitize_json_error_message`]),
+///
+/// while preserving the rest of the message so it remains actionable (line/column info, expected
+/// field lists, etc).
+///
+/// This is intentionally string-based so callers can use it without depending on `toml`.
+#[must_use]
+pub fn sanitize_toml_error_message(message: &str) -> String {
+    let out = sanitize_json_error_message(message);
+
+    // Some TOML diagnostics (notably semver parsing) quote scalar values using single quotes.
+    // Redact those as well, using the same backslash/escape handling we apply to double quotes.
+    let mut sanitized = String::with_capacity(out.len());
+    let mut rest = out.as_str();
+    while let Some(start) = rest.find('\'') {
+        // Include the opening quote.
+        sanitized.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let mut end = None;
+        let bytes = rest.as_bytes();
+        for (idx, &b) in bytes.iter().enumerate() {
+            if b != b'\'' {
+                continue;
+            }
+
+            // Treat quotes preceded by an odd number of backslashes as escaped.
+            let mut backslashes = 0usize;
+            let mut k = idx;
+            while k > 0 && bytes[k - 1] == b'\\' {
+                backslashes += 1;
+                k -= 1;
+            }
+            if backslashes % 2 == 0 {
+                end = Some(idx);
+                break;
+            }
+        }
+
+        let Some(end) = end else {
+            // Unterminated quote: redact the remainder and stop.
+            sanitized.push_str("<redacted>");
+            rest = "";
+            break;
+        };
+
+        sanitized.push_str("<redacted>'");
+        rest = &rest[end + 1..];
+    }
+    sanitized.push_str(rest);
+    sanitized
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +270,34 @@ mod tests {
         let message = "invalid type: map, expected one of `foo`, `bar`";
         let sanitized = sanitize_json_error_message(message);
         assert_eq!(sanitized, message);
+    }
+
+    #[test]
+    fn sanitize_toml_error_message_redacts_single_quoted_values_with_escaped_quotes() {
+        let secret_suffix = "nova-core-toml-single-quote-secret";
+        let message = format!("invalid semver version 'prefix\\'{secret_suffix}', expected 1.2.3");
+        let sanitized = sanitize_toml_error_message(&message);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected TOML sanitizer to omit single-quoted values (even when escaped): {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected TOML sanitizer to include redaction marker: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn sanitize_toml_error_message_redacts_backticked_numeric_values() {
+        let message = "invalid type: integer `123`, expected a boolean";
+        let sanitized = sanitize_toml_error_message(message);
+        assert!(
+            !sanitized.contains("123"),
+            "expected TOML sanitizer to omit backticked scalar values: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected TOML sanitizer to include redaction marker: {sanitized}"
+        );
     }
 }

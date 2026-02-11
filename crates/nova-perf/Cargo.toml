@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 anyhow = "1.0.79"
+nova-core = { path = "../nova-core" }
 serde = { version = "1.0.196", features = ["derive"] }
 serde_json = "1.0.113"
 toml = "0.8.10"
