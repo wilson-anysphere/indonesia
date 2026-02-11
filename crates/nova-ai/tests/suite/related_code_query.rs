@@ -206,6 +206,44 @@ fn related_code_query_avoids_relative_path_segments_without_extensions() {
 }
 
 #[test]
+fn related_code_query_avoids_path_segments_with_internal_punctuation() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let search = CapturingSearch::default();
+    let private_segment = "NOVA_AI_PRIVATE_USER_12345";
+    let focal_code = format!(
+        "/home/user/my-{private_segment}-project/src/Foo.java\nreturn foo.bar();\n"
+    );
+
+    let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+    let query = search
+        .last_query
+        .lock()
+        .expect("lock poisoned")
+        .clone()
+        .expect("query captured");
+
+    assert!(
+        !query.contains(private_segment),
+        "query should not include internal path segment fragments: {query}"
+    );
+    assert!(
+        query.contains("foo") || query.contains("bar"),
+        "expected query to retain non-path identifiers, got: {query}"
+    );
+}
+
+#[test]
 fn related_code_query_does_not_drop_identifiers_due_to_inline_string_paths() {
     #[derive(Default)]
     struct CapturingSearch {

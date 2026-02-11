@@ -664,6 +664,23 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
         }
     }
 
+    // If the identifier appears inside a token that itself is delimited by a path separator, treat
+    // it as path-like even if the identifier isn't immediately adjacent to the separator. This
+    // catches segments such as `/my-secret-project/` where the middle identifier (`secret`) would
+    // otherwise be included.
+    {
+        let bounds = surrounding_token_bounds(text, start, end);
+        if !bounds.is_empty() {
+            let before = bounds.start.checked_sub(1).and_then(|idx| bytes.get(idx));
+            let after = bytes.get(bounds.end);
+            let before_is_sep = before.is_some_and(|b| *b == b'/' || *b == b'\\');
+            let after_is_sep = after.is_some_and(|b| *b == b'/' || *b == b'\\');
+            if before_is_sep || after_is_sep {
+                return true;
+            }
+        }
+    }
+
     // Skip file-name-like tokens such as `Secret-config.properties`. This uses a lightweight
     // "token" scan around the identifier and is careful to stop at quote boundaries so a string
     // literal like `".../Secret.java"` does not cause us to drop surrounding identifiers.
