@@ -701,6 +701,25 @@ fn related_code_query_skips_user_at_host_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_user_at_host_port_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for user@host:port related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = "alice@localhost:8080";
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for user@host:port-only focal code"
+    );
+}
+
+#[test]
 fn related_code_query_skips_ipv6_only_selections() {
     struct PanicSearch;
 
@@ -730,12 +749,13 @@ fn related_code_query_skips_host_port_only_selections() {
     }
 
     let search = PanicSearch;
-    let focal_code = "localhost:8080";
-    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
-    assert!(
-        req.related_code.is_empty(),
-        "expected no related code for host:port-only focal code"
-    );
+    for focal_code in ["localhost:8080", "prod-host:8080", "service.internal:8080"] {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for host:port-only focal code"
+        );
+    }
 }
 
 #[test]

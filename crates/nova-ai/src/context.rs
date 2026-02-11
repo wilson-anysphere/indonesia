@@ -914,6 +914,17 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
             {
                 return true;
             }
+
+            // Host:port patterns can also include punctuation (e.g. `prod-app:8080`). Treat any
+            // token immediately followed by `:<digit>` as endpoint-like so we don't leak hostname
+            // fragments like `prod`.
+            if after.is_some_and(|b| *b == b':')
+                && bytes
+                    .get(bounds.end + 1)
+                    .is_some_and(|b| b.is_ascii_digit())
+            {
+                return true;
+            }
         }
     }
 
@@ -1528,7 +1539,25 @@ fn looks_like_user_at_host_token(tok: &str) -> bool {
         part.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
     };
-    token_ok(left) && token_ok(right)
+
+    // URL userinfo / SSH-style patterns commonly look like:
+    // - user@host
+    // - user@host:port
+    // - user@host:path
+    // - user:pass@host
+    //
+    // These are low-signal for code search and can leak usernames/hosts/passwords.
+    let left_user = left.split_once(':').map(|(user, _pass)| user).unwrap_or(left);
+    if left_user.is_empty() || !token_ok(left_user) {
+        return false;
+    }
+
+    let host = right.split_once(':').map(|(host, _rest)| host).unwrap_or(right);
+    if host.is_empty() || !token_ok(host) {
+        return false;
+    }
+
+    true
 }
 
 fn push_query_token(out: &mut String, tok: &str, max_bytes: usize) -> bool {
