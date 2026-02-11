@@ -2346,6 +2346,59 @@ class A {
 }
 
 #[test]
+fn completion_resolves_method_reference_receiver_with_block_comment_in_dotted_chain() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  void baz() {}
+}
+
+class A {
+  Foo foo = new Foo();
+
+  void m() {
+    Runnable r = this/*comment*/.foo::<|>;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"baz"),
+        "expected completion list to contain Foo.baz for `this/*comment*/.foo::`; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_method_reference_receiver_with_line_comment_in_dotted_chain() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  void baz() {}
+}
+
+class A {
+  Foo foo = new Foo();
+
+  void m() {
+    Runnable r = this // comment
+      .foo::<|>;
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"baz"),
+        "expected completion list to contain Foo.baz for `this // comment\\n  .foo::`; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_resolves_method_reference_qualified_this_field_chain_receiver() {
     let (db, file, pos) = fixture(
         r#"

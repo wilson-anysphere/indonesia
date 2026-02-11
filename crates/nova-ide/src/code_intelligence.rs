@@ -22549,6 +22549,42 @@ pub(crate) fn receiver_before_double_colon(text: &str, double_colon_offset: usiz
     let bytes = text.as_bytes();
     let end = skip_trivia_backwards(text, double_colon_offset.min(bytes.len()));
 
+    fn strip_trivia_and_whitespace(input: &str) -> String {
+        let bytes = input.as_bytes();
+        let mut out = String::with_capacity(input.len());
+        let mut i = 0usize;
+        while i < bytes.len() {
+            match bytes[i] {
+                b' ' | b'\t' | b'\r' | b'\n' => {
+                    i += 1;
+                }
+                b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                    // Line comment.
+                    i += 2;
+                    while i < bytes.len() && bytes[i] != b'\n' {
+                        i += 1;
+                    }
+                }
+                b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                    // Block comment.
+                    i += 2;
+                    while i + 1 < bytes.len() {
+                        if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                            i += 2;
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+                other => {
+                    out.push(other as char);
+                    i += 1;
+                }
+            }
+        }
+        out
+    }
+
     let mut start = end;
     while start > 0 {
         let ch = bytes[start - 1] as char;
@@ -22587,15 +22623,19 @@ pub(crate) fn receiver_before_double_colon(text: &str, double_colon_offset: usiz
             continue;
         }
 
+        // Best-effort: skip trivia (whitespace/comments) embedded in the receiver chain, e.g.:
+        // `Foo/*comment*/.bar::` / `this // comment\n  .foo::`.
+        let new_start = skip_trivia_backwards(text, start);
+        if new_start < start {
+            start = new_start;
+            continue;
+        }
+
         break;
     }
 
-    text.get(start..end)
-        .unwrap_or("")
-        .trim()
-        .chars()
-        .filter(|c| !c.is_ascii_whitespace())
-        .collect()
+    let raw = text.get(start..end).unwrap_or("").trim();
+    strip_trivia_and_whitespace(raw)
 }
 
 #[cfg(test)]
