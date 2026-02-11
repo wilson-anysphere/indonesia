@@ -682,6 +682,61 @@ fn related_code_query_skips_ipv4_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_numeric_literal_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for numeric-literal-only selections");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = "0xDEADBEEF";
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for numeric-literal-only focal code"
+    );
+}
+
+#[test]
+fn related_code_query_ignores_numeric_literal_fragments() {
+    #[derive(Default)]
+    struct CapturingSearch {
+        last_query: Mutex<Option<String>>,
+    }
+
+    impl SemanticSearch for CapturingSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            *self.last_query.lock().expect("lock poisoned") = Some(query.to_string());
+            Vec::new()
+        }
+    }
+
+    let search = CapturingSearch::default();
+    let focal_code = "double x = 0x1.ffffp10; return foo.bar();";
+
+    let _ = base_request(focal_code).with_related_code_from_focal(&search, 1);
+    let query = search
+        .last_query
+        .lock()
+        .expect("lock poisoned")
+        .clone()
+        .expect("query captured");
+
+    let lower = query.to_ascii_lowercase();
+    assert!(
+        query.contains("foo") || query.contains("bar"),
+        "expected query to retain code identifiers, got: {query}"
+    );
+    assert!(
+        !lower.contains("ffff") && !lower.contains("p10") && !lower.contains("deadbeef"),
+        "expected query to ignore numeric literal fragments, got: {query}"
+    );
+}
+
+#[test]
 fn related_code_query_skips_empty_queries() {
     struct PanicSearch;
 

@@ -1022,6 +1022,11 @@ fn related_code_query_fallback(focal_code: &str) -> String {
         if token_contains_secret_fragment(tok) {
             continue;
         }
+        // Numeric literals are very low-signal as embedding queries and can contain unique IDs
+        // (e.g. `0xDEADBEEF`) that we should not send to providers.
+        if looks_like_numeric_literal_token(tok) {
+            continue;
+        }
         if tok
             .bytes()
             .all(|b| b == b'_' || b == b'$' || b.is_ascii_digit())
@@ -1065,6 +1070,118 @@ fn related_code_query_fallback(focal_code: &str) -> String {
 
     let out = out.trim();
     out.to_string()
+}
+
+fn looks_like_numeric_literal_token(tok: &str) -> bool {
+    fn consume_digits(bytes: &[u8], mut i: usize, is_digit: impl Fn(u8) -> bool) -> usize {
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b == b'_' || is_digit(b) {
+                i += 1;
+                continue;
+            }
+            break;
+        }
+        i
+    }
+
+    let bytes = tok.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+
+    // Hex/binary literals.
+    if bytes.len() >= 3 && bytes[0] == b'0' {
+        match bytes[1] {
+            b'x' | b'X' => {
+                let mut i = 2;
+                let digits_start = i;
+                i = consume_digits(bytes, i, |b| b.is_ascii_hexdigit());
+                if i == digits_start {
+                    return false;
+                }
+
+                // Optional fractional part.
+                if i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1].is_ascii_hexdigit() {
+                    i += 1;
+                    let frac_start = i;
+                    i = consume_digits(bytes, i, |b| b.is_ascii_hexdigit());
+                    if i == frac_start {
+                        return false;
+                    }
+                }
+
+                // Hex float exponent.
+                if i < bytes.len() && matches!(bytes[i], b'p' | b'P') {
+                    i += 1;
+                    if i < bytes.len() && matches!(bytes[i], b'+' | b'-') {
+                        i += 1;
+                    }
+                    let exp_digits = i;
+                    i = consume_digits(bytes, i, |b| b.is_ascii_digit());
+                    if i == exp_digits {
+                        return false;
+                    }
+                    if i < bytes.len() && matches!(bytes[i], b'f' | b'F' | b'd' | b'D') {
+                        i += 1;
+                    }
+                    return i == bytes.len();
+                }
+
+                // Integer suffix.
+                if i < bytes.len() && matches!(bytes[i], b'l' | b'L') {
+                    i += 1;
+                }
+                return i == bytes.len();
+            }
+            b'b' | b'B' => {
+                let mut i = 2;
+                let digits_start = i;
+                i = consume_digits(bytes, i, |b| matches!(b, b'0' | b'1'));
+                if i == digits_start {
+                    return false;
+                }
+                if i < bytes.len() && matches!(bytes[i], b'l' | b'L') {
+                    i += 1;
+                }
+                return i == bytes.len();
+            }
+            _ => {}
+        }
+    }
+
+    // Decimal literals.
+    if !bytes[0].is_ascii_digit() {
+        return false;
+    }
+
+    let mut i = 0usize;
+    i = consume_digits(bytes, i, |b| b.is_ascii_digit());
+
+    // Optional fractional part.
+    if i < bytes.len() && bytes[i] == b'.' {
+        i += 1;
+        i = consume_digits(bytes, i, |b| b.is_ascii_digit());
+    }
+
+    // Optional exponent.
+    if i < bytes.len() && matches!(bytes[i], b'e' | b'E') {
+        i += 1;
+        if i < bytes.len() && matches!(bytes[i], b'+' | b'-') {
+            i += 1;
+        }
+        let exp_digits = i;
+        i = consume_digits(bytes, i, |b| b.is_ascii_digit());
+        if i == exp_digits {
+            return false;
+        }
+    }
+
+    if i < bytes.len() && matches!(bytes[i], b'f' | b'F' | b'd' | b'D' | b'l' | b'L') {
+        i += 1;
+    }
+
+    i == bytes.len()
 }
 
 fn push_query_token(out: &mut String, tok: &str, max_bytes: usize) -> bool {
@@ -1454,7 +1571,24 @@ fn extract_identifier_candidates(text: &str) -> Vec<IdentCandidate<'_>> {
                     continue;
                 }
 
+                // Numeric literals can contain alphabetic characters (`0xDEADBEEF`, `1e10`,
+                // `0x1.ffffp10`) which would otherwise be misclassified as identifier candidates.
+                if bytes[i].is_ascii_digit() {
+                    i = skip_number_literal(bytes, i);
+                    continue;
+                }
+
                 if is_ident_start(bytes[i]) {
+                    // Avoid capturing numeric-literal fragments like `123abc` or `0xDEADBEEF` as
+                    // identifiers; this is noise at best and can leak potentially sensitive IDs.
+                    if i > 0 && bytes[i - 1].is_ascii_digit() {
+                        i += 1;
+                        while i < bytes.len() && is_ident_continue(bytes[i]) {
+                            i += 1;
+                        }
+                        continue;
+                    }
+
                     let start = i;
                     i += 1;
                     while i < bytes.len() && is_ident_continue(bytes[i]) {
@@ -1529,6 +1663,121 @@ fn is_ident_start(b: u8) -> bool {
 
 fn is_ident_continue(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
+}
+
+fn skip_number_literal(bytes: &[u8], start: usize) -> usize {
+    fn consume_digits(bytes: &[u8], mut i: usize, is_digit: impl Fn(u8) -> bool) -> usize {
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b == b'_' || is_digit(b) {
+                i += 1;
+                continue;
+            }
+            break;
+        }
+        i
+    }
+
+    let mut i = start;
+    if i >= bytes.len() {
+        return i;
+    }
+    if !bytes[i].is_ascii_digit() {
+        return i.saturating_add(1).min(bytes.len());
+    }
+
+    // Hex/binary prefixes.
+    if bytes[i] == b'0' && i + 1 < bytes.len() {
+        match bytes[i + 1] {
+            b'x' | b'X' => {
+                i += 2;
+                let digits_start = i;
+                i = consume_digits(bytes, i, |b| b.is_ascii_hexdigit());
+                if i == digits_start {
+                    return start + 1;
+                }
+
+                // Hex floats: optional fractional part.
+                if i + 1 < bytes.len()
+                    && bytes[i] == b'.'
+                    && bytes[i + 1].is_ascii_hexdigit()
+                {
+                    i += 1;
+                    i = consume_digits(bytes, i, |b| b.is_ascii_hexdigit());
+                }
+
+                // Hex float exponent.
+                if i < bytes.len() && matches!(bytes[i], b'p' | b'P') {
+                    let exp_pos = i;
+                    i += 1;
+                    if i < bytes.len() && matches!(bytes[i], b'+' | b'-') {
+                        i += 1;
+                    }
+                    let exp_digits = i;
+                    i = consume_digits(bytes, i, |b| b.is_ascii_digit());
+                    if i == exp_digits {
+                        return exp_pos;
+                    }
+                    if i < bytes.len() && matches!(bytes[i], b'f' | b'F' | b'd' | b'D') {
+                        i += 1;
+                    }
+                    return i;
+                }
+
+                // Integer suffix.
+                if i < bytes.len() && matches!(bytes[i], b'l' | b'L') {
+                    i += 1;
+                }
+                return i;
+            }
+            b'b' | b'B' => {
+                i += 2;
+                let digits_start = i;
+                i = consume_digits(bytes, i, |b| matches!(b, b'0' | b'1'));
+                if i == digits_start {
+                    return start + 1;
+                }
+                if i < bytes.len() && matches!(bytes[i], b'l' | b'L') {
+                    i += 1;
+                }
+                return i;
+            }
+            _ => {}
+        }
+    }
+
+    // Decimal digits.
+    i = consume_digits(bytes, i, |b| b.is_ascii_digit());
+
+    // Fractional part: only treat `.` as part of the number if it is followed by a digit so we
+    // don't swallow Kotlin-style calls like `1.toString()`.
+    if i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1].is_ascii_digit() {
+        i += 1;
+        i = consume_digits(bytes, i, |b| b.is_ascii_digit());
+    }
+
+    // Exponent (scientific notation).
+    if i < bytes.len() && matches!(bytes[i], b'e' | b'E') {
+        let exp_pos = i;
+        let mut j = i + 1;
+        if j < bytes.len() && matches!(bytes[j], b'+' | b'-') {
+            j += 1;
+        }
+        let exp_digits = j;
+        j = consume_digits(bytes, j, |b| b.is_ascii_digit());
+        if j > exp_digits {
+            i = j;
+        } else {
+            i = exp_pos;
+        }
+    }
+
+    // Decimal suffixes.
+    if i < bytes.len() && matches!(bytes[i], b'f' | b'F' | b'd' | b'D' | b'l' | b'L') {
+        i += 1;
+    }
+
+    i.max(start + 1)
 }
 
 #[derive(Debug, Clone)]
