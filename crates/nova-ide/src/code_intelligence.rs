@@ -10621,14 +10621,40 @@ pub(crate) fn infer_receiver_type_before_dot(
     }
 
     // Fields.
-    analysis
-        .fields
-        .iter()
-        .find(|f| f.name == inner)
-        .map(|f| f.ty.clone())
+    if let Some(field) = analysis.fields.iter().find(|f| f.name == inner) {
+        return Some(field.ty.clone());
+    }
+
+    // Best-effort semantic dotted-chain support for parenthesized receivers like
+    // `(this.foo.bar).<cursor>`.
+    //
+    // `infer_receiver_type_for_member_access` already knows how to resolve dotted field chains
+    // semantically (including inherited fields + interface constants). Reuse it here so that
+    // completions still work when the entire receiver expression is wrapped in parentheses.
+    let normalized: String = inner
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace())
+        .collect();
+    if normalized.contains('.')
+        && normalized
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.')
+    {
+        if let Some((ty, kind)) =
+            infer_receiver_type_for_member_access(db, file, normalized.as_str(), dot_offset)
+        {
+            let trimmed = ty.trim();
+            let receiver_trimmed = normalized.trim();
+            let is_unresolved_type_ref = kind == CallKind::Static && trimmed == receiver_trimmed;
+            if !is_unresolved_type_ref {
+                return Some(ty);
+            }
+        }
+    }
+
+    None
 }
 
-#[cfg(any(feature = "ai", test))]
 pub(crate) fn infer_receiver_type_for_member_access(
     db: &dyn Database,
     file: FileId,
@@ -21291,6 +21317,38 @@ class A {
 
         let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
         assert_eq!(ty.as_deref(), Some("String"));
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_parenthesized_dotted_field_chain() {
+        let java = r#"
+class B {
+  String s = "x";
+}
+
+class A {
+  B b = new B();
+
+  void m() {
+    (this.b.s).
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("(this.b.s).")
+            .expect("expected `(this.b.s).` in fixture")
+            + "(this.b.s)".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert!(
+            ty.as_deref().unwrap_or_default().contains("String"),
+            "expected receiver type to contain `String`, got {ty:?}"
+        );
     }
 
     #[test]
