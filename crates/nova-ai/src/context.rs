@@ -883,6 +883,7 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
             let token = &text[bounds.clone()];
             if looks_like_email_address(token)
                 || looks_like_ipv4_address(token)
+                || looks_like_mac_address_token(token)
                 || token_contains_obvious_secret_fragment(token)
                 || token_contains_sensitive_assignment(token)
             {
@@ -1068,6 +1069,10 @@ fn related_code_query_fallback(focal_code: &str) -> String {
         // Network endpoints (IPv6, host:port) are similarly low-signal and can leak infrastructure
         // metadata.
         if looks_like_ipv6_address_token(tok) || looks_like_host_port_token(tok) {
+            continue;
+        }
+        // Hardware/network addresses are similarly low-signal and can leak infrastructure metadata.
+        if looks_like_mac_address_token(tok) {
             continue;
         }
         if tok
@@ -1330,6 +1335,49 @@ fn looks_like_ipv6_address_token(tok: &str) -> bool {
     } else {
         segments == 8
     }
+}
+
+fn looks_like_mac_address_token(tok: &str) -> bool {
+    let token = tok.trim_matches(|c: char| !(c.is_ascii_hexdigit() || matches!(c, ':' | '-' | '.')));
+    if token.is_empty() {
+        return false;
+    }
+
+    let has_colon = token.contains(':');
+    let has_dash = token.contains('-');
+    if has_colon || has_dash {
+        if has_colon && has_dash {
+            return false;
+        }
+        let sep = if has_colon { ':' } else { '-' };
+        let mut segments = 0usize;
+        for part in token.split(sep) {
+            segments += 1;
+            if segments > 6 {
+                return false;
+            }
+            if part.len() != 2 || !part.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return false;
+            }
+        }
+        return segments == 6;
+    }
+
+    if token.contains('.') {
+        let mut segments = 0usize;
+        for part in token.split('.') {
+            segments += 1;
+            if segments > 3 {
+                return false;
+            }
+            if part.len() != 4 || !part.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return false;
+            }
+        }
+        return segments == 3;
+    }
+
+    false
 }
 
 fn push_query_token(out: &mut String, tok: &str, max_bytes: usize) -> bool {
