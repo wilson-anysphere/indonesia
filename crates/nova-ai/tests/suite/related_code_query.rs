@@ -567,6 +567,44 @@ fn related_code_query_skips_password_assignment_selections() {
 }
 
 #[test]
+fn related_code_query_skips_password_colon_assignment_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for password colon assignment selections");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = "password: hunter2";
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for password colon assignment focal code"
+    );
+}
+
+#[test]
+fn related_code_query_skips_json_password_colon_assignment_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for JSON password colon assignment selections");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = r#""password":"hunter2""#;
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for JSON password colon assignment focal code"
+    );
+}
+
+#[test]
 fn related_code_query_skips_email_address_only_selections() {
     struct PanicSearch;
 

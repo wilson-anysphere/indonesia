@@ -549,6 +549,10 @@ struct IdentCandidate<'a> {
 }
 
 fn related_code_query_from_focal_code(focal_code: &str) -> String {
+    if focal_code_contains_sensitive_assignment(focal_code) {
+        return String::new();
+    }
+
     // 1) Prefer identifier-like tokens outside comments/strings.
     let mut unique: BTreeMap<&str, usize> = BTreeMap::new();
     for cand in extract_identifier_candidates(focal_code) {
@@ -623,6 +627,55 @@ fn related_code_query_from_focal_code(focal_code: &str) -> String {
     // 2) Fallback: take a small redacted snippet. This is useful when the focal code contains
     // only literals (e.g., a selected string) and no identifiers.
     related_code_query_fallback(focal_code)
+}
+
+fn focal_code_contains_sensitive_assignment(text: &str) -> bool {
+    // This is a best-effort privacy guard. Selections that contain obvious secret key/value patterns
+    // (e.g. `password: hunter2` or `"apiKey":"sk-..."`) should not trigger semantic search queries,
+    // even if they contain identifier-like tokens.
+    //
+    // Keep this conservative: only check for common secret-bearing key names and require an
+    // assignment delimiter immediately after the key (allowing whitespace and quotes).
+    const SENSITIVE_KEY_SUBSTRINGS: &[&str] = &["password", "passwd", "secret", "api_key", "apikey"];
+
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if !is_ident_start(bytes[i]) {
+            i += 1;
+            continue;
+        }
+
+        let start = i;
+        i += 1;
+        while i < bytes.len() && is_ident_continue(bytes[i]) {
+            i += 1;
+        }
+        let ident = &text[start..i];
+        let lower = ident.to_ascii_lowercase();
+        if !SENSITIVE_KEY_SUBSTRINGS
+            .iter()
+            .any(|needle| lower.contains(needle))
+        {
+            continue;
+        }
+
+        // Skip whitespace/quotes after the identifier and look for an assignment delimiter on the
+        // same line.
+        let mut j = i;
+        while j < bytes.len() {
+            match bytes[j] {
+                b' ' | b'\t' | b'"' | b'\'' => j += 1,
+                b'\r' | b'\n' => break,
+                _ => break,
+            }
+        }
+        if j < bytes.len() && matches!(bytes[j], b':' | b'=') {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, tok: &str) -> bool {
