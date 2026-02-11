@@ -1379,7 +1379,7 @@ fn braced_unicode_escape_is_path_separator(bytes: &[u8], end_brace: usize) -> bo
     let mut open_brace = None;
     let mut i = end_brace;
     let mut scanned = 0usize;
-    while i > 0 && scanned < 64 {
+    while i > 0 && scanned < 256 {
         i -= 1;
         scanned += 1;
         if bytes[i] == b'{' {
@@ -1416,6 +1416,10 @@ fn braced_unicode_escape_is_path_separator(bytes: &[u8], end_brace: usize) -> bo
     }
 
     html_entity_codepoint_is_path_separator(value)
+        || (value == 37
+            && bytes
+                .get(end_brace + 1..)
+                .is_some_and(|tail| percent_encoded_path_separator_len(tail).is_some()))
 }
 
 fn unicode_path_separator_before(bytes: &[u8], idx: usize) -> bool {
@@ -2794,12 +2798,20 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
                 k += 1;
             }
 
-            if significant > 0
-                && k < bytes.len()
-                && bytes[k] == b'}'
-                && html_entity_codepoint_is_path_separator(value)
-            {
-                return true;
+            if significant > 0 && k < bytes.len() && bytes[k] == b'}' {
+                if html_entity_codepoint_is_path_separator(value) {
+                    return true;
+                }
+                // Percent-encoded separators can hide the `%` via unicode escapes (e.g.
+                // `\u00252Fhome` → `%2Fhome`). Treat these as path-like so segments do not leak into
+                // semantic-search queries.
+                if value == 37
+                    && bytes
+                        .get(k + 1..)
+                        .is_some_and(|tail| percent_encoded_path_separator_len(tail).is_some())
+                {
+                    return true;
+                }
             }
         }
 
@@ -2814,8 +2826,17 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
                     };
                     value = (value << 4) | hex as u32;
                 }
-                if ok && html_entity_codepoint_is_path_separator(value) {
-                    return true;
+                if ok {
+                    if html_entity_codepoint_is_path_separator(value) {
+                        return true;
+                    }
+                    if value == 37
+                        && bytes
+                            .get(j + 4..)
+                            .is_some_and(|tail| percent_encoded_path_separator_len(tail).is_some())
+                    {
+                        return true;
+                    }
                 }
             }
         }
@@ -2831,8 +2852,17 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
                 };
                 value = (value << 4) | hex as u32;
             }
-            if ok && html_entity_codepoint_is_path_separator(value) {
-                return true;
+            if ok {
+                if html_entity_codepoint_is_path_separator(value) {
+                    return true;
+                }
+                if value == 37
+                    && bytes
+                        .get(i + 9..)
+                        .is_some_and(|tail| percent_encoded_path_separator_len(tail).is_some())
+                {
+                    return true;
+                }
             }
         }
 
@@ -2890,12 +2920,17 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
                 j += 1;
             }
 
-            if significant > 0
-                && j < bytes.len()
-                && bytes[j] == b'}'
-                && html_entity_codepoint_is_path_separator(value)
-            {
-                return true;
+            if significant > 0 && j < bytes.len() && bytes[j] == b'}' {
+                if html_entity_codepoint_is_path_separator(value) {
+                    return true;
+                }
+                if value == 37
+                    && bytes
+                        .get(j + 1..)
+                        .is_some_and(|tail| percent_encoded_path_separator_len(tail).is_some())
+                {
+                    return true;
+                }
             }
         } else {
             let mut value = 0u32;
@@ -2913,6 +2948,9 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
                 significant += 1;
                 j += 1;
                 if html_entity_codepoint_is_path_separator(value) {
+                    return true;
+                }
+                if value == 37 && percent_encoded_path_separator_len(&bytes[j..]).is_some() {
                     return true;
                 }
             }
@@ -2949,6 +2987,9 @@ fn token_contains_octal_escaped_path_separator(tok: &str) -> bool {
             digits += 1;
             j += 1;
             if matches!(value, 47 | 92) {
+                return true;
+            }
+            if value == 37 && percent_encoded_path_separator_len(&bytes[j..]).is_some() {
                 return true;
             }
         }
