@@ -11661,7 +11661,7 @@ fn find_matching_open_brace(bytes: &[u8], close_brace_idx: usize) -> Option<usiz
 
 fn ident_chain_is_qualified_by_paren_expr(text: &str, chain_end: usize, max_segments: usize) -> bool {
     let bytes = text.as_bytes();
-    let receiver_end = skip_whitespace_backwards(text, chain_end.min(bytes.len()));
+    let receiver_end = skip_trivia_backwards(text, chain_end.min(bytes.len()));
     if receiver_end == 0 {
         return false;
     }
@@ -11682,12 +11682,12 @@ fn ident_chain_is_qualified_by_paren_expr(text: &str, chain_end: usize, max_segm
         segments += 1;
         chain_start = seg_start;
 
-        let before_seg = skip_whitespace_backwards(text, seg_start);
+        let before_seg = skip_trivia_backwards(text, seg_start);
         if before_seg == 0 || bytes.get(before_seg - 1) != Some(&b'.') {
             break;
         }
         let dot = before_seg - 1;
-        cursor_end = skip_whitespace_backwards(text, dot);
+        cursor_end = skip_trivia_backwards(text, dot);
     }
 
     if segments == 0 {
@@ -11696,14 +11696,14 @@ fn ident_chain_is_qualified_by_paren_expr(text: &str, chain_end: usize, max_segm
 
     // Find the dot immediately before the start of the identifier chain and ensure the segment
     // before it ends with `)`, i.e. `<expr>).<ident_chain>`.
-    let before_chain = skip_whitespace_backwards(text, chain_start);
+    let before_chain = skip_trivia_backwards(text, chain_start);
     let Some(dot_before_chain) = before_chain
         .checked_sub(1)
         .filter(|idx| bytes.get(*idx) == Some(&b'.'))
     else {
         return false;
     };
-    let prev_end = skip_whitespace_backwards(text, dot_before_chain);
+    let prev_end = skip_trivia_backwards(text, dot_before_chain);
     prev_end > 0 && bytes.get(prev_end - 1) == Some(&b')')
 }
 

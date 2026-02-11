@@ -2206,6 +2206,85 @@ class A {
 }
 
 #[test]
+fn completion_resolves_call_chain_array_access_receiver_with_trailing_block_comment_before_dot() {
+    let (db, file, pos) = fixture(
+        r#"
+class B {
+  String[] xs = new String[0];
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    b()/*comment*/.xs[0].<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"substring"),
+        "expected completion list to contain String.substring for call-chain array access receiver with trailing block comment; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_call_chain_array_access_receiver_with_trailing_line_comment_before_dot() {
+    let (db, file, pos) = fixture(
+        r#"
+class B {
+  String[] xs = new String[0];
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    b() // comment
+      .xs[0].<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"substring"),
+        "expected completion list to contain String.substring for call-chain array access receiver with trailing line comment; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_call_chain_array_access_receiver_with_trailing_block_comment_before_index() {
+    let (db, file, pos) = fixture(
+        r#"
+class B {
+  String[] xs = new String[0];
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    b().xs/*comment*/[0].<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"substring"),
+        "expected completion list to contain String.substring for call-chain array access receiver with trailing block comment before index; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_resolves_call_chain_on_array_access_receiver() {
     let (db, file, pos) = fixture(
         r#"

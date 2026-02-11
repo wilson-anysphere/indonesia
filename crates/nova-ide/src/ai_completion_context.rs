@@ -1802,6 +1802,85 @@ class A {
     }
 
     #[test]
+    fn call_chain_array_access_receiver_with_trailing_block_comment_before_dot_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class B {
+  String[] xs = new String[0];
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    b()/*comment*/.xs[0].<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
+    fn call_chain_array_access_receiver_with_trailing_line_comment_before_dot_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class B {
+  String[] xs = new String[0];
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    b() // comment
+      .xs[0].<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
+    fn call_chain_array_access_receiver_with_trailing_block_comment_before_index_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class B {
+  String[] xs = new String[0];
+}
+
+class A {
+  B b() { return new B(); }
+
+  void m() {
+    b().xs/*comment*/[0].<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("String"),
+            "expected receiver type to contain `String`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "substring"));
+    }
+
+    #[test]
     fn parenthesized_dotted_field_chain_receiver_type_and_methods_are_semantic() {
         let ctx = ctx_for(
             r#"
