@@ -990,7 +990,7 @@ fn braced_unicode_escape_is_path_separator(bytes: &[u8], end_brace: usize) -> bo
     }
 
     let u = bytes[open_brace - 1];
-    if u != b'u' && u != b'U' {
+    if u != b'u' && u != b'U' && u != b'x' && u != b'X' {
         return false;
     }
 
@@ -1889,6 +1889,15 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
 }
 
 fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
+    fn hex_value(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+
     let bytes = tok.as_bytes();
     if bytes.len() < 3 {
         return false;
@@ -1907,9 +1916,31 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
             continue;
         }
 
-        match (bytes[i + 1], bytes[i + 2]) {
-            (b'2', b'f' | b'F') | (b'5', b'c' | b'C') => return true,
-            _ => {}
+        if bytes.get(i + 1).is_some_and(|b| *b == b'{') {
+            let mut value = 0u32;
+            let mut digits = 0usize;
+            let mut j = i + 2;
+            while j < bytes.len() && digits < 8 {
+                if bytes[j] == b'}' {
+                    break;
+                }
+                let Some(hex) = hex_value(bytes[j]) else {
+                    break;
+                };
+                value = (value << 4) | hex as u32;
+                digits += 1;
+                j += 1;
+            }
+
+            if digits > 0 && j < bytes.len() && bytes[j] == b'}' && matches!(value, 0x2F | 0x5C)
+            {
+                return true;
+            }
+        } else {
+            match (bytes[i + 1], bytes[i + 2]) {
+                (b'2', b'f' | b'F') | (b'5', b'c' | b'C') => return true,
+                _ => {}
+            }
         }
 
         i += 1;

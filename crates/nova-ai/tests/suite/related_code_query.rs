@@ -342,28 +342,34 @@ fn related_code_query_avoids_hex_escaped_path_segments() {
         }
     }
 
-    let search = CapturingSearch::default();
     let private_segment = "NOVA_AI_PRIVATE_USER_12345";
-    let focal_code = format!(
-        "\\x2Fhome\\x2Fuser\\x2Fmy-{private_segment}-project\\x2Fsrc\\x2Fmain\\x2Fjava\nreturn foo.bar();\n"
-    );
+    for prefix in [r"\x2Fhome\x2Fuser\x2Fmy-", r"\x{2F}home\x{2F}user\x{2F}my-"] {
+        let search = CapturingSearch::default();
+        let focal_code = [
+            prefix,
+            private_segment,
+            r"-project\x2Fsrc\x2Fmain\x2Fjava",
+            "\nreturn foo.bar();\n",
+        ]
+        .concat();
 
-    let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
-    let query = search
-        .last_query
-        .lock()
-        .expect("lock poisoned")
-        .clone()
-        .expect("query captured");
+        let _ = base_request(&focal_code).with_related_code_from_focal(&search, 1);
+        let query = search
+            .last_query
+            .lock()
+            .expect("lock poisoned")
+            .clone()
+            .expect("query captured");
 
-    assert!(
-        !query.contains(private_segment),
-        "query should not include hex-escaped path fragments: {query}"
-    );
-    assert!(
-        query.contains("foo") || query.contains("bar"),
-        "expected query to retain non-path identifiers, got: {query}"
-    );
+        assert!(
+            !query.contains(private_segment),
+            "query should not include hex-escaped path fragments: {query}"
+        );
+        assert!(
+            query.contains("foo") || query.contains("bar"),
+            "expected query to retain non-path identifiers, got: {query}"
+        );
+    }
 }
 
 #[test]
@@ -693,6 +699,8 @@ fn related_code_query_skips_hex_escaped_path_only_selections() {
     for focal_code in [
         r"\x2Fhome\x2Fuser\x2Fsecret\x2Fcredentials",
         r"\x5Chome\x5Cuser\x5Csecret\x5Ccredentials",
+        r"\x{2F}home\x{2F}user\x{2F}secret\x{2F}credentials",
+        r"\x{5C}home\x{5C}user\x{5C}secret\x{5C}credentials",
     ] {
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
         assert!(
