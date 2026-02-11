@@ -2067,16 +2067,28 @@ fn related_code_query_skips_escaped_percent_encoded_path_only_selections_with_he
     for sep in [
         // Unicode/hex escapes for `%` with entity-encoded hex digits.
         "u0025&#50;&#70;", // u0025 + &#50; (2) + &#70; (F) -> %2F
+        "uu0025&#50;&#70;",
+        "U00000025&#50;&#70;",
         "u0025&#53;&#67;", // -> %5C
+        "uu0025&#53;&#67;",
+        "U00000025&#53;&#67;",
         "x25&#50;&#70;",
+        "x000025&#50;&#70;",
+        "X25&#50;&#70;",
         "x25&#53;&#67;",
+        "x000025&#53;&#67;",
+        "X25&#53;&#67;",
         // Braced variants where the escape marker token (`u`/`x`) is separated from the digits by
         // `{}` delimiters.
         "u{0025}&#50;&#70;",
+        "u{0000000025}&#50;&#70;",
         "x{25}&#50;&#70;",
+        "x{00000025}&#50;&#70;",
         // Backslash-hex / octal escapes for `%`.
         r"\25&#50;&#70;",
+        r"\000025&#50;&#70;",
         r"\25&#53;&#67;",
+        r"\000025&#53;&#67;",
         r"\045&#50;&#70;",
         r"\045&#53;&#67;",
         // Backslash + `x25` escape for `%`.
