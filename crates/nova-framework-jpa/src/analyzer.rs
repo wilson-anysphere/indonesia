@@ -97,6 +97,23 @@ impl JpaAnalyzer {
                 // See docs/09-framework-support.md for the motivation.
                 text.len().hash(&mut hasher);
                 text.as_ptr().hash(&mut hasher);
+                // Pointer/len hashing is fast, but can collide when short-lived buffers reuse the
+                // same allocation or when text is mutated in place (keeping both stable). Mix in a
+                // small content-dependent sample to make invalidation deterministic without hashing
+                // entire large files.
+                const SAMPLE: usize = 64;
+                const FULL_HASH_MAX: usize = 3 * SAMPLE;
+                let bytes = text.as_bytes();
+                if bytes.len() <= FULL_HASH_MAX {
+                    bytes.hash(&mut hasher);
+                } else {
+                    bytes[..SAMPLE].hash(&mut hasher);
+                    let mid = bytes.len() / 2;
+                    let mid_start = mid.saturating_sub(SAMPLE / 2);
+                    let mid_end = (mid_start + SAMPLE).min(bytes.len());
+                    bytes[mid_start..mid_end].hash(&mut hasher);
+                    bytes[bytes.len() - SAMPLE..].hash(&mut hasher);
+                }
             } else if let Some(path) = path {
                 // Fall back to on-disk metadata for unopened buffers.
                 match std::fs::metadata(path) {
@@ -174,6 +191,117 @@ impl JpaAnalyzer {
 
     fn file_local_analysis(text: &str) -> AnalysisResult {
         analyze_java_sources(&[text])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use nova_hir::framework::ClassData;
+    use nova_types::ClassId;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn invalidates_when_file_text_changes_in_place_with_same_ptr_and_len() {
+        struct MutableDb {
+            project: ProjectId,
+            file: FileId,
+            path: PathBuf,
+            text: String,
+        }
+
+        impl Database for MutableDb {
+            fn class(&self, _class: ClassId) -> &ClassData {
+                static UNKNOWN: std::sync::OnceLock<ClassData> = std::sync::OnceLock::new();
+                UNKNOWN.get_or_init(ClassData::default)
+            }
+
+            fn project_of_class(&self, _class: ClassId) -> ProjectId {
+                self.project
+            }
+
+            fn project_of_file(&self, _file: FileId) -> ProjectId {
+                self.project
+            }
+
+            fn file_text(&self, file: FileId) -> Option<&str> {
+                (file == self.file).then_some(self.text.as_str())
+            }
+
+            fn file_path(&self, file: FileId) -> Option<&Path> {
+                (file == self.file).then_some(self.path.as_path())
+            }
+
+            fn file_id(&self, path: &Path) -> Option<FileId> {
+                (path == self.path).then_some(self.file)
+            }
+
+            fn all_files(&self, project: ProjectId) -> Vec<FileId> {
+                (project == self.project)
+                    .then(|| vec![self.file])
+                    .unwrap_or_default()
+            }
+
+            fn has_dependency(&self, _project: ProjectId, _group: &str, _artifact: &str) -> bool {
+                false
+            }
+
+            fn has_class_on_classpath(&self, _project: ProjectId, _binary_name: &str) -> bool {
+                false
+            }
+
+            fn has_class_on_classpath_prefix(&self, _project: ProjectId, _prefix: &str) -> bool {
+                false
+            }
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        let project = ProjectId::new(0);
+        let file = FileId::from_raw(0);
+        let path = PathBuf::from(format!("/jpa-analyzer-inplace-mutation-test-{unique}/src/Main.java"));
+
+        let prefix = "package test; class Main { /*";
+        let suffix = "*/ }\n";
+        let mut text = String::new();
+        text.push_str(prefix);
+        text.push_str(&"a".repeat(1024));
+        text.push_str(suffix);
+
+        let mut db = MutableDb {
+            project,
+            file,
+            path,
+            text,
+        };
+
+        let analyzer = JpaAnalyzer::new();
+        let analysis1 = analyzer
+            .project_analysis(&db, project)
+            .expect("expected analysis");
+        let analysis2 = analyzer
+            .project_analysis(&db, project)
+            .expect("expected cache hit");
+        assert!(Arc::ptr_eq(&analysis1, &analysis2));
+
+        // Mutate a byte in place, preserving allocation + length.
+        let ptr_before = db.text.as_ptr();
+        let len_before = db.text.len();
+        let mid_idx = len_before / 2;
+        unsafe {
+            let bytes = db.text.as_mut_vec();
+            bytes[mid_idx] = b'b';
+        }
+        assert_eq!(ptr_before, db.text.as_ptr());
+        assert_eq!(len_before, db.text.len());
+
+        let analysis3 = analyzer
+            .project_analysis(&db, project)
+            .expect("expected cache invalidation");
+        assert!(!Arc::ptr_eq(&analysis2, &analysis3));
     }
 }
 

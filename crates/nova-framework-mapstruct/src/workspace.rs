@@ -66,7 +66,7 @@ fn lock_unpoison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 fn project_fingerprint(db: &dyn Database, project: ProjectId) -> u64 {
     use std::collections::hash_map::DefaultHasher;
 
-    let mut files: Vec<(PathBuf, FileId, usize, *const u8)> = Vec::new();
+    let mut files: Vec<(PathBuf, FileId, usize, *const u8, u64)> = Vec::new();
     for file in db.all_files(project) {
         let Some(path) = db.file_path(file) else {
             continue;
@@ -77,7 +77,26 @@ fn project_fingerprint(db: &dyn Database, project: ProjectId) -> u64 {
         let Some(text) = db.file_text(file) else {
             continue;
         };
-        files.push((path.to_path_buf(), file, text.len(), text.as_ptr()));
+        // Hash a small content sample so the fingerprint changes deterministically even when the
+        // backing allocation is reused or mutated in place.
+        const SAMPLE: usize = 64;
+        const FULL_HASH_MAX: usize = 3 * SAMPLE;
+        let bytes = text.as_bytes();
+        let sample_hash = {
+            let mut hasher = DefaultHasher::new();
+            if bytes.len() <= FULL_HASH_MAX {
+                bytes.hash(&mut hasher);
+            } else {
+                bytes[..SAMPLE].hash(&mut hasher);
+                let mid = bytes.len() / 2;
+                let mid_start = mid.saturating_sub(SAMPLE / 2);
+                let mid_end = (mid_start + SAMPLE).min(bytes.len());
+                bytes[mid_start..mid_end].hash(&mut hasher);
+                bytes[bytes.len() - SAMPLE..].hash(&mut hasher);
+            }
+            hasher.finish()
+        };
+        files.push((path.to_path_buf(), file, text.len(), text.as_ptr(), sample_hash));
     }
     files.sort_by(|(a, ..), (b, ..)| a.cmp(b));
 
@@ -86,12 +105,121 @@ fn project_fingerprint(db: &dyn Database, project: ProjectId) -> u64 {
     // dependency graph / classpath. Include this bit in the fingerprint so diagnostics update
     // when build metadata changes.
     crate::has_mapstruct_build_dependency(db, project).hash(&mut hasher);
-    for (path, _file, len, ptr) in &files {
+    for (path, _file, len, ptr, sample_hash) in &files {
         path.hash(&mut hasher);
         len.hash(&mut hasher);
         ptr.hash(&mut hasher);
+        sample_hash.hash(&mut hasher);
     }
     hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use nova_hir::framework::ClassData;
+    use nova_types::ClassId;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn workspace_cache_invalidates_when_file_text_changes_in_place_with_same_ptr_and_len() {
+        struct MutableDb {
+            project: ProjectId,
+            file: FileId,
+            path: PathBuf,
+            text: String,
+        }
+
+        impl Database for MutableDb {
+            fn class(&self, _class: ClassId) -> &ClassData {
+                static UNKNOWN: std::sync::OnceLock<ClassData> = std::sync::OnceLock::new();
+                UNKNOWN.get_or_init(ClassData::default)
+            }
+
+            fn project_of_class(&self, _class: ClassId) -> ProjectId {
+                self.project
+            }
+
+            fn project_of_file(&self, _file: FileId) -> ProjectId {
+                self.project
+            }
+
+            fn file_text(&self, file: FileId) -> Option<&str> {
+                (file == self.file).then_some(self.text.as_str())
+            }
+
+            fn file_path(&self, file: FileId) -> Option<&Path> {
+                (file == self.file).then_some(self.path.as_path())
+            }
+
+            fn file_id(&self, path: &Path) -> Option<FileId> {
+                (path == self.path).then_some(self.file)
+            }
+
+            fn all_files(&self, project: ProjectId) -> Vec<FileId> {
+                (project == self.project)
+                    .then(|| vec![self.file])
+                    .unwrap_or_default()
+            }
+
+            fn has_dependency(&self, _project: ProjectId, _group: &str, _artifact: &str) -> bool {
+                false
+            }
+
+            fn has_class_on_classpath(&self, _project: ProjectId, _binary_name: &str) -> bool {
+                false
+            }
+
+            fn has_class_on_classpath_prefix(&self, _project: ProjectId, _prefix: &str) -> bool {
+                false
+            }
+        }
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        let project = ProjectId::new(0);
+        let file = FileId::from_raw(0);
+        let path = PathBuf::from(format!(
+            "/mapstruct-workspace-cache-inplace-mutation-test-{unique}/src/Main.java"
+        ));
+
+        let prefix = "package test; class Main { /*";
+        let suffix = "*/ }\n";
+        let mut text = String::new();
+        text.push_str(prefix);
+        text.push_str(&"a".repeat(1024));
+        text.push_str(suffix);
+
+        let mut db = MutableDb {
+            project,
+            file,
+            path,
+            text,
+        };
+
+        let cache = WorkspaceCache::new();
+        let ws1 = cache.workspace(&db, project);
+        let ws2 = cache.workspace(&db, project);
+        assert!(Arc::ptr_eq(&ws1, &ws2));
+
+        // Mutate a byte in place, preserving allocation + length.
+        let ptr_before = db.text.as_ptr();
+        let len_before = db.text.len();
+        let mid_idx = len_before / 2;
+        assert!(mid_idx > 64 && mid_idx + 64 < len_before);
+        unsafe {
+            let bytes = db.text.as_mut_vec();
+            bytes[mid_idx] = b'b';
+        }
+        assert_eq!(ptr_before, db.text.as_ptr());
+        assert_eq!(len_before, db.text.len());
+
+        let ws3 = cache.workspace(&db, project);
+        assert!(!Arc::ptr_eq(&ws2, &ws3));
+    }
 }
 
 #[derive(Debug)]
