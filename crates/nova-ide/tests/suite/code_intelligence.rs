@@ -1342,6 +1342,54 @@ class A {
 }
 
 #[test]
+fn completion_resolves_generic_constructor_call_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo<T> {
+  void bar() {}
+}
+
+class A {
+  void m() {
+    new Foo<String>().<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"bar"),
+        "expected completion list to contain Foo.bar for generic constructor receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_diamond_constructor_call_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo<T> {
+  void bar() {}
+}
+
+class A {
+  void m() {
+    new Foo<>().<|>
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"bar"),
+        "expected completion list to contain Foo.bar for diamond constructor receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_resolves_array_access_receiver() {
     let (db, file, pos) = fixture(
         r#"

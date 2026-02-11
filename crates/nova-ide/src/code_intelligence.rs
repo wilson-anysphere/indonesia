@@ -11642,11 +11642,70 @@ fn scan_call_expr_ending_at(
         return None;
     }
 
-    let name_tok_idx = open_paren_tok_idx.checked_sub(1)?;
-    let name_tok = analysis.tokens.get(name_tok_idx)?;
-    if name_tok.kind != TokenKind::Ident {
-        return None;
+    let mut name_tok_idx = open_paren_tok_idx.checked_sub(1)?;
+    if analysis.tokens.get(name_tok_idx)?.kind != TokenKind::Ident {
+        // Generic constructor call: `new Foo<String>(...)` / `new Foo<>(...)`.
+        //
+        // The token immediately before `(` is `>`, so we must rewind to the identifier before the
+        // matching `<`.
+        if analysis
+            .tokens
+            .get(name_tok_idx)
+            .is_some_and(|t| t.kind == TokenKind::Symbol('>'))
+        {
+            let close_angle_idx = name_tok_idx;
+            let mut depth = 0i32;
+            let mut open_angle_idx = None;
+            let mut i = close_angle_idx + 1;
+            while i > 0 {
+                i -= 1;
+                match analysis.tokens.get(i)?.kind {
+                    TokenKind::Symbol('>') => depth += 1,
+                    TokenKind::Symbol('<') => {
+                        depth -= 1;
+                        if depth == 0 {
+                            open_angle_idx = Some(i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let open_angle_idx = open_angle_idx?;
+            let candidate_name_idx = open_angle_idx.checked_sub(1)?;
+            if analysis
+                .tokens
+                .get(candidate_name_idx)
+                .is_none_or(|t| t.kind != TokenKind::Ident)
+            {
+                return None;
+            }
+
+            // Keep this heuristic narrow: only treat `Foo<...>(...)` as a call when it is preceded
+            // by `new`, so we don't misinterpret comparisons like `a < b > (c)` as a constructor
+            // call.
+            let mut start_idx = candidate_name_idx;
+            while start_idx >= 2
+                && analysis.tokens[start_idx - 1].kind == TokenKind::Symbol('.')
+                && analysis.tokens[start_idx - 2].kind == TokenKind::Ident
+            {
+                start_idx -= 2;
+            }
+            let new_idx = start_idx.checked_sub(1)?;
+            if analysis
+                .tokens
+                .get(new_idx)
+                .is_none_or(|t| t.kind != TokenKind::Ident || t.text != "new")
+            {
+                return None;
+            }
+
+            name_tok_idx = candidate_name_idx;
+        } else {
+            return None;
+        }
     }
+    let name_tok = analysis.tokens.get(name_tok_idx)?;
 
     let receiver = if name_tok_idx >= 2 {
         let dot = analysis.tokens.get(name_tok_idx - 1)?;
@@ -22543,6 +22602,62 @@ class A {
         assert!(
             ty.as_deref().unwrap_or_default().contains("p.Bar"),
             "expected receiver type to contain `p.Bar`, got {ty:?}"
+        );
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_generic_constructor_call_type() {
+        let java = r#"
+class Foo<T> {}
+
+class A {
+  void m() {
+    new Foo<String>().
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("new Foo<String>().")
+            .expect("expected `new Foo<String>().` in fixture")
+            + "new Foo<String>()".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert!(
+            ty.as_deref().unwrap_or_default().contains("Foo"),
+            "expected receiver type to contain `Foo`, got {ty:?}"
+        );
+    }
+
+    #[test]
+    fn infer_receiver_type_before_dot_infers_diamond_constructor_call_type() {
+        let java = r#"
+class Foo<T> {}
+
+class A {
+  void m() {
+    new Foo<>().
+  }
+}
+"#;
+
+        let mut db = nova_db::InMemoryFileStore::new();
+        let file = FileId::from_raw(0);
+        db.set_file_text(file, java.to_string());
+
+        let dot_offset = java
+            .find("new Foo<>().")
+            .expect("expected `new Foo<>().` in fixture")
+            + "new Foo<>()".len();
+
+        let ty = infer_receiver_type_before_dot(&db, file, dot_offset);
+        assert!(
+            ty.as_deref().unwrap_or_default().contains("Foo"),
+            "expected receiver type to contain `Foo`, got {ty:?}"
         );
     }
 
