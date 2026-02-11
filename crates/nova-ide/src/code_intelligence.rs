@@ -8011,7 +8011,7 @@ fn simple_receiver_before_dot(text: &str, dot_offset: usize) -> Option<SimpleRec
         return None;
     }
 
-    let receiver_end = skip_whitespace_backwards(text, dot_offset);
+    let receiver_end = skip_trivia_backwards(text, dot_offset);
     if receiver_end == 0 {
         return None;
     }
@@ -10095,7 +10095,7 @@ fn infer_call_chain_field_access_receiver_type_in_store(
         chars.all(is_ident_continue)
     }
 
-    let receiver_end = skip_whitespace_backwards(text, dot_offset);
+    let receiver_end = skip_trivia_backwards(text, dot_offset);
     if receiver_end == 0 {
         return None;
     }
@@ -10123,12 +10123,12 @@ fn infer_call_chain_field_access_receiver_type_in_store(
         segments_rev.push(segment);
         chain_start = seg_start;
 
-        let before_seg = skip_whitespace_backwards(text, seg_start);
+        let before_seg = skip_trivia_backwards(text, seg_start);
         if before_seg == 0 || bytes.get(before_seg - 1) != Some(&b'.') {
             break;
         }
         let dot = before_seg - 1;
-        cursor_end = skip_whitespace_backwards(text, dot);
+        cursor_end = skip_trivia_backwards(text, dot);
         if cursor_end == 0 {
             break;
         }
@@ -10141,11 +10141,11 @@ fn infer_call_chain_field_access_receiver_type_in_store(
 
     // Find the dot immediately before the start of the chain and ensure the segment before it ends
     // with `)`, i.e. `<call>().<field_chain>.<cursor>`.
-    let before_chain = skip_whitespace_backwards(text, chain_start);
+    let before_chain = skip_trivia_backwards(text, chain_start);
     let dot_before_chain = before_chain
         .checked_sub(1)
         .filter(|idx| bytes.get(*idx) == Some(&b'.'))?;
-    let prev_end = skip_whitespace_backwards(text, dot_before_chain);
+    let prev_end = skip_trivia_backwards(text, dot_before_chain);
     if prev_end == 0 || bytes.get(prev_end - 1) != Some(&b')') {
         return None;
     }
@@ -10801,7 +10801,7 @@ pub(crate) fn infer_receiver_type_before_dot(
 
     // `receiver_before_dot` returns empty for expressions ending in `)` (call chains / parenthesized
     // expressions). Try to infer the receiver type from the expression directly before the `.`.
-    let end = skip_whitespace_backwards(text, dot_offset);
+    let end = skip_trivia_backwards(text, dot_offset);
     let bytes = text.as_bytes();
     if end == 0 {
         return None;
@@ -22017,6 +22017,34 @@ pub(crate) fn skip_whitespace_backwards(text: &str, mut offset: usize) -> usize 
     offset = offset.min(bytes.len());
     while offset > 0 && (bytes[offset - 1] as char).is_ascii_whitespace() {
         offset -= 1;
+    }
+    offset
+}
+
+fn skip_trivia_backwards(text: &str, mut offset: usize) -> usize {
+    // Best-effort: skip whitespace and trailing block comments (`/* ... */`).
+    //
+    // We intentionally do *not* attempt to skip line comments here; detecting `//` reliably without
+    // a full lexer is tricky (e.g. `//` inside string literals like URLs) and this helper is used
+    // in hot completion paths. Block comments are a common way to insert trivia between tokens
+    // inside expressions.
+    let bytes = text.as_bytes();
+    offset = offset.min(bytes.len());
+    loop {
+        while offset > 0 && (bytes[offset - 1] as char).is_ascii_whitespace() {
+            offset -= 1;
+        }
+
+        if offset >= 2 && bytes.get(offset - 1) == Some(&b'/') && bytes.get(offset - 2) == Some(&b'*')
+        {
+            let before_end = offset - 2;
+            if let Some(open_idx) = text.get(..before_end).and_then(|prefix| prefix.rfind("/*")) {
+                offset = open_idx;
+                continue;
+            }
+        }
+
+        break;
     }
     offset
 }

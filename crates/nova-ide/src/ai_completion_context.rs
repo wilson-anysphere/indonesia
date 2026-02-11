@@ -1274,6 +1274,55 @@ class A {
     }
 
     #[test]
+    fn constructor_call_receiver_with_trailing_block_comment_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class Foo {
+  void bar() {}
+}
+
+class A {
+  void m() {
+    new Foo()/*comment*/.<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Foo"),
+            "expected receiver type to contain `Foo`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "bar"));
+    }
+
+    #[test]
+    fn ident_receiver_with_trailing_block_comment_is_semantic() {
+        let ctx = ctx_for(
+            r#"
+class Foo {
+  void bar() {}
+}
+
+class A {
+  void m() {
+    Foo f = new Foo();
+    f/*comment*/.<cursor>
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Foo"),
+            "expected receiver type to contain `Foo`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "bar"));
+    }
+
+    #[test]
     fn array_access_receiver_type_and_methods_are_semantic() {
         let ctx = ctx_for(
             r#"
