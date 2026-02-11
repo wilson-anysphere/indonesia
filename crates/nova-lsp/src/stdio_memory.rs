@@ -10,7 +10,7 @@ pub(super) fn memory_status_payload(state: &mut ServerState) -> Result<serde_jso
         report,
         top_components,
     })
-    .map_err(|err| err.to_string())
+    .map_err(|err| crate::stdio_sanitize::sanitize_serde_json_error(&err))
 }
 
 impl ServerState {
@@ -20,4 +20,3 @@ impl ServerState {
         self.memory.enforce();
     }
 }
-
