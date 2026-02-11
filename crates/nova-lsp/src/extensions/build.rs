@@ -716,7 +716,7 @@ fn detect_kind(root: &Path, explicit: Option<BuildTool>) -> Result<BuildKind> {
 }
 
 fn map_build_error(err: BuildError) -> NovaLspError {
-    NovaLspError::Internal(err.to_string())
+    NovaLspError::Internal(crate::sanitize_error_message(&err))
 }
 
 fn auto_detect_kind(root: &Path) -> Result<BuildKind> {

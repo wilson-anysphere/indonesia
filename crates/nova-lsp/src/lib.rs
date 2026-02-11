@@ -118,6 +118,17 @@ pub(crate) fn sanitize_serde_json_error(err: &serde_json::Error) -> String {
     sanitize_json_error_message(&err.to_string())
 }
 
+pub(crate) fn sanitize_error_message(err: &(dyn std::error::Error + 'static)) -> String {
+    // Many Nova subsystems surface errors (not necessarily via `anyhow`). If a `serde_json::Error`
+    // appears anywhere in the chain, sanitize the overall stringified error to avoid echoing
+    // scalar values from the original JSON payload (e.g. `invalid type: string "..."`).
+    if contains_serde_json_error(err) {
+        sanitize_json_error_message(&err.to_string())
+    } else {
+        err.to_string()
+    }
+}
+
 pub(crate) fn sanitize_anyhow_error_message(err: &anyhow::Error) -> String {
     // Many Nova subsystems use `anyhow` and error chains. If a `serde_json::Error` appears anywhere
     // in the chain, sanitize the overall stringified error to avoid echoing scalar values from the
@@ -134,6 +145,25 @@ fn contains_serde_json_error(err: &(dyn std::error::Error + 'static)) -> bool {
     while let Some(err) = current {
         if err.is::<serde_json::Error>() {
             return true;
+        }
+
+        // Some error types use transparent wrappers that do not expose their inner error via
+        // `Error::source()` (notably `nova_build::BuildError` on this toolchain). Descend into those
+        // explicitly so we can still detect `serde_json::Error` values wrapped inside `io::Error`.
+        if let Some(build_err) = err.downcast_ref::<nova_build::BuildError>() {
+            match build_err {
+                nova_build::BuildError::Io(io_err) => {
+                    if contains_serde_json_error(io_err) {
+                        return true;
+                    }
+                }
+                nova_build::BuildError::Cache(cache_err) => {
+                    if contains_serde_json_error(cache_err) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
         }
 
         if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
@@ -898,6 +928,56 @@ mod tests {
         assert!(
             message.contains("<redacted>"),
             "expected sanitized anyhow error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_message_does_not_echo_string_values_when_wrapped_in_io_error() {
+        let secret_suffix = "nova-lsp-error-message-io-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
+        let serde_err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, serde_err);
+        let raw_message = io_err.to_string();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw io error message to include the string value so this test catches leaks: {raw_message}"
+        );
+
+        let message = crate::sanitize_error_message(&io_err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_message_does_not_echo_string_values_when_wrapped_in_build_error() {
+        let secret_suffix = "nova-lsp-error-message-build-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
+        let serde_err = serde_json::from_value::<bool>(serde_json::json!(secret.clone()))
+            .expect_err("expected type error");
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, serde_err);
+        let build_err: nova_build::BuildError = io_err.into();
+
+        let raw_message = build_err.to_string();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw BuildError message to include the string value so this test catches leaks: {raw_message}"
+        );
+
+        let message = crate::sanitize_error_message(&build_err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized BuildError message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized BuildError message to include redaction marker: {message}"
         );
     }
 }

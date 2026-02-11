@@ -204,7 +204,7 @@ pub fn handle_run_annotation_processing(
                     status_guard.mark_success();
                 }
             }
-            Err(err) => status_guard.mark_failure(Some(err.to_string())),
+            Err(err) => status_guard.mark_failure(Some(crate::sanitize_error_message(err))),
         }
         run_result.map_err(map_io_error)?
     };
@@ -338,7 +338,7 @@ fn status_string(status: AptRunStatus) -> String {
 }
 
 fn map_io_error(err: std::io::Error) -> NovaLspError {
-    NovaLspError::Internal(err.to_string())
+    NovaLspError::Internal(crate::sanitize_error_message(&err))
 }
 
 fn selected_module_root(

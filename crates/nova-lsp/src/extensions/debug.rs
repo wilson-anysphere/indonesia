@@ -126,18 +126,21 @@ impl BuildSystem for ProjectHotSwapBuild {
                     status_guard.mark_success();
                 }
             }
-            Err(err) => status_guard.mark_failure(Some(err.to_string())),
+            Err(err) => status_guard.mark_failure(Some(crate::sanitize_error_message(err))),
         }
 
         match build_result {
             Ok(result) => self.outputs_for_build(files, result),
-            Err(err) => files
-                .iter()
-                .map(|file| CompileOutput {
-                    file: file.clone(),
-                    result: Err(CompileError::new(err.to_string())),
-                })
-                .collect(),
+            Err(err) => {
+                let message = crate::sanitize_error_message(&err);
+                files
+                    .iter()
+                    .map(|file| CompileOutput {
+                        file: file.clone(),
+                        result: Err(CompileError::new(message.clone())),
+                    })
+                    .collect()
+            }
         }
     }
 }
