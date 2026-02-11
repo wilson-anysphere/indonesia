@@ -1849,6 +1849,19 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
                 }
             }
         }
+
+        // Some HTML emitters also omit the semicolon after `&amp` itself (e.g. `&amp#47;`), which
+        // decodes to `&#47;` after one pass. Treat these as separators so encoded paths do not leak
+        // into semantic-search queries.
+        if name.len() > 3 && name[..3].eq_ignore_ascii_case(b"amp") {
+            let mut rest = &name[3..];
+            if rest.first().is_some_and(|b| *b == b';') {
+                rest = &rest[1..];
+            }
+            if !rest.is_empty() && fragment_is_path_separator(rest) {
+                return true;
+            }
+        }
         return false;
     }
 
@@ -3876,6 +3889,29 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
             significant += 1;
             k += 1;
             if html_entity_codepoint_is_path_separator(value) {
+                return true;
+            }
+        }
+
+        i += 1;
+    }
+
+    // Some HTML emitters omit the semicolon in `&amp` itself (e.g. `&amp#47home`), which decodes to
+    // `&#47home` after one pass and then to `/home` after a second HTML-decode pass. Treat these as
+    // separators so encoded paths do not leak into semantic-search queries.
+    let mut i = 0usize;
+    while i + 3 < bytes.len() {
+        if bytes[i] != b'&' {
+            i += 1;
+            continue;
+        }
+
+        if bytes
+            .get(i + 1..i + 4)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+        {
+            let start = i + 4;
+            if start < bytes.len() && html_fragment_is_path_separator(bytes, start) {
                 return true;
             }
         }
