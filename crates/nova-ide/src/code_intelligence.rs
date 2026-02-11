@@ -10253,12 +10253,23 @@ fn method_reference_completions(
             return None;
         }
 
-        let (mut ty, mut kind) = infer_receiver(types, analysis, file_ctx, parts[0], offset);
+        let root_end = parts
+            .iter()
+            .position(|seg| *seg == "this" || *seg == "super")
+            .filter(|idx| *idx > 0)
+            .unwrap_or(0);
+        let root_expr = if root_end == 0 {
+            Cow::Borrowed(parts[0])
+        } else {
+            Cow::Owned(parts[..=root_end].join("."))
+        };
+
+        let (mut ty, mut kind) = infer_receiver(types, analysis, file_ctx, root_expr.as_ref(), offset);
         if matches!(ty, Type::Unknown | Type::Error) {
             return None;
         }
 
-        for part in parts.into_iter().skip(1) {
+        for part in parts.into_iter().skip(root_end + 1) {
             ensure_type_fields_loaded(types, &ty);
             let class_id = class_id_of_type(types, &ty)?;
             let class_def = types.class(class_id)?;

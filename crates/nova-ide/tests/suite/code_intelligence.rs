@@ -1960,6 +1960,64 @@ class A {
 }
 
 #[test]
+fn completion_resolves_method_reference_qualified_this_field_chain_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  void baz() {}
+}
+
+class Outer {
+  Foo foo = new Foo();
+
+  class Inner {
+    void m() {
+      java.util.function.Supplier<Foo> sup = Outer.this.foo::<|>
+    }
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"baz"),
+        "expected completion list to contain Foo.baz for qualified-this field chain receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_resolves_method_reference_qualified_super_field_chain_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class Foo {
+  void baz() {}
+}
+
+class Base {
+  Foo foo = new Foo();
+}
+
+class Outer extends Base {
+  class Inner {
+    void m() {
+      java.util.function.Supplier<Foo> sup = Outer.super.foo::<|>
+    }
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"baz"),
+        "expected completion list to contain Foo.baz for qualified-super field chain receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_resolves_array_access_receiver() {
     let (db, file, pos) = fixture(
         r#"
