@@ -250,7 +250,14 @@ impl ThresholdConfig {
                 path.as_ref().display()
             )
         })?;
-        Ok(toml::from_str(&content)?)
+        toml::from_str(&content)
+            .map_err(|err| anyhow::Error::msg(sanitize_toml_error_message(err.message())))
+            .with_context(|| {
+                format!(
+                    "failed to parse thresholds TOML from {}",
+                    path.as_ref().display()
+                )
+            })
     }
 
     pub fn thresholds_for(&self, bench_id: &str) -> Thresholds {
@@ -298,12 +305,123 @@ impl RuntimeThresholdConfig {
                 path.as_ref().display()
             )
         })?;
-        Ok(toml::from_str(&content)?)
+        toml::from_str(&content)
+            .map_err(|err| anyhow::Error::msg(sanitize_toml_error_message(err.message())))
+            .with_context(|| {
+                format!(
+                    "failed to parse runtime thresholds TOML from {}",
+                    path.as_ref().display()
+                )
+            })
     }
 
     pub fn thresholds_for(&self, metric_id: &str) -> RuntimeThresholds {
         self.metrics.get(metric_id).copied().unwrap_or(self.default)
     }
+}
+
+fn sanitize_toml_error_message(message: &str) -> String {
+    fn redact_quoted(message: &str, quote: char) -> String {
+        const REDACTED: &str = "<redacted>";
+        let mut out = String::with_capacity(message.len());
+        let mut rest = message;
+        while let Some(start) = rest.find(quote) {
+            out.push_str(&rest[..start]);
+            let quote_len = quote.len_utf8();
+            out.push(quote);
+            let Some(after_open) = rest.get(start + quote_len..) else {
+                // Unterminated quote: redact the remainder and stop.
+                out.push_str(REDACTED);
+                return out;
+            };
+
+            let quote_byte = quote as u8;
+            let bytes = after_open.as_bytes();
+            let mut end = None;
+            for (idx, &b) in bytes.iter().enumerate() {
+                if b != quote_byte {
+                    continue;
+                }
+
+                // Treat quotes preceded by an odd number of backslashes as escaped.
+                let mut backslashes = 0usize;
+                let mut k = idx;
+                while k > 0 && bytes[k - 1] == b'\\' {
+                    backslashes += 1;
+                    k -= 1;
+                }
+                if backslashes % 2 == 0 {
+                    end = Some(idx);
+                    break;
+                }
+            }
+
+            let Some(end) = end else {
+                // Unterminated quote: redact the remainder and stop.
+                out.push_str(REDACTED);
+                return out;
+            };
+
+            out.push_str(REDACTED);
+            out.push(quote);
+            let Some(after_close) = after_open.get(end + quote_len..) else {
+                return out;
+            };
+            rest = after_close;
+        }
+        out.push_str(rest);
+        out
+    }
+
+    // `toml::de::Error::message()` can still include user-provided scalar values in quotes, for
+    // example `invalid type: string "secret", expected a boolean`. Threshold configs are used in
+    // CI and can be user-authored; avoid echoing arbitrary config contents in error messages.
+    let mut out = redact_quoted(message, '"');
+    out = redact_quoted(&out, '\'');
+
+    // `serde` uses backticks in a few different diagnostics:
+    //
+    // - `unknown field `secret`, expected ...` (user-controlled key → redact)
+    // - `unknown variant `secret`, expected ...` (user-controlled variant → redact)
+    // - `invalid type: integer `123`, expected ...` (user-controlled scalar → redact)
+    // - `missing field `foo`` (schema field name → keep)
+    //
+    // Redact only when the backticked segment is known to contain user-controlled content.
+    let mut start = ["unknown field `", "unknown variant `"]
+        .iter()
+        .filter_map(|pattern| {
+            out.find(pattern)
+                .map(|pos| pos + pattern.len().saturating_sub(1))
+        })
+        .min();
+    if start.is_none() && (out.contains("invalid type:") || out.contains("invalid value:")) {
+        // `invalid type/value` errors include the unexpected scalar value before `, expected ...`.
+        // Redact only backticked values in that prefix so we don't hide schema names in the
+        // expected portion.
+        let boundary = out.find(", expected").unwrap_or(out.len());
+        start = out[..boundary].find('`');
+        if start.is_none() && boundary == out.len() {
+            // Some serde errors omit the `, expected ...` suffix. Fall back to the first backtick.
+            start = out.find('`');
+        }
+    }
+    if let Some(start) = start {
+        let after_start = &out[start.saturating_add(1)..];
+        let end = if let Some(end_rel) = after_start.rfind("`, expected") {
+            Some(start.saturating_add(1).saturating_add(end_rel))
+        } else if let Some(end_rel) = after_start.rfind('`') {
+            Some(start.saturating_add(1).saturating_add(end_rel))
+        } else {
+            None
+        };
+        if let Some(end) = end {
+            if start + 1 <= end && end <= out.len() {
+                out.replace_range(start + 1..end, "<redacted>");
+            }
+        }
+    }
+
+    out
 }
 
 /// The outcome of comparing a benchmark between two runs.
@@ -1093,5 +1211,61 @@ mod tests {
         let comparison = compare_runtime_runs(&baseline, &current, &config, &[]);
         assert!(comparison.has_failure);
         assert_eq!(comparison.diffs[0].status, DiffStatus::MissingInCurrent);
+    }
+
+    #[test]
+    fn thresholds_toml_parse_errors_do_not_echo_string_values() {
+        let secret_suffix = "nova-perf-thresholds-secret-token";
+        let secret = format!("prefix\\\"{secret_suffix}");
+        let text = format!("[default]\np50_regression = \"{secret}\"\n");
+
+        let raw_err =
+            toml::from_str::<ThresholdConfig>(&text).expect_err("expected invalid type error");
+        let raw_message = raw_err.message();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw toml error message to include the string value so this test catches leaks: {raw_message}"
+        );
+
+        let file = tempfile::NamedTempFile::new().expect("tempfile");
+        std::fs::write(file.path(), &text).expect("write thresholds toml");
+
+        let err = ThresholdConfig::read_toml(file.path()).expect_err("expected parse error");
+        let message = format!("{err:#}");
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized thresholds TOML error to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized thresholds TOML error to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn sanitize_toml_error_message_redacts_backticked_numeric_values() {
+        #[derive(Debug, serde::Deserialize)]
+        struct Dummy {
+            #[allow(dead_code)]
+            flag: bool,
+        }
+
+        let raw_err =
+            toml::from_str::<Dummy>("flag = 123").expect_err("expected invalid type error");
+        let raw_message = raw_err.message();
+        assert!(
+            raw_message.contains("123"),
+            "expected raw toml error message to include the numeric value so this test catches leaks: {raw_message}"
+        );
+
+        let sanitized = sanitize_toml_error_message(raw_message);
+        assert!(
+            !sanitized.contains("123"),
+            "expected sanitized toml error message to omit numeric values: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected sanitized toml error message to include redaction marker: {sanitized}"
+        );
     }
 }
