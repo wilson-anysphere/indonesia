@@ -17,6 +17,7 @@ tls = [
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+serde_json.workspace = true
 
 nova-cache = { path = "../nova-cache" }
 nova-bugreport = { path = "../nova-bugreport" }

@@ -3,6 +3,7 @@ use std::fmt;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -35,7 +36,17 @@ mod tls;
 const DEFAULT_MAX_RPC_BYTES: usize = nova_remote_proto::MAX_MESSAGE_BYTES;
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("{}", sanitize_anyhow_error_message(&err));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> Result<()> {
     let args = Args::parse()?;
 
     let config = NovaConfig::default();
@@ -225,6 +236,82 @@ Use `tcp+tls:` or pass `--allow-insecure` for local testing."
     Ok(())
 }
 
+fn sanitize_anyhow_error_message(err: &anyhow::Error) -> String {
+    // `serde_json::Error` display strings can include user-provided scalar values (e.g.
+    // `invalid type: string "..."`). Avoid echoing those values to stderr in the worker's
+    // top-level error report.
+    let message = format!("{err:#}");
+    if err.chain().any(|source| source.is::<serde_json::Error>()) {
+        sanitize_json_error_message(&message)
+    } else {
+        message
+    }
+}
+
+fn sanitize_json_error_message(message: &str) -> String {
+    // Conservatively redact all double-quoted substrings so secrets are not echoed back.
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let mut end = None;
+        let bytes = rest.as_bytes();
+        for (idx, &b) in bytes.iter().enumerate() {
+            if b != b'"' {
+                continue;
+            }
+
+            // Treat quotes preceded by an odd number of backslashes as escaped.
+            let mut backslashes = 0usize;
+            let mut k = idx;
+            while k > 0 && bytes[k - 1] == b'\\' {
+                backslashes += 1;
+                k -= 1;
+            }
+            if backslashes % 2 == 0 {
+                end = Some(idx);
+                break;
+            }
+        }
+
+        let Some(end) = end else {
+            // Unterminated quote: redact the remainder and stop.
+            out.push_str("<redacted>");
+            rest = "";
+            break;
+        };
+
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+
+    // `serde` wraps unknown fields/variants in backticks:
+    // `unknown field `secret`, expected ...`
+    //
+    // Redact only the first backticked segment so we keep the expected value list actionable.
+    if let Some(start) = out.find('`') {
+        let after_start = &out[start.saturating_add(1)..];
+        let end = if let Some(end_rel) = after_start.rfind("`, expected") {
+            Some(start.saturating_add(1).saturating_add(end_rel))
+        } else if let Some(end_rel) = after_start.rfind('`') {
+            Some(start.saturating_add(1).saturating_add(end_rel))
+        } else {
+            None
+        };
+        if let Some(end) = end {
+            if start + 1 <= end && end <= out.len() {
+                out.replace_range(start + 1..end, "<redacted>");
+            }
+        }
+    }
+
+    out
+}
+
 async fn handle_request(
     state: Arc<Mutex<WorkerState>>,
     shutdown_tx: watch::Sender<bool>,
@@ -356,11 +443,22 @@ fn cancelled_error() -> ProtoRpcError {
 }
 
 fn internal_error(err: anyhow::Error) -> ProtoRpcError {
+    let contains_serde_json = err.chain().any(|source| source.is::<serde_json::Error>());
+    let message = err.to_string();
+    let details = format!("{err:#}");
     ProtoRpcError {
         code: RpcErrorCode::Internal,
-        message: err.to_string(),
+        message: if contains_serde_json {
+            sanitize_json_error_message(&message)
+        } else {
+            message
+        },
         retryable: false,
-        details: Some(format!("{err:#}")),
+        details: Some(if contains_serde_json {
+            sanitize_json_error_message(&details)
+        } else {
+            details
+        }),
     }
 }
 
@@ -1002,6 +1100,55 @@ impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Unpin + Send + 's
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn sanitize_anyhow_error_message_does_not_echo_string_values() {
+        use anyhow::Context as _;
+
+        let secret_suffix = "nova-worker-super-secret";
+        let secret = format!("prefix\"{secret_suffix}");
+        let serde_err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+
+        let err = Err::<(), _>(serde_err)
+            .context("failed to parse JSON")
+            .expect_err("expected anyhow error");
+
+        let message = sanitize_anyhow_error_message(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn internal_error_does_not_echo_serde_json_string_values() {
+        use anyhow::Context as _;
+
+        let secret_suffix = "nova-worker-internal-error-secret";
+        let secret = format!("prefix\"{secret_suffix}");
+        let serde_err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+
+        let err = Err::<(), _>(serde_err)
+            .context("failed to parse JSON")
+            .expect_err("expected anyhow error");
+
+        let rpc_err = internal_error(err);
+        let message = format!("{} {}", rpc_err.message, rpc_err.details.unwrap_or_default());
+        assert!(
+            !message.contains(secret_suffix),
+            "expected internal RPC error to omit serde_json string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected internal RPC error to include redaction marker: {message}"
+        );
+    }
 
     #[test]
     fn args_debug_does_not_expose_auth_token() {
