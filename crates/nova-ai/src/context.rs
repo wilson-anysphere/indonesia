@@ -896,6 +896,7 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 || looks_like_base64_token(token)
                 || looks_like_high_entropy_token(token)
                 || looks_like_user_at_host_token(token)
+                || looks_like_domain_name_token(token)
                 || token_contains_percent_encoded_path_separator(token)
                 || token_contains_unicode_escaped_path_separator(token)
                 || token_contains_obvious_secret_fragment(token)

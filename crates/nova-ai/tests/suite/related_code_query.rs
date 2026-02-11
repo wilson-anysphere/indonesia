@@ -566,7 +566,12 @@ fn related_code_query_skips_domain_only_selections() {
     }
 
     let search = PanicSearch;
-    for focal_code in [r#""service.internal""#, r#""example.com""#] {
+    for focal_code in [
+        r#""service.internal""#,
+        r#""example.com""#,
+        "service.internal",
+        "example.com",
+    ] {
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
         assert!(
             req.related_code.is_empty(),
