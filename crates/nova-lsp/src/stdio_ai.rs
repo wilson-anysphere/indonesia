@@ -73,6 +73,34 @@ fn truncate_json_string(value: &str, max_bytes: usize) -> String {
   out
 }
 
+fn sanitize_json_error_message(message: &str) -> String {
+  // `serde_json::Error` display strings can include user-provided scalar values (e.g.
+  // `invalid type: string "..."`). Avoid echoing those values in JSON-RPC error messages because
+  // callers may include secrets in request payloads.
+  let mut out = String::with_capacity(message.len());
+  let mut rest = message;
+  while let Some(start) = rest.find('"') {
+    // Include the opening quote.
+    out.push_str(&rest[..start + 1]);
+    rest = &rest[start + 1..];
+
+    let Some(end) = rest.find('"') else {
+      // Unterminated quote: append the remainder and stop.
+      out.push_str(rest);
+      return out;
+    };
+
+    out.push_str("<redacted>\"");
+    rest = &rest[end + 1..];
+  }
+  out.push_str(rest);
+  out
+}
+
+fn sanitize_serde_json_error(err: &serde_json::Error) -> String {
+  sanitize_json_error_message(&err.to_string())
+}
+
 fn patch_parse_subkind(err: &nova_ai::patch::PatchParseError) -> &'static str {
   use nova_ai::patch::PatchParseError as E;
   match err {
@@ -512,7 +540,7 @@ pub(super) fn handle_ai_custom_request<O: RpcOut + Sync>(
   match method {
     nova_lsp::AI_EXPLAIN_ERROR_METHOD => {
       let params: AiRequestParams<ExplainErrorArgs> =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string(), None))?;
+        serde_json::from_value(params).map_err(|e| (-32602, sanitize_serde_json_error(&e), None))?;
       run_ai_explain_error(
         params.args,
         params.work_done_token,
@@ -523,7 +551,7 @@ pub(super) fn handle_ai_custom_request<O: RpcOut + Sync>(
     }
     nova_lsp::AI_CODE_REVIEW_METHOD => {
       let params: AiRequestParams<CodeReviewArgs> =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string(), None))?;
+        serde_json::from_value(params).map_err(|e| (-32602, sanitize_serde_json_error(&e), None))?;
       run_ai_code_review(
         params.args.diff,
         params.args.uri,
@@ -536,18 +564,18 @@ pub(super) fn handle_ai_custom_request<O: RpcOut + Sync>(
     nova_lsp::AI_MODELS_METHOD => {
       // Allow `params` to be `{}` or `null`.
       let _: Option<serde_json::Value> =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string(), None))?;
+        serde_json::from_value(params).map_err(|e| (-32602, sanitize_serde_json_error(&e), None))?;
       run_ai_models(state, cancel.clone())
     }
     nova_lsp::AI_STATUS_METHOD => {
       // Allow `params` to be `{}` or `null`.
       let _: Option<serde_json::Value> =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string(), None))?;
+        serde_json::from_value(params).map_err(|e| (-32602, sanitize_serde_json_error(&e), None))?;
       Ok(ai_status_payload(state))
     }
     nova_lsp::AI_GENERATE_METHOD_BODY_METHOD => {
       let params: AiRequestParams<GenerateMethodBodyArgs> =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string(), None))?;
+        serde_json::from_value(params).map_err(|e| (-32602, sanitize_serde_json_error(&e), None))?;
       run_ai_generate_method_body_apply(
         params.args,
         params.work_done_token,
@@ -558,7 +586,7 @@ pub(super) fn handle_ai_custom_request<O: RpcOut + Sync>(
     }
     nova_lsp::AI_GENERATE_TESTS_METHOD => {
       let params: AiRequestParams<GenerateTestsArgs> =
-        serde_json::from_value(params).map_err(|e| (-32602, e.to_string(), None))?;
+        serde_json::from_value(params).map_err(|e| (-32602, sanitize_serde_json_error(&e), None))?;
       run_ai_generate_tests_apply(
         params.args,
         params.work_done_token,
@@ -2091,6 +2119,22 @@ mod tests {
   use tokio_util::sync::CancellationToken;
 
   use httpmock::prelude::*;
+
+  #[test]
+  fn sanitize_serde_json_error_does_not_echo_string_values() {
+    let secret = "super-secret-token";
+    let err = serde_json::from_value::<bool>(json!(secret)).expect_err("expected type error");
+
+    let message = sanitize_serde_json_error(&err);
+    assert!(
+      !message.contains(secret),
+      "expected sanitized serde_json error message to omit string values: {message}"
+    );
+    assert!(
+      message.contains("<redacted>"),
+      "expected sanitized serde_json error message to include redaction marker: {message}"
+    );
+  }
 
   #[test]
   fn load_ai_config_from_env_exposes_privacy_opt_ins() {
