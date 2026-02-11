@@ -1103,6 +1103,10 @@ fn related_code_query_fallback(focal_code: &str) -> String {
         if looks_like_delimited_number_token(tok) {
             continue;
         }
+        // Timestamps (ISO-8601-ish dates/times) are low-signal and can leak operational metadata.
+        if looks_like_timestamp_token(tok) {
+            continue;
+        }
         // Network endpoints (IPv6, host:port) are similarly low-signal and can leak infrastructure
         // metadata.
         if looks_like_ipv6_address_token(tok) || looks_like_host_port_token(tok) {
@@ -1290,6 +1294,69 @@ fn looks_like_delimited_number_token(tok: &str) -> bool {
     }
 
     digits >= 6 && separators > 0
+}
+
+fn looks_like_timestamp_token(tok: &str) -> bool {
+    fn is_iso8601_date_prefix(bytes: &[u8]) -> bool {
+        if bytes.len() < 10 {
+            return false;
+        }
+        bytes[0..4].iter().all(|b| b.is_ascii_digit())
+            && bytes[4] == b'-'
+            && bytes[5..7].iter().all(|b| b.is_ascii_digit())
+            && bytes[7] == b'-'
+            && bytes[8..10].iter().all(|b| b.is_ascii_digit())
+    }
+
+    let bytes = tok.as_bytes();
+    if bytes.len() < 5 {
+        return false;
+    }
+
+    // ISO-8601-ish datetime: `YYYY-MM-DDThh:mm:ss...`.
+    if is_iso8601_date_prefix(bytes)
+        && bytes
+            .get(10)
+            .is_some_and(|b| matches!(b, b'T' | b't'))
+        && tok.contains(':')
+        && bytes.iter().all(|b| {
+            b.is_ascii_digit()
+                || matches!(b, b'-' | b':' | b'T' | b't' | b'.' | b'Z' | b'z' | b'+' )
+        })
+    {
+        return true;
+    }
+
+    // Time-of-day tokens like `12:34` or `12:34:56` (optionally with fractional seconds).
+    let time = tok.trim_end_matches(|c: char| matches!(c, 'Z' | 'z'));
+    let time_bytes = time.as_bytes();
+    if time_bytes.len() >= 4
+        && time_bytes[0].is_ascii_digit()
+        && time.contains(':')
+        && time_bytes
+            .iter()
+            .all(|b| b.is_ascii_digit() || matches!(b, b':' | b'.'))
+    {
+        let mut parts = time.split(':');
+        let Some(hours) = parts.next() else {
+            return false;
+        };
+        let Some(minutes) = parts.next() else {
+            return false;
+        };
+        if parts.next().is_some_and(|part| part.is_empty()) {
+            return false;
+        }
+        if parts.next().is_some() {
+            return false;
+        }
+        if hours.len() != 2 || minutes.len() != 2 {
+            return false;
+        }
+        return true;
+    }
+
+    false
 }
 
 fn looks_like_host_port_token(tok: &str) -> bool {

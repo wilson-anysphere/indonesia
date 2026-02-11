@@ -875,6 +875,45 @@ fn related_code_query_skips_delimited_number_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_iso8601_timestamp_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for timestamp-only related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    let focal_code = "2026-02-11T12:34:56.789Z";
+    let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for timestamp-only focal code"
+    );
+}
+
+#[test]
+fn related_code_query_skips_time_of_day_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, _query: &str) -> Vec<SearchResult> {
+            panic!("search should not be called for time-only related-code queries");
+        }
+    }
+
+    let search = PanicSearch;
+    for focal_code in ["12:34:56", "12:34"] {
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for time-only focal code"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_uuid_only_selections() {
     struct PanicSearch;
 
