@@ -2711,25 +2711,35 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
             continue;
         }
 
-        if bytes.get(i + 1).is_some_and(|b| *b == b'{') {
+        let mut j = i + 1;
+        // Some languages (notably Java) allow multiple `u` characters in a unicode escape
+        // (e.g. `\uu002F`). Treat these as escape sequences so obfuscated paths cannot leak into
+        // semantic-search queries.
+        if b == b'u' {
+            while j < bytes.len() && bytes[j] == b'u' {
+                j += 1;
+            }
+        }
+
+        if bytes.get(j).is_some_and(|b| *b == b'{') {
             let mut value = 0u32;
             let mut digits = 0usize;
-            let mut j = i + 2;
-            while j < bytes.len() && digits < 8 {
-                if bytes[j] == b'}' {
+            let mut k = j + 1;
+            while k < bytes.len() && digits < 8 {
+                if bytes[k] == b'}' {
                     break;
                 }
-                let Some(hex) = hex_value(bytes[j]) else {
+                let Some(hex) = hex_value(bytes[k]) else {
                     break;
                 };
                 value = (value << 4) | hex as u32;
                 digits += 1;
-                j += 1;
+                k += 1;
             }
 
             if digits > 0
-                && j < bytes.len()
-                && bytes[j] == b'}'
+                && k < bytes.len()
+                && bytes[k] == b'}'
                 && html_entity_codepoint_is_path_separator(value)
             {
                 return true;
@@ -2737,10 +2747,10 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
         }
 
         if b == b'u' {
-            if i + 4 < bytes.len() {
+            if j + 3 < bytes.len() {
                 let mut value = 0u32;
                 let mut ok = true;
-                for &b in &bytes[i + 1..i + 5] {
+                for &b in &bytes[j..j + 4] {
                     let Some(hex) = hex_value(b) else {
                         ok = false;
                         break;

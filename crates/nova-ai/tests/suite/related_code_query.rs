@@ -607,6 +607,7 @@ fn related_code_query_avoids_unicode_escaped_path_segments() {
 
     for prefix in [
         r"\u002Fhome\u002Fuser\u002Fmy-",
+        r"\uu002Fhome\uuu002Fuser\uuuuu002Fmy-",
         r"\u{002F}home\u{002F}user\u{002F}my-",
     ] {
         let search = CapturingSearch::default();
@@ -1705,7 +1706,9 @@ fn related_code_query_skips_unicode_escaped_path_only_selections() {
     let search = PanicSearch;
     for focal_code in [
         r"\u002Fhome\u002Fuser\u002Fsecret\u002Fcredentials",
+        r"\uu002Fhome\uuu002Fuser\uuuuu002Fsecret\uuuuuu002Fcredentials",
         r"\u005Chome\u005Cuser\u005Csecret\u005Ccredentials",
+        r"\uu005Chome\uuu005Cuser\uuuuu005Csecret\uuuuuu005Ccredentials",
         r"\u{002F}home\u{002F}user\u{002F}secret\u{002F}credentials",
         r"\u{005C}home\u{005C}user\u{005C}secret\u{005C}credentials",
         r"\U0000002Fhome\U0000002Fuser\U0000002Fsecret\U0000002Fcredentials",
@@ -1732,6 +1735,7 @@ fn related_code_query_skips_unicode_escaped_unicode_separator_path_only_selectio
     let search = PanicSearch;
     for focal_code in [
         r"\u2215home\u2215user\u2215secret\u2215credentials",
+        r"\uu2215home\uuu2215user\uuuu2215secret\uuuuu2215credentials",
         r"\u2044home\u2044user\u2044secret\u2044credentials",
         r"\uFF0Fhome\uFF0Fuser\uFF0Fsecret\uFF0Fcredentials",
         r"\u2571home\u2571user\u2571secret\u2571credentials",
