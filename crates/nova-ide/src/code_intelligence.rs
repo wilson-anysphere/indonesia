@@ -19175,6 +19175,16 @@ fn receiver_is_value_receiver(analysis: &Analysis, receiver: &str, offset: usize
         return false;
     }
 
+    // Qualified `this` / `super`: `Outer.this` is a value receiver even though its root segment
+    // (`Outer`) looks type-like.
+    if receiver.ends_with(".this")
+        || receiver.contains(".this.")
+        || receiver.ends_with(".super")
+        || receiver.contains(".super.")
+    {
+        return true;
+    }
+
     // Dotted receiver chain rooted in a value receiver (e.g. `this.foo.bar`, `obj.field`).
     //
     // The dot-completion pipeline uses this to decide whether to treat a dotted prefix as a
@@ -19418,6 +19428,8 @@ fn infer_receiver(
         None
     }
 
+    let receiver = receiver.trim();
+
     if receiver.starts_with('"') {
         return (
             types
@@ -19445,6 +19457,52 @@ fn infer_receiver(
         let super_name = class.extends.as_deref().unwrap_or("Object");
         let ty = parse_source_type_in_context(types, file_ctx, super_name);
         return (ty, CallKind::Instance);
+    }
+
+    // Qualified `this`: `Outer.this.<member>` refers to the enclosing `Outer` instance.
+    if let Some(qual) = receiver.strip_suffix(".this") {
+        let qual = qual.trim();
+        if !qual.is_empty() {
+            let ty = parse_source_type_in_context(types, file_ctx, qual);
+            return (ty, CallKind::Instance);
+        }
+    }
+
+    // Qualified `super`: `Outer.super.<member>` refers to the superclass of the enclosing `Outer`
+    // instance. For interface-qualified `super` (e.g. `I.super.<member>`), treat the receiver as
+    // the interface itself so we can surface default methods.
+    if let Some(qual) = receiver.strip_suffix(".super") {
+        let qual = qual.trim();
+        if !qual.is_empty() {
+            let qual_ty = parse_source_type_in_context(types, file_ctx, qual);
+            if let Some(class_id) = class_id_of_type(types, &qual_ty) {
+                if let Some(class_def) = types.class(class_id) {
+                    if class_def.kind == ClassKind::Interface {
+                        return (Type::class(class_id, vec![]), CallKind::Instance);
+                    }
+                    if let Some(super_ty) = class_def.super_class.clone() {
+                        return (super_ty, CallKind::Instance);
+                    }
+                }
+            }
+
+            // Fallback: local classes may not be registered in the `TypeStore` yet. The lexical
+            // `Analysis` model only records `class` declarations, so this won't mis-handle
+            // interface-qualified receivers like `I.super`.
+            if let Some(class) = analysis.classes.iter().find(|c| c.name == qual) {
+                let super_name = class.extends.as_deref().unwrap_or("Object");
+                let ty = parse_source_type_in_context(types, file_ctx, super_name);
+                return (ty, CallKind::Instance);
+            }
+
+            return (
+                types
+                    .class_id("java.lang.Object")
+                    .map(|id| Type::class(id, vec![]))
+                    .unwrap_or_else(|| Type::Named("java.lang.Object".to_string())),
+                CallKind::Instance,
+            );
+        }
     }
 
     if let Some(var) = in_scope_local_var(analysis, receiver, offset) {

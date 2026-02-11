@@ -362,6 +362,56 @@ class B extends A {
 }
 
 #[test]
+fn completion_includes_qualified_this_members() {
+    let (db, file, pos) = fixture(
+        r#"
+class Outer {
+  void bar() {}
+
+  class Inner {
+    void m() {
+      Outer.this.<|>
+    }
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"bar"),
+        "expected completion list to contain Outer.bar for qualified this receiver; got {labels:?}"
+    );
+}
+
+#[test]
+fn completion_includes_qualified_super_members() {
+    let (db, file, pos) = fixture(
+        r#"
+class Base {
+  void base() {}
+}
+
+class Outer extends Base {
+  class Inner {
+    void m() {
+      Outer.super.<|>
+    }
+  }
+}
+"#,
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"base"),
+        "expected completion list to contain Base.base for qualified super receiver; got {labels:?}"
+    );
+}
+
+#[test]
 fn completion_in_incomplete_import_is_non_empty() {
     let (db, file, pos) = fixture(
         r#"

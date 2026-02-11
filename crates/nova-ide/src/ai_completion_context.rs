@@ -520,6 +520,56 @@ class Test {
     }
 
     #[test]
+    fn receiver_type_infers_qualified_this_receiver_type_and_methods() {
+        let ctx = ctx_for(
+            r#"
+class Outer {
+  void bar() {}
+
+  class Inner {
+    void m() {
+      Outer.this.<cursor>
+    }
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Outer"),
+            "expected receiver type to contain `Outer`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "bar"));
+    }
+
+    #[test]
+    fn receiver_type_infers_qualified_super_receiver_type_and_methods() {
+        let ctx = ctx_for(
+            r#"
+class Base {
+  void base() {}
+}
+
+class Outer extends Base {
+  class Inner {
+    void m() {
+      Outer.super.<cursor>
+    }
+  }
+}
+"#,
+        );
+
+        let receiver_ty = ctx.receiver_type.as_deref().unwrap_or("");
+        assert!(
+            receiver_ty.contains("Base"),
+            "expected receiver type to contain `Base`, got {receiver_ty:?}"
+        );
+        assert!(ctx.available_methods.iter().any(|m| m == "base"));
+    }
+
+    #[test]
     fn receiver_type_infers_super_field_access() {
         let ctx = ctx_for(
             r#"
