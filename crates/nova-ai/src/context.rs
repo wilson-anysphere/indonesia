@@ -898,12 +898,75 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
     // otherwise be included.
     {
         let bounds = surrounding_token_bounds(text, start, end);
-        if !bounds.is_empty() {
-            let token = &text[bounds.clone()];
-            if looks_like_email_address(token)
-                || looks_like_ipv4_address(token)
-                || looks_like_mac_address_token(token)
-                || looks_like_uuid_token(token)
+            if !bounds.is_empty() {
+                let token = &text[bounds.clone()];
+
+                fn numeric_fragment_after_hash_value(fragment: &[u8]) -> Option<u32> {
+                    fn hex_value(b: u8) -> Option<u8> {
+                        match b {
+                            b'0'..=b'9' => Some(b - b'0'),
+                            b'a'..=b'f' => Some(b - b'a' + 10),
+                            b'A'..=b'F' => Some(b - b'A' + 10),
+                            _ => None,
+                        }
+                    }
+
+                    if fragment.is_empty() {
+                        return None;
+                    }
+
+                    let mut j = 0usize;
+                    let base = match fragment.get(0) {
+                        Some(b'x') | Some(b'X') => {
+                            j += 1;
+                            16u32
+                        }
+                        _ => 10u32,
+                    };
+                    if j >= fragment.len() {
+                        return None;
+                    }
+
+                    let mut value = 0u32;
+                    let mut significant = 0usize;
+                    while j < fragment.len() && significant < 8 {
+                        let b = fragment[j];
+                        let digit = if base == 16 {
+                            let Some(v) = hex_value(b) else {
+                                break;
+                            };
+                            v as u32
+                        } else if b.is_ascii_digit() {
+                            (b - b'0') as u32
+                        } else {
+                            break;
+                        };
+                        if significant == 0 && digit == 0 {
+                            j += 1;
+                            continue;
+                        }
+                        value = value
+                            .checked_mul(base)
+                            .and_then(|v| v.checked_add(digit))
+                            .unwrap_or(u32::MAX);
+                        significant += 1;
+                        j += 1;
+                    }
+
+                    if significant == 0 {
+                        return None;
+                    }
+                    Some(value)
+                }
+
+                fn numeric_fragment_after_hash_is_path_separator(fragment: &[u8]) -> bool {
+                    numeric_fragment_after_hash_value(fragment)
+                        .is_some_and(html_entity_codepoint_is_path_separator)
+                }
+                if looks_like_email_address(token)
+                    || looks_like_ipv4_address(token)
+                    || looks_like_mac_address_token(token)
+                    || looks_like_uuid_token(token)
                 || looks_like_jwt_token(token)
                 || looks_like_base64url_triplet_token(token)
                 || token_contains_long_hex_run(token)
@@ -1446,6 +1509,13 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                         if html_percent_fragment_is_percent_encoded_separator(bytes, j + 1) {
                             return true;
                         }
+                        if html_entity_is_number_sign(bytes, j)
+                            && bytes
+                                .get(j + 1..)
+                                .is_some_and(numeric_fragment_after_hash_is_path_separator)
+                        {
+                            return true;
+                        }
                         if html_entity_is_percent(bytes, j)
                             && bytes
                                 .get(j + 1..j + 3)
@@ -1456,6 +1526,19 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                     }
                     j += 1;
                 }
+            }
+
+            // Skip identifiers inside number-sign entities (`&num;`, `&#35;`) when they are
+            // immediately followed by numeric escape fragments representing a path separator (e.g.
+            // `&num;47;...`, which decodes to `#47;...` after one pass and then to `/...` after a
+            // second HTML-decode pass).
+            if after.is_some_and(|b| *b == b';')
+                && html_entity_is_number_sign(bytes, bounds.end)
+                && bytes
+                    .get(bounds.end + 1..)
+                    .is_some_and(numeric_fragment_after_hash_is_path_separator)
+            {
+                return true;
             }
 
             // Skip identifiers inside percent entities (`&percnt;`, `&#37;`, `&amp;#37;`) when they
@@ -1487,6 +1570,16 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                     .get(..2)
                     .is_some_and(|prefix| prefix[0].is_ascii_hexdigit() && prefix[1].is_ascii_hexdigit())
                 {
+                    return true;
+                }
+            }
+
+            // Handle numeric-entity separators where the `#` itself is HTML-escaped, e.g.
+            // `&#35;47home...` or `&num;47home...`. The surrounding token starts with the numeric
+            // escape digits and the entity delimiter `;` is treated as a boundary, so we need to
+            // look at the preceding entity to decide whether this identifier is a path segment.
+            if before_idx.is_some_and(|idx| html_entity_is_number_sign(bytes, idx)) {
+                if numeric_fragment_after_hash_is_path_separator(token.as_bytes()) {
                     return true;
                 }
             }
@@ -1769,6 +1862,49 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
             || parse_numeric(fragment).is_some_and(html_entity_codepoint_is_path_separator)
     }
 
+    fn parse_numeric_fragment_after_hash(fragment: &[u8]) -> Option<u32> {
+        if fragment.is_empty() {
+            return None;
+        }
+
+        let mut j = 0usize;
+        let base = match fragment.get(0) {
+            Some(b'x') | Some(b'X') => {
+                j += 1;
+                16u32
+            }
+            _ => 10u32,
+        };
+        if j >= fragment.len() {
+            return None;
+        }
+
+        let mut digits = &fragment[j..];
+        while digits.first().is_some_and(|b| *b == b'0') {
+            digits = &digits[1..];
+        }
+        if digits.is_empty() || digits.len() > 8 {
+            return None;
+        }
+
+        let mut value = 0u32;
+        for &b in digits {
+            let digit = if base == 16 {
+                hex_value(b)? as u32
+            } else if b.is_ascii_digit() {
+                (b - b'0') as u32
+            } else {
+                return None;
+            };
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+        }
+
+        Some(value)
+    }
+
     if end_semicolon >= bytes.len() || bytes[end_semicolon] != b';' {
         return false;
     }
@@ -1807,6 +1943,21 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
             || name.eq_ignore_ascii_case(b"ssetmn")
         {
             return true;
+        }
+
+        // Some escape layers encode the `#` of a numeric entity as its own entity (e.g. `&num;47;`
+        // decodes to `#47;`). Treat these number-sign-prefixed numeric escapes as path separators so
+        // encoded paths do not leak into semantic-search queries.
+        if let Some(inner_semicolon) = name.iter().position(|b| *b == b';') {
+            let prefix = &name[..inner_semicolon];
+            let fragment = &name[inner_semicolon + 1..];
+            if prefix.eq_ignore_ascii_case(b"num") {
+                if let Some(nested) = parse_numeric_fragment_after_hash(fragment) {
+                    if html_entity_codepoint_is_path_separator(nested) {
+                        return true;
+                    }
+                }
+            }
         }
 
         // In HTML-escaped logs, a numeric entity can itself be escaped as `&amp;#47;`, leaving a
@@ -1887,6 +2038,18 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
                     return true;
                 }
             }
+
+            if let Some(inner_semicolon) = rest.iter().position(|b| *b == b';') {
+                let prefix = &rest[..inner_semicolon];
+                let fragment = &rest[inner_semicolon + 1..];
+                if prefix.eq_ignore_ascii_case(b"num") {
+                    if let Some(nested) = parse_numeric_fragment_after_hash(fragment) {
+                        if html_entity_codepoint_is_path_separator(nested) {
+                            return true;
+                        }
+                    }
+                }
+            }
         }
 
         // Some HTML emitters also omit the semicolon after `&amp` itself (e.g. `&amp#47;`), which
@@ -1953,11 +2116,21 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
                 .unwrap_or(u32::MAX);
         }
 
-        if value != 38 {
+        if value == 38 {
+            return fragment_is_path_separator(fragment);
+        }
+
+        // Some escaping layers encode the `#` of a numeric entity as an entity itself (e.g.
+        // `&#35;47;` decodes to `#47;`). Treat these number-sign-prefixed numeric escapes as path
+        // separators so encoded paths do not leak into semantic-search queries.
+        if value == 35 {
+            if let Some(nested) = parse_numeric_fragment_after_hash(fragment) {
+                return html_entity_codepoint_is_path_separator(nested);
+            }
             return false;
         }
 
-        return fragment_is_path_separator(fragment);
+        return false;
     }
 
     // Handle cases where the numeric `&` entity omits its own `;` terminator, e.g. `&#38sol;` or
@@ -2255,6 +2428,194 @@ fn html_entity_is_ampersand(bytes: &[u8], end_semicolon: usize) -> bool {
     }
 
     value == 38
+}
+
+fn html_entity_is_number_sign(bytes: &[u8], end_semicolon: usize) -> bool {
+    fn hex_value(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    fn fragment_is_number_sign(mut fragment: &[u8]) -> bool {
+        let parse_numeric = |bytes: &[u8]| -> Option<u32> {
+            if bytes.first().is_some_and(|b| *b == b'#') {
+                let mut j = 1usize;
+                let base = match bytes.get(j) {
+                    Some(b'x') | Some(b'X') => {
+                        j += 1;
+                        16u32
+                    }
+                    _ => 10u32,
+                };
+                if j >= bytes.len() {
+                    return None;
+                }
+                let mut digits = &bytes[j..];
+                while digits.first().is_some_and(|b| *b == b'0') {
+                    digits = &digits[1..];
+                }
+                if digits.is_empty() || digits.len() > 8 {
+                    return None;
+                }
+                let mut value = 0u32;
+                for &b in digits {
+                    let digit = if base == 16 {
+                        hex_value(b)? as u32
+                    } else if b.is_ascii_digit() {
+                        (b - b'0') as u32
+                    } else {
+                        return None;
+                    };
+                    value = value
+                        .checked_mul(base)
+                        .and_then(|v| v.checked_add(digit))
+                        .unwrap_or(u32::MAX);
+                }
+                return Some(value);
+            }
+            None
+        };
+
+        if fragment.eq_ignore_ascii_case(b"num") || parse_numeric(fragment) == Some(35) {
+            return true;
+        }
+
+        for _ in 0..8 {
+            if fragment.len() >= 4 && fragment[..3].eq_ignore_ascii_case(b"amp") && fragment[3] == b';' {
+                fragment = &fragment[4..];
+                if fragment.is_empty() {
+                    return false;
+                }
+                continue;
+            }
+            if fragment.len() > 3 && fragment[..3].eq_ignore_ascii_case(b"amp") {
+                fragment = &fragment[3..];
+                if fragment.first().is_some_and(|b| *b == b';') {
+                    fragment = &fragment[1..];
+                }
+                if fragment.is_empty() {
+                    return false;
+                }
+                continue;
+            }
+            break;
+        }
+
+        fragment.eq_ignore_ascii_case(b"num") || parse_numeric(fragment) == Some(35)
+    }
+
+    if end_semicolon >= bytes.len() || bytes[end_semicolon] != b';' {
+        return false;
+    }
+
+    let mut amp = None;
+    let mut i = end_semicolon;
+    let mut scanned = 0usize;
+    while i > 0 && scanned < 256 {
+        i -= 1;
+        scanned += 1;
+        if bytes[i] == b'&' {
+            amp = Some(i);
+            break;
+        }
+    }
+
+    let Some(amp) = amp else {
+        return false;
+    };
+    if amp + 2 >= end_semicolon {
+        return false;
+    }
+
+    if bytes[amp + 1] != b'#' {
+        let name = &bytes[amp + 1..end_semicolon];
+        return fragment_is_number_sign(name);
+    }
+
+    let mut j = amp + 2;
+    let base = match bytes.get(j) {
+        Some(b'x') | Some(b'X') => {
+            j += 1;
+            16u32
+        }
+        _ => 10u32,
+    };
+    if j >= end_semicolon {
+        return false;
+    }
+
+    let digits_full = &bytes[j..end_semicolon];
+    if let Some(inner_semicolon) = digits_full.iter().position(|b| *b == b';') {
+        let prefix_raw = &digits_full[..inner_semicolon];
+        let fragment = &digits_full[inner_semicolon + 1..];
+        if fragment.is_empty() {
+            return false;
+        }
+
+        let mut digits = prefix_raw;
+        while digits.first().is_some_and(|b| *b == b'0') {
+            digits = &digits[1..];
+        }
+        if digits.is_empty() || digits.len() > 8 {
+            return false;
+        }
+
+        let mut value = 0u32;
+        for &b in digits {
+            let digit = if base == 16 {
+                let Some(v) = hex_value(b) else {
+                    return false;
+                };
+                v as u32
+            } else if b.is_ascii_digit() {
+                (b - b'0') as u32
+            } else {
+                return false;
+            };
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+        }
+
+        if value != 38 {
+            return false;
+        }
+
+        return fragment_is_number_sign(fragment);
+    }
+
+    let mut digits = digits_full;
+    while digits.first().is_some_and(|b| *b == b'0') {
+        digits = &digits[1..];
+    }
+    if digits.is_empty() || digits.len() > 8 {
+        return false;
+    }
+
+    let mut value = 0u32;
+    for &b in digits {
+        let digit = if base == 16 {
+            let Some(v) = hex_value(b) else {
+                return false;
+            };
+            v as u32
+        } else if b.is_ascii_digit() {
+            (b - b'0') as u32
+        } else {
+            return false;
+        };
+        value = value
+            .checked_mul(base)
+            .and_then(|v| v.checked_add(digit))
+            .unwrap_or(u32::MAX);
+    }
+
+    value == 35
 }
 
 fn html_entity_is_percent(bytes: &[u8], end_semicolon: usize) -> bool {
@@ -3761,6 +4122,64 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
         }
     }
 
+    fn html_numeric_fragment_after_number_sign_is_path_separator(bytes: &[u8], start: usize) -> bool {
+        if start >= bytes.len() {
+            return false;
+        }
+
+        let mut j = start;
+        let base = match bytes.get(j) {
+            Some(b'x') | Some(b'X') => {
+                j += 1;
+                16u32
+            }
+            _ => 10u32,
+        };
+        if j >= bytes.len() {
+            return false;
+        }
+
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        while j < bytes.len() && significant < 8 {
+            let b = bytes[j];
+            let digit = if base == 16 {
+                let Some(v) = hex_value(b) else {
+                    break;
+                };
+                v as u32
+            } else if b.is_ascii_digit() {
+                (b - b'0') as u32
+            } else {
+                break;
+            };
+            if significant == 0 && digit == 0 {
+                j += 1;
+                continue;
+            }
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+            significant += 1;
+            j += 1;
+        }
+
+        if significant == 8 && j < bytes.len() {
+            let next = bytes[j];
+            let is_digit = if base == 16 {
+                hex_value(next).is_some()
+            } else {
+                next.is_ascii_digit()
+            };
+            if is_digit {
+                return false;
+            }
+        }
+
+        significant > 0 && html_entity_codepoint_is_path_separator(value)
+    }
+
     fn html_named_fragment_is_path_separator(bytes: &[u8], start: usize) -> bool {
         bytes
             .get(start..start + 3)
@@ -3883,6 +4302,15 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
         // where the nested separator fragment omits a trailing `;`. Treat these as separators so
         // path-only selections do not leak segments or trigger low-signal semantic-search queries.
         if html_entity_is_ampersand(bytes, idx) && html_fragment_is_path_separator(bytes, idx + 1) {
+            return true;
+        }
+
+        // Some HTML escapes encode the `#` of a numeric entity as its own entity (e.g. `&#35;47home`
+        // or `&num;47home`), which can decode to `&#47home` after a pass. Treat these as path
+        // separators so path-only selections do not leak segments or trigger semantic-search.
+        if html_entity_is_number_sign(bytes, idx)
+            && html_numeric_fragment_after_number_sign_is_path_separator(bytes, idx + 1)
+        {
             return true;
         }
     }

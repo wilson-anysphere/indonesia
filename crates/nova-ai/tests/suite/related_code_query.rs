@@ -3051,6 +3051,45 @@ fn related_code_query_skips_double_escaped_html_entity_path_only_selections_with
 }
 
 #[test]
+fn related_code_query_skips_double_escaped_html_entity_path_only_selections_with_encoded_number_sign() {
+    struct PanicSearch<'a> {
+        sep: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for double-escaped HTML entity path selections with encoded number signs (sep={}); got query={query}",
+                self.sep
+            );
+        }
+    }
+
+    for sep in [
+        "&amp;&#35;47;",
+        "&amp;&#35;x2F;",
+        "&amp;&#35;92;",
+        "&amp;&#35;x5C;",
+        "&amp;&#35;47",
+        "&amp;&#35;x2F",
+        "&amp;&#35;92",
+        "&amp;&#35;x5C",
+        "&amp;&num;47;",
+        "&amp;&num;92;",
+        "&amp;&num;47",
+        "&amp;&num;92",
+    ] {
+        let search = PanicSearch { sep };
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for double-escaped HTML entity path-only focal code with encoded number sign entities"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_named_html_entity_path_only_selections_without_semicolons() {
     struct PanicSearch;
 
