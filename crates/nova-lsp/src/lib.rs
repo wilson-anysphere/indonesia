@@ -345,6 +345,8 @@ fn handle_custom_request_inner_cancelable(
             struct TestSerdeJsonArgs {
                 #[allow(dead_code)]
                 foo: u32,
+                #[allow(dead_code)]
+                flag: bool,
             }
 
             let _args: TestSerdeJsonArgs = serde_json::from_value(params)
