@@ -17,69 +17,7 @@ fn sanitize_serde_json_error(err: &serde_json::Error) -> String {
 }
 
 fn sanitize_json_error_message(message: &str) -> String {
-    // `serde_json::Error` display strings can include user-provided scalar values (for example:
-    // `invalid type: string "..."`). These metadata files come from dependency JARs and can include
-    // arbitrary values; avoid echoing string values in errors that might surface in logs.
-    let mut out = String::with_capacity(message.len());
-    let mut rest = message;
-    while let Some(start) = rest.find('"') {
-        // Include the opening quote.
-        out.push_str(&rest[..start + 1]);
-        rest = &rest[start + 1..];
-
-        let mut end = None;
-        let bytes = rest.as_bytes();
-        for (idx, &b) in bytes.iter().enumerate() {
-            if b != b'"' {
-                continue;
-            }
-
-            // Treat quotes preceded by an odd number of backslashes as escaped.
-            let mut backslashes = 0usize;
-            let mut k = idx;
-            while k > 0 && bytes[k - 1] == b'\\' {
-                backslashes += 1;
-                k -= 1;
-            }
-            if backslashes % 2 == 0 {
-                end = Some(idx);
-                break;
-            }
-        }
-
-        let Some(end) = end else {
-            // Unterminated quote: redact the remainder and stop.
-            out.push_str("<redacted>");
-            rest = "";
-            break;
-        };
-
-        out.push_str("<redacted>\"");
-        rest = &rest[end + 1..];
-    }
-    out.push_str(rest);
-
-    // `serde` wraps unknown fields/variants in backticks:
-    // `unknown field `secret`, expected ...`
-    //
-    // Redact only the first backticked segment so we keep the expected value list actionable.
-    if let Some(start) = out.find('`') {
-        let after_start = &out[start.saturating_add(1)..];
-        let end = if let Some(end_rel) = after_start.rfind("`, expected") {
-            Some(start.saturating_add(1).saturating_add(end_rel))
-        } else if let Some(end_rel) = after_start.rfind('`') {
-            Some(start.saturating_add(1).saturating_add(end_rel))
-        } else {
-            None
-        };
-        if let Some(end) = end {
-            if start + 1 <= end && end <= out.len() {
-                out.replace_range(start + 1..end, "<redacted>");
-            }
-        }
-    }
-
-    out
+    nova_core::sanitize_json_error_message(message)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -285,6 +223,49 @@ mod tests {
     use std::io::Write;
     use tempfile::tempdir;
     use zip::write::FileOptions;
+
+    #[test]
+    fn sanitize_serde_json_error_does_not_echo_string_values() {
+        let secret_suffix = "nova-config-metadata-super-secret";
+        let secret = format!("prefix\"{secret_suffix}");
+        let err = serde_json::from_value::<bool>(serde_json::json!(secret))
+            .expect_err("expected type error");
+
+        let message = sanitize_serde_json_error(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized serde_json error message to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized serde_json error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn sanitize_serde_json_error_does_not_echo_backticked_values() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OnlyFoo {
+            #[allow(dead_code)]
+            foo: u32,
+        }
+
+        let secret_suffix = "nova-config-metadata-backticked-secret";
+        let secret = format!("prefix`, expected {secret_suffix}");
+        let json = format!(r#"{{"{secret}": 1}}"#);
+        let err = serde_json::from_str::<OnlyFoo>(&json).expect_err("expected unknown field error");
+
+        let message = sanitize_serde_json_error(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized serde_json error message to omit backticked values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized serde_json error message to include redaction marker: {message}"
+        );
+    }
 
     #[test]
     fn ingests_metadata_from_jar() {

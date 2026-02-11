@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+nova-core = { path = "../nova-core" }
 serde.workspace = true
 serde_json.workspace = true
 toml = "0.8"

@@ -3882,6 +3882,7 @@ dependencies = [
  "anyhow",
  "nova-archive",
  "nova-classpath",
+ "nova-core",
  "pretty_assertions",
  "serde",
  "serde_json",
@@ -4014,6 +4015,7 @@ name = "nova-devtools"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "nova-core",
  "serde",
  "serde_json",
  "tempfile",
