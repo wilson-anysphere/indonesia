@@ -373,7 +373,7 @@ pub enum CodeGenerationError {
     #[error("invalid ai privacy configuration: {0}")]
     InvalidPrivacyConfig(String),
     #[error(
-        "AI code edits are blocked because the workspace contains files matching ai.privacy.excluded_paths: {paths:?}. \
+        "AI code edits are blocked because the workspace contains files matching ai.privacy.excluded_paths. \
 Those files must never be sent to an LLM. Remove them from the workspace snapshot or update ai.privacy.excluded_paths."
     )]
     WorkspaceContainsExcludedPaths { paths: Vec<String> },
@@ -2317,6 +2317,12 @@ mod tests {
             None,
         ))
         .expect_err("expected excluded path failure");
+
+        let message = err.to_string();
+        assert!(
+            !message.contains("src/secrets/Secret.java"),
+            "CodeGenerationError display should not echo excluded paths: {message}"
+        );
 
         let CodeGenerationError::WorkspaceContainsExcludedPaths { paths } = err else {
             panic!("expected WorkspaceContainsExcludedPaths, got {err:?}");
