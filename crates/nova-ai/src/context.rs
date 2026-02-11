@@ -1908,6 +1908,83 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
         return fragment_is_path_separator(fragment);
     }
 
+    // Handle cases where the numeric `&` entity omits its own `;` terminator, e.g. `&#38sol;` or
+    // `&#x26#47;`. HTML parsers will treat the numeric prefix (`38`/`0x26`) as an `&` and the
+    // remaining bytes as a nested entity fragment.
+    //
+    // Treat these as separators so path-only selections do not leak segments into semantic-search
+    // queries.
+    {
+        // For hex entities, a missing semicolon is ambiguous because the fragment may begin with
+        // `a`-`f` (valid hex digits). Fail closed: if the entity begins with `26` (0x26 == '&') and
+        // the remainder looks like an encoded separator, treat it as a path separator. This
+        // covers patterns like `&#x26bsol;home` and `&#x26Backslash;home`.
+        if base == 16 {
+            let mut digits = digits_full;
+            while digits.first().is_some_and(|b| *b == b'0') {
+                digits = &digits[1..];
+            }
+            if digits.len() > 2 && digits[0] == b'2' && digits[1] == b'6' {
+                let fragment = &digits[2..];
+                if fragment_is_path_separator(fragment) {
+                    return true;
+                }
+            }
+        }
+
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        let mut k = 0usize;
+        while k < digits_full.len() && significant < 8 {
+            let b = digits_full[k];
+            let digit = if base == 16 {
+                let Some(v) = hex_value(b) else {
+                    break;
+                };
+                v as u32
+            } else if b.is_ascii_digit() {
+                (b - b'0') as u32
+            } else {
+                break;
+            };
+            if significant == 0 && digit == 0 {
+                k += 1;
+                continue;
+            }
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+            significant += 1;
+            k += 1;
+        }
+
+        if significant > 0 && k < digits_full.len() {
+            // If we hit the significant-digit limit but the next byte is still a digit, treat the
+            // sequence as malformed and fail closed.
+            if significant == 8 {
+                let next = digits_full[k];
+                let is_digit = if base == 16 {
+                    hex_value(next).is_some()
+                } else {
+                    next.is_ascii_digit()
+                };
+                if is_digit {
+                    return false;
+                }
+            }
+
+            let fragment = &digits_full[k..];
+            if html_entity_codepoint_is_path_separator(value) {
+                return true;
+            }
+            if value == 38 {
+                return fragment_is_path_separator(fragment);
+            }
+            return false;
+        }
+    }
+
     let mut digits = digits_full;
     while digits.first().is_some_and(|b| *b == b'0') {
         digits = &digits[1..];
