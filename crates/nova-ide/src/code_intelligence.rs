@@ -8068,6 +8068,124 @@ fn simple_receiver_before_dot(text: &str, dot_offset: usize) -> Option<SimpleRec
         }
         let start = start_quote?;
         (start, text.get(start..receiver_end)?.to_string())
+    } else if last == ')' {
+        // Parenthesized receiver (best-effort): `(expr).<cursor>`.
+        //
+        // This is useful for postfix templates like `("hello").var` while still keeping receiver
+        // parsing lightweight (we intentionally avoid attempting to parse calls / indexing).
+        let close_paren = receiver_end - 1;
+        let open_paren = find_matching_open_paren(bytes, close_paren)?;
+        // If the `(` is immediately preceded by an identifier (or other expression), it's likely a
+        // call argument list (`foo(...)`) rather than a grouping paren. Bail out so call-chain
+        // receiver inference can handle it.
+        let before_open = skip_trivia_backwards(text, open_paren);
+        if before_open > 0 {
+            let prev = bytes[before_open - 1] as char;
+            if is_ident_continue(prev) || matches!(prev, ')' | ']' | '>') {
+                return None;
+            }
+        }
+        let (mut inner_start, mut inner_end) = unwrap_paren_expr(bytes, open_paren, close_paren)?;
+        // `unwrap_paren_expr` strips whitespace but not comments. Skip leading/trailing trivia
+        // inside the parentheses so receivers like `(/*comment*/this)` still work.
+        loop {
+            inner_start = skip_trivia_forwards(text, inner_start);
+            inner_end = skip_trivia_backwards(text, inner_end);
+            if inner_end <= inner_start {
+                return None;
+            }
+
+            // After skipping trivia, strip redundant nested parentheses (best-effort).
+            if bytes.get(inner_start) == Some(&b'(') && bytes.get(inner_end - 1) == Some(&b')') {
+                if let Some(nested_open) = find_matching_open_paren(bytes, inner_end - 1) {
+                    if nested_open == inner_start {
+                        inner_start += 1;
+                        inner_end -= 1;
+                        continue;
+                    }
+                }
+            }
+
+            break;
+        }
+
+        let inner = text.get(inner_start..inner_end)?.trim();
+        if inner.is_empty() {
+            return None;
+        }
+
+        if inner.starts_with('"') {
+            return Some(SimpleReceiverExpr {
+                span_to_dot: Span::new(open_paren, dot_offset),
+                expr: inner.to_string(),
+            });
+        }
+
+        // Strip whitespace + comment trivia from dotted chains like `(this /*c*/ . foo)`.
+        // Keep this intentionally minimal: if the remaining expression isn't a dotted identifier
+        // chain, bail out so call-chain receiver inference can handle it instead.
+        let mut stripped = String::with_capacity(inner.len());
+        let inner_bytes = inner.as_bytes();
+        let mut i = 0usize;
+        while i < inner_bytes.len() {
+            match inner_bytes[i] {
+                b' ' | b'\t' | b'\r' | b'\n' => i += 1,
+                b'/' if inner_bytes.get(i + 1) == Some(&b'/') => {
+                    // Line comment.
+                    i += 2;
+                    while i < inner_bytes.len() && inner_bytes[i] != b'\n' {
+                        i += 1;
+                    }
+                }
+                b'/' if inner_bytes.get(i + 1) == Some(&b'*') => {
+                    // Block comment.
+                    i += 2;
+                    while i + 1 < inner_bytes.len() {
+                        if inner_bytes[i] == b'*' && inner_bytes[i + 1] == b'/' {
+                            i += 2;
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+                other => {
+                    stripped.push(other as char);
+                    i += 1;
+                }
+            }
+        }
+        let stripped = stripped.trim();
+        if stripped.is_empty() {
+            return None;
+        }
+        if !stripped
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.')
+        {
+            return None;
+        }
+        if stripped
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_digit())
+            && !stripped.chars().all(|ch| ch.is_ascii_digit())
+        {
+            // Numeric receivers are only supported for digit-only literals (matches the non-paren
+            // fast path below).
+            return None;
+        }
+        if !stripped
+            .chars()
+            .next()
+            .is_some_and(|ch| is_ident_start(ch) || ch.is_ascii_digit())
+        {
+            return None;
+        }
+
+        return Some(SimpleReceiverExpr {
+            span_to_dot: Span::new(open_paren, dot_offset),
+            expr: stripped.to_string(),
+        });
     } else if last.is_ascii_digit() {
         // Number literal receiver (best-effort, digits only).
         let mut start = receiver_end;

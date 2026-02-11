@@ -6773,6 +6773,49 @@ class A {
 }
 
 #[test]
+fn completion_includes_postfix_var_for_parenthesized_string_literal_receiver() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    ("hello").var<|>
+  }
+}
+"#,
+    );
+
+    let text_without_caret = db
+        .file_text(file)
+        .expect("expected file content for fixture")
+        .to_string();
+    let expr_start = text_without_caret
+        .find("(\"hello\").var")
+        .expect("expected parenthesized string literal receiver in fixture");
+
+    let items = completions(&db, file, pos);
+    let item = items
+        .iter()
+        .find(|i| i.label == "var" && i.kind == Some(lsp_types::CompletionItemKind::SNIPPET))
+        .expect("expected postfix `var` snippet completion");
+
+    let edit = match item.text_edit.as_ref().expect("expected text_edit") {
+        CompletionTextEdit::Edit(edit) => edit,
+        other => panic!("unexpected text_edit variant: {other:?}"),
+    };
+
+    assert_eq!(
+        edit.range.start,
+        offset_to_position(&text_without_caret, expr_start)
+    );
+    assert_eq!(edit.range.end, pos);
+    assert!(
+        edit.new_text.contains("var ${1:name} = \"hello\""),
+        "expected snippet to contain `var ${{1:name}} = \"hello\"`; got {:?}",
+        edit.new_text
+    );
+}
+
+#[test]
 fn completion_in_import_offers_package_segment_and_replaces_only_segment() {
     let (db, file, pos) = fixture(
         r#"
