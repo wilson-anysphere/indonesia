@@ -22,6 +22,75 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
+fn sanitize_serde_json_error(err: &serde_json::Error) -> String {
+    sanitize_json_error_message(&err.to_string())
+}
+
+fn sanitize_json_error_message(message: &str) -> String {
+    // `serde_json::Error` display strings can include user-provided scalar values (for example:
+    // `invalid type: string "..."` or `unknown field `...``). Cache files can contain build output
+    // and other potentially-sensitive values; avoid echoing those values in error messages.
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('"') {
+        // Include the opening quote.
+        out.push_str(&rest[..start + 1]);
+        rest = &rest[start + 1..];
+
+        let mut end = None;
+        let bytes = rest.as_bytes();
+        for (idx, &b) in bytes.iter().enumerate() {
+            if b != b'"' {
+                continue;
+            }
+
+            // Treat quotes preceded by an odd number of backslashes as escaped.
+            let mut backslashes = 0usize;
+            let mut k = idx;
+            while k > 0 && bytes[k - 1] == b'\\' {
+                backslashes += 1;
+                k -= 1;
+            }
+            if backslashes % 2 == 0 {
+                end = Some(idx);
+                break;
+            }
+        }
+
+        let Some(end) = end else {
+            // Unterminated quote: redact the remainder and stop.
+            out.push_str("<redacted>");
+            rest = "";
+            break;
+        };
+        out.push_str("<redacted>\"");
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+
+    // `serde` wraps unknown fields/variants in backticks:
+    // `unknown field `secret`, expected ...`
+    //
+    // Redact only the first backticked segment so we keep the expected value list actionable.
+    if let Some(start) = out.find('`') {
+        let after_start = &out[start.saturating_add(1)..];
+        let end = if let Some(end_rel) = after_start.rfind("`, expected") {
+            Some(start.saturating_add(1).saturating_add(end_rel))
+        } else if let Some(end_rel) = after_start.rfind('`') {
+            Some(start.saturating_add(1).saturating_add(end_rel))
+        } else {
+            None
+        };
+        if let Some(end) = end {
+            if start + 1 <= end && end <= out.len() {
+                out.replace_range(start + 1..end, "<redacted>");
+            }
+        }
+    }
+
+    out
+}
+
 /// Discover generated Java source roots produced by common annotation processor setups.
 ///
 /// This helper exists for components that only know the workspace root on disk
@@ -348,8 +417,9 @@ impl AptMtimeCache {
             .join("apt-cache")
             .join("mtimes.json");
         let file = match std::fs::read_to_string(&cache_path) {
-            Ok(text) => serde_json::from_str::<MtimeCacheFile>(&text)
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?,
+            Ok(text) => serde_json::from_str::<MtimeCacheFile>(&text).map_err(|err| {
+                io::Error::new(io::ErrorKind::InvalidData, sanitize_serde_json_error(&err))
+            })?,
             Err(err) if err.kind() == io::ErrorKind::NotFound => MtimeCacheFile::default(),
             Err(err) => return Err(err),
         };
@@ -392,8 +462,9 @@ impl AptMtimeCache {
         entries.sort_by(|a, b| a.root.cmp(&b.root));
 
         let file = MtimeCacheFile { entries };
-        let json = serde_json::to_string_pretty(&file)
-            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        let json = serde_json::to_string_pretty(&file).map_err(|err| {
+            io::Error::new(io::ErrorKind::InvalidData, sanitize_serde_json_error(&err))
+        })?;
 
         let (tmp_path, mut file) = open_unique_tmp_file(&self.cache_path, parent)?;
         let write_result = (|| -> io::Result<()> {
@@ -746,8 +817,9 @@ impl AptRunCache {
             .join("apt-cache")
             .join("runs.json");
         let file = match std::fs::read_to_string(&cache_path) {
-            Ok(text) => serde_json::from_str::<AptRunCacheFile>(&text)
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?,
+            Ok(text) => serde_json::from_str::<AptRunCacheFile>(&text).map_err(|err| {
+                io::Error::new(io::ErrorKind::InvalidData, sanitize_serde_json_error(&err))
+            })?,
             Err(err) if err.kind() == io::ErrorKind::NotFound => AptRunCacheFile {
                 schema_version: APT_RUN_CACHE_SCHEMA_VERSION,
                 entries: Vec::new(),
@@ -833,8 +905,9 @@ impl AptRunCache {
             schema_version: APT_RUN_CACHE_SCHEMA_VERSION,
             entries: self.entries.clone(),
         };
-        let json = serde_json::to_string_pretty(&file)
-            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        let json = serde_json::to_string_pretty(&file).map_err(|err| {
+            io::Error::new(io::ErrorKind::InvalidData, sanitize_serde_json_error(&err))
+        })?;
 
         let (tmp_path, mut file) = open_unique_tmp_file(&self.cache_path, parent)?;
         let write_result = (|| -> io::Result<()> {
@@ -1173,8 +1246,9 @@ impl AptManager {
             schema_version: GENERATED_ROOTS_SNAPSHOT_SCHEMA_VERSION,
             modules,
         };
-        let json = serde_json::to_string_pretty(&file)
-            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        let json = serde_json::to_string_pretty(&file).map_err(|err| {
+            io::Error::new(io::ErrorKind::InvalidData, sanitize_serde_json_error(&err))
+        })?;
 
         let (tmp_path, mut file) = open_unique_tmp_file(&snapshot_path, parent)?;
         let write_result = (|| -> io::Result<()> {
@@ -2233,6 +2307,80 @@ fn push_default_generated_dirs(
             ));
         }
         (BuildSystem::Bazel, _) => {}
+    }
+}
+
+#[cfg(test)]
+mod json_error_sanitization_tests {
+    use super::*;
+
+    #[test]
+    fn apt_mtime_cache_json_errors_do_not_echo_string_values_with_escaped_quotes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache_dir = dir.path().join(".nova").join("apt-cache");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let secret_suffix = "nova-apt-super-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
+        let payload = serde_json::json!({
+            "entries": secret,
+        })
+        .to_string();
+
+        let raw_err = serde_json::from_str::<MtimeCacheFile>(&payload).expect_err("type mismatch");
+        let raw_message = raw_err.to_string();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw serde_json error to include the string value so this test catches leaks: {raw_message}"
+        );
+
+        std::fs::write(cache_dir.join("mtimes.json"), payload).expect("write cache file");
+
+        let err = AptMtimeCache::load(dir.path()).expect_err("expected parse error");
+        let message = err.to_string();
+        assert!(
+            !message.contains(secret_suffix),
+            "expected AptMtimeCache parse error to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected AptMtimeCache parse error to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn apt_run_cache_json_errors_do_not_echo_string_values_with_escaped_quotes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache_dir = dir.path().join(".nova").join("apt-cache");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let secret_suffix = "nova-apt-runs-super-secret-token";
+        let secret = format!("prefix\"{secret_suffix}");
+        let payload = serde_json::json!({
+            "schema_version": APT_RUN_CACHE_SCHEMA_VERSION,
+            "entries": secret,
+        })
+        .to_string();
+
+        let raw_err = serde_json::from_str::<AptRunCacheFile>(&payload).expect_err("type mismatch");
+        let raw_message = raw_err.to_string();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw serde_json error to include the string value so this test catches leaks: {raw_message}"
+        );
+
+        std::fs::write(cache_dir.join("runs.json"), payload).expect("write cache file");
+
+        let err = AptRunCache::load(dir.path()).expect_err("expected parse error");
+        let message = err.to_string();
+        assert!(
+            !message.contains(secret_suffix),
+            "expected AptRunCache parse error to omit string values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected AptRunCache parse error to include redaction marker: {message}"
+        );
     }
 }
 
