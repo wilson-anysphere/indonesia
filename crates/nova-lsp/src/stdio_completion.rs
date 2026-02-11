@@ -1,6 +1,8 @@
 use crate::stdio_paths::{load_document_text, path_from_uri};
 use crate::stdio_sanitize::sanitize_serde_json_error;
 use crate::stdio_text::position_to_offset_utf16;
+#[cfg(feature = "ai")]
+use crate::stdio_text::offset_to_position_utf16;
 use crate::stdio_extensions_db::SingleFileDb;
 use crate::ServerState;
 
@@ -127,6 +129,21 @@ pub(super) fn handle_completion(
 
     // Merge extension-provided completions (WASM providers) after Nova's built-in list.
     let offset = position_to_offset_utf16(&text, position).unwrap_or(text.len());
+
+    #[cfg(feature = "ai")]
+    if has_more {
+        if let Some(context_id) = completion_context_id
+            .as_deref()
+            .and_then(|id| id.parse::<nova_lsp::CompletionContextId>().ok())
+        {
+            let prefix_start = completion_prefix_start(&text, offset);
+            let start = offset_to_position_utf16(&text, prefix_start);
+            state
+                .completion_service
+                .register_prefix_range(context_id, LspTypesRange::new(start, position));
+        }
+    }
+
     let ext_db = Arc::new(SingleFileDb::new(file, Some(path), text));
     let ide_extensions = IdeExtensions::with_registry(
         ext_db,
@@ -156,6 +173,31 @@ pub(super) fn handle_completion(
             ..CompletionItem::default()
         });
     }
+
+    #[cfg(feature = "ai")]
+    if has_more {
+        if let Some(context_id) = completion_context_id
+            .as_deref()
+            .and_then(|id| id.parse::<nova_lsp::CompletionContextId>().ok())
+        {
+            const MAX_DISALLOWED_INSERT_TEXTS: usize = 1024;
+            let mut disallowed = std::collections::HashSet::new();
+            for item in &items {
+                if disallowed.len() >= MAX_DISALLOWED_INSERT_TEXTS {
+                    break;
+                }
+                let text = completion_item_effective_insert_text(item);
+                if text.is_empty() {
+                    continue;
+                }
+                disallowed.insert(text.to_string());
+            }
+            state
+                .completion_service
+                .register_disallowed_insert_texts(context_id, disallowed);
+        }
+    }
+
     for item in &mut items {
         if item.data.is_none() {
             item.data = Some(json!({}));
@@ -179,6 +221,32 @@ pub(super) fn handle_completion(
     };
 
     serde_json::to_value(list).map_err(|e| sanitize_serde_json_error(&e))
+}
+
+#[cfg(feature = "ai")]
+fn completion_item_effective_insert_text(item: &CompletionItem) -> &str {
+    match item.text_edit.as_ref() {
+        Some(CompletionTextEdit::Edit(edit)) => edit.new_text.as_str(),
+        Some(CompletionTextEdit::InsertAndReplace(edit)) => edit.new_text.as_str(),
+        None => item
+            .insert_text
+            .as_deref()
+            .unwrap_or_else(|| item.label.as_str()),
+    }
+}
+
+#[cfg(feature = "ai")]
+fn completion_prefix_start(text: &str, cursor_offset: usize) -> usize {
+    fn is_ident_continue(b: u8) -> bool {
+        (b as char).is_ascii_alphanumeric() || b == b'_' || b == b'$'
+    }
+
+    let bytes = text.as_bytes();
+    let mut start = cursor_offset.min(bytes.len());
+    while start > 0 && is_ident_continue(bytes[start - 1]) {
+        start -= 1;
+    }
+    start
 }
 
 pub(super) fn handle_completion_item_resolve(

@@ -1,5 +1,5 @@
 use httpmock::prelude::*;
-use lsp_types::{CompletionItem, CompletionList, Position, TextEdit};
+use lsp_types::{CompletionItem, CompletionList, CompletionTextEdit, Position, TextEdit};
 use nova_lsp::MoreCompletionsResult;
 use serde_json::json;
 use std::fs;
@@ -255,6 +255,208 @@ model = "default"
 
     let status = child.wait().expect("wait");
     assert!(status.success());
+}
+
+#[test]
+fn stdio_server_ai_completion_more_items_include_prefix_text_edit_range() {
+    let _lock = crate::support::stdio_server_lock();
+    let completion_payload = r#"
+    {
+      "completions": [
+        {
+          "label": "stream chain",
+          "insert_text": "filter(x -> true).map(x -> x)",
+          "format": "plain",
+          "additional_edits": [],
+          "confidence": 0.9
+        }
+      ]
+    }
+    "#;
+
+    let ai_server =
+        crate::support::TestAiServer::start(json!({ "completion": completion_payload }));
+    let endpoint = format!("{}/complete", ai_server.base_url());
+
+    let temp = TempDir::new().expect("tempdir");
+    let config_path = temp.path().join("nova.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+[ai]
+enabled = true
+
+[ai.features]
+multi_token_completion = true
+
+[ai.timeouts]
+multi_token_completion_ms = 5000
+
+[ai.provider]
+kind = "http"
+url = "{endpoint}"
+model = "default"
+"#
+        ),
+    )
+    .expect("write config");
+
+    let file_path = temp.path().join("Foo.java");
+    let source = concat!(
+        "package com.example;\n",
+        "\n",
+        "import java.util.List;\n",
+        "import java.util.stream.Stream;\n",
+        "\n",
+        "class Foo {\n",
+        "    void test() {\n",
+        "        Stream stream = List.of(1).stream();\n",
+        "        stream.f\n",
+        "    }\n",
+        "}\n"
+    );
+    fs::write(&file_path, source).expect("write Foo.java");
+    let uri = file_uri(&file_path);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .arg("--config")
+        .arg(&config_path)
+        // Ensure a developer's environment doesn't disable AI for this test.
+        .env_remove("NOVA_DISABLE_AI")
+        .env_remove("NOVA_DISABLE_AI_COMPLETIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_ACTIONS")
+        .env_remove("NOVA_DISABLE_AI_CODE_REVIEW")
+        // Ensure completion-specific env overrides don't accidentally disable the AI completion
+        // background tasks this test is asserting on.
+        .env_remove("NOVA_AI_COMPLETIONS_MAX_ITEMS")
+        // Ensure legacy AI env vars cannot override the config file.
+        .env_remove("NOVA_AI_PROVIDER")
+        .env_remove("NOVA_AI_ENDPOINT")
+        .env_remove("NOVA_AI_MODEL")
+        .env_remove("NOVA_AI_API_KEY")
+        .env_remove("NOVA_AI_AUDIT_LOGGING")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": { "textDocument": { "uri": uri, "languageId": "java", "version": 1, "text": source } }
+        }),
+    );
+
+    let cursor = Position::new(8, 16); // end of "stream.f"
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": cursor
+            }
+        }),
+    );
+    let completion_resp = read_response_with_id(&mut stdout, 2);
+    let completion_result = completion_resp
+        .get("result")
+        .cloned()
+        .expect("completion result");
+    let list: CompletionList = serde_json::from_value(completion_result).expect("completion list");
+
+    let context_id = list
+        .items
+        .iter()
+        .find_map(|item| {
+            item.data
+                .as_ref()
+                .and_then(|data| data.get("nova"))
+                .and_then(|nova| nova.get("completion_context_id"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+        .expect("completion_context_id present on at least one item");
+
+    let mut resolved: Option<MoreCompletionsResult> = None;
+    for attempt in 0..50 {
+        let request_id = 3 + attempt as i64;
+        write_jsonrpc_message(
+            &mut stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "nova/completion/more",
+                "params": { "context_id": context_id.clone() }
+            }),
+        );
+        let resp = read_response_with_id(&mut stdout, request_id);
+        let result = resp.get("result").cloned().expect("result");
+        let more: MoreCompletionsResult =
+            serde_json::from_value(result).expect("decode more completions");
+        if !more.is_incomplete {
+            resolved = Some(more);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let more = resolved.expect("AI completions should resolve");
+    assert!(
+        !more.items.is_empty(),
+        "expected at least one AI completion item"
+    );
+
+    let item = &more.items[0];
+    let Some(text_edit) = item.text_edit.as_ref() else {
+        panic!("expected AI completion item to include text_edit");
+    };
+    let (range_start, range_end) = match text_edit {
+        CompletionTextEdit::Edit(edit) => (edit.range.start, edit.range.end),
+        CompletionTextEdit::InsertAndReplace(edit) => (edit.insert.start, edit.insert.end),
+    };
+
+    assert_eq!(range_start, Position::new(8, 15)); // start of "f"
+    assert_eq!(range_end, cursor);
+
+    // shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 100, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 100);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+
+    assert!(ai_server.hits() > 0, "expected at least one AI provider request");
 }
 
 #[test]
