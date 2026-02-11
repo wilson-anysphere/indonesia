@@ -118,7 +118,8 @@ pub(crate) fn sanitize_serde_json_error(err: &serde_json::Error) -> String {
     sanitize_json_error_message(&err.to_string())
 }
 
-pub(crate) fn sanitize_error_message(err: &(dyn std::error::Error + 'static)) -> String {
+#[doc(hidden)]
+pub fn sanitize_error_message(err: &(dyn std::error::Error + 'static)) -> String {
     // Many Nova subsystems surface errors (not necessarily via `anyhow`). If a `serde_json::Error`
     // appears anywhere in the chain, sanitize the overall stringified error to avoid echoing
     // scalar values from the original JSON payload (e.g. `invalid type: string "..."`).
@@ -129,7 +130,8 @@ pub(crate) fn sanitize_error_message(err: &(dyn std::error::Error + 'static)) ->
     }
 }
 
-pub(crate) fn sanitize_anyhow_error_message(err: &anyhow::Error) -> String {
+#[doc(hidden)]
+pub fn sanitize_anyhow_error_message(err: &anyhow::Error) -> String {
     // Many Nova subsystems use `anyhow` and error chains. If a `serde_json::Error` appears anywhere
     // in the chain, sanitize the overall stringified error to avoid echoing scalar values from the
     // original JSON payload (e.g. `invalid type: string "..."`).

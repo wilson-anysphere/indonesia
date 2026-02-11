@@ -150,7 +150,9 @@ pub(super) fn handle_workspace_symbol(
 
             match join_result {
                 Ok(Ok(())) => {}
-                Ok(Err(err)) => return Err((-32603, err.to_string())),
+                Ok(Err(err)) => {
+                    return Err((-32603, nova_lsp::sanitize_anyhow_error_message(&err)));
+                }
                 Err(err) => return Err((-32603, err.to_string())),
             }
         }
@@ -215,14 +217,14 @@ pub(super) fn handle_workspace_symbol(
         // Reuse the server's shared memory manager so all workspace components
         // (Salsa memo evictor, symbol search index, etc.) account/evict together.
         let workspace = Workspace::open_with_memory_manager(project_root, state.memory.clone())
-            .map_err(|e| (-32603, e.to_string()))?;
+            .map_err(|e| (-32603, nova_lsp::sanitize_anyhow_error_message(&e)))?;
         state.workspace = Some(workspace);
     }
 
     let workspace = state.workspace.as_ref().expect("workspace initialized");
     let symbols = workspace
         .workspace_symbols_cancelable(query, cancel)
-        .map_err(|e| (-32603, e.to_string()))?;
+        .map_err(|e| (-32603, nova_lsp::sanitize_anyhow_error_message(&e)))?;
 
     let mut out = Vec::new();
     for symbol in symbols {
