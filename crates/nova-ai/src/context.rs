@@ -7894,6 +7894,115 @@ fn token_contains_octal_escaped_path_separator(tok: &str) -> bool {
         return false;
     }
 
+    fn html_fragment_after_emitted_ampersand_is_path_separator(bytes: &[u8], mut start: usize) -> bool {
+        fn hex_value(b: u8) -> Option<u8> {
+            match b {
+                b'0'..=b'9' => Some(b - b'0'),
+                b'a'..=b'f' => Some(b - b'a' + 10),
+                b'A'..=b'F' => Some(b - b'A' + 10),
+                _ => None,
+            }
+        }
+
+        if start >= bytes.len() {
+            return false;
+        }
+
+        for _ in 0..8 {
+            if bytes
+                .get(start..start + 3)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+            {
+                start += 3;
+                if bytes.get(start).is_some_and(|b| *b == b';') {
+                    start += 1;
+                }
+                if start >= bytes.len() {
+                    return false;
+                }
+                continue;
+            }
+            break;
+        }
+
+        if bytes
+            .get(start..start + 3)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"sol"))
+            || bytes
+                .get(start..start + 5)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"slash"))
+            || bytes
+                .get(start..start + 4)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"dsol"))
+            || bytes
+                .get(start..start + 4)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"bsol"))
+            || bytes
+                .get(start..start + 9)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"backslash"))
+            || bytes
+                .get(start..start + 5)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"frasl"))
+            || bytes
+                .get(start..start + 8)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"setminus"))
+            || bytes
+                .get(start..start + 5)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"setmn"))
+            || bytes
+                .get(start..start + 13)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"smallsetminus"))
+            || bytes
+                .get(start..start + 6)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"ssetmn"))
+        {
+            return true;
+        }
+
+        if bytes.get(start) != Some(&b'#') {
+            return false;
+        }
+        let mut j = start + 1;
+        let base = match bytes.get(j) {
+            Some(b'x') | Some(b'X') => {
+                j += 1;
+                16u32
+            }
+            _ => 10u32,
+        };
+        if j >= bytes.len() {
+            return false;
+        }
+
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        while j < bytes.len() && significant < 8 {
+            let b = bytes[j];
+            let digit = if base == 16 {
+                let Some(v) = hex_value(b) else {
+                    break;
+                };
+                v as u32
+            } else if b.is_ascii_digit() {
+                (b - b'0') as u32
+            } else {
+                break;
+            };
+            if significant == 0 && digit == 0 {
+                j += 1;
+                continue;
+            }
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+            significant += 1;
+            j += 1;
+        }
+
+        significant > 0 && html_entity_codepoint_is_path_separator(value)
+    }
+
     let mut i = 0usize;
     while i + 1 < bytes.len() {
         if bytes[i] != b'\\' {
@@ -7920,6 +8029,9 @@ fn token_contains_octal_escaped_path_separator(tok: &str) -> bool {
             if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, j).is_some() {
                 return true;
             }
+            if value == 38 && html_fragment_after_emitted_ampersand_is_path_separator(bytes, j) {
+                return true;
+            }
         }
 
         i += 1;
@@ -7932,6 +8044,115 @@ fn token_contains_backslash_hex_escaped_path_separator(tok: &str) -> bool {
     let bytes = tok.as_bytes();
     if bytes.len() < 2 {
         return false;
+    }
+
+    fn html_fragment_after_emitted_ampersand_is_path_separator(bytes: &[u8], mut start: usize) -> bool {
+        fn hex_value(b: u8) -> Option<u8> {
+            match b {
+                b'0'..=b'9' => Some(b - b'0'),
+                b'a'..=b'f' => Some(b - b'a' + 10),
+                b'A'..=b'F' => Some(b - b'A' + 10),
+                _ => None,
+            }
+        }
+
+        if start >= bytes.len() {
+            return false;
+        }
+
+        for _ in 0..8 {
+            if bytes
+                .get(start..start + 3)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+            {
+                start += 3;
+                if bytes.get(start).is_some_and(|b| *b == b';') {
+                    start += 1;
+                }
+                if start >= bytes.len() {
+                    return false;
+                }
+                continue;
+            }
+            break;
+        }
+
+        if bytes
+            .get(start..start + 3)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"sol"))
+            || bytes
+                .get(start..start + 5)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"slash"))
+            || bytes
+                .get(start..start + 4)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"dsol"))
+            || bytes
+                .get(start..start + 4)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"bsol"))
+            || bytes
+                .get(start..start + 9)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"backslash"))
+            || bytes
+                .get(start..start + 5)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"frasl"))
+            || bytes
+                .get(start..start + 8)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"setminus"))
+            || bytes
+                .get(start..start + 5)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"setmn"))
+            || bytes
+                .get(start..start + 13)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"smallsetminus"))
+            || bytes
+                .get(start..start + 6)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"ssetmn"))
+        {
+            return true;
+        }
+
+        if bytes.get(start) != Some(&b'#') {
+            return false;
+        }
+        let mut j = start + 1;
+        let base = match bytes.get(j) {
+            Some(b'x') | Some(b'X') => {
+                j += 1;
+                16u32
+            }
+            _ => 10u32,
+        };
+        if j >= bytes.len() {
+            return false;
+        }
+
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        while j < bytes.len() && significant < 8 {
+            let b = bytes[j];
+            let digit = if base == 16 {
+                let Some(v) = hex_value(b) else {
+                    break;
+                };
+                v as u32
+            } else if b.is_ascii_digit() {
+                (b - b'0') as u32
+            } else {
+                break;
+            };
+            if significant == 0 && digit == 0 {
+                j += 1;
+                continue;
+            }
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+            significant += 1;
+            j += 1;
+        }
+
+        significant > 0 && html_entity_codepoint_is_path_separator(value)
     }
 
     let mut i = 0usize;
@@ -7955,6 +8176,9 @@ fn token_contains_backslash_hex_escaped_path_separator(tok: &str) -> bool {
                 return true;
             }
             if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, j).is_some() {
+                return true;
+            }
+            if value == 38 && html_fragment_after_emitted_ampersand_is_path_separator(bytes, j) {
                 return true;
             }
         }
