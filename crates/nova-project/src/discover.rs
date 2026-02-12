@@ -12,12 +12,13 @@ pub(crate) fn sanitize_error_message(err: &(dyn std::error::Error + 'static)) ->
     // `serde_json::Error` display strings can include user-provided scalar values (for example:
     // `invalid type: string "..."`). If any serde-json error appears in the error chain, redact
     // quoted/backticked substrings from the final formatted message so we don't leak secrets.
+    //
+    // Also handle TOML diagnostics by stripping the source snippet blocks and redacting
+    // single-quoted values (for example semver parsing errors), since project loading can surface
+    // extension manifest/config parse failures.
+    let contains_serde_json = error_chain_contains_serde_json(err);
     let message = err.to_string();
-    if error_chain_contains_serde_json(err) {
-        sanitize_json_error_message(&message)
-    } else {
-        message
-    }
+    nova_core::sanitize_error_message_text(&message, contains_serde_json)
 }
 
 fn error_chain_contains_serde_json(err: &(dyn std::error::Error + 'static)) -> bool {
@@ -1143,6 +1144,34 @@ mod tests {
         assert!(
             !message.contains(secret_suffix),
             "expected sanitized error message to omit backticked values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected sanitized error message to include redaction marker: {message}"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_message_does_not_echo_toml_snippet_blocks() {
+        #[derive(Debug, serde::Deserialize)]
+        struct Dummy {
+            #[allow(dead_code)]
+            flag: bool,
+        }
+
+        let secret_suffix = "nova-project-toml-snippet-secret";
+        let text = format!("flag = \"{secret_suffix}\"");
+        let err = toml::from_str::<Dummy>(&text).expect_err("expected invalid type error");
+        let raw_message = err.to_string();
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw TOML error to include the string value so this test catches leaks: {raw_message}"
+        );
+
+        let message = sanitize_error_message(&err);
+        assert!(
+            !message.contains(secret_suffix),
+            "expected sanitized error message to omit TOML snippet contents and scalar values: {message}"
         );
         assert!(
             message.contains("<redacted>"),
