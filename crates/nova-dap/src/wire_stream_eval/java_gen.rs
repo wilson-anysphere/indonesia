@@ -450,6 +450,13 @@ pub fn generate_stream_eval_helper_java_source(
     // Compute a deterministic, collision-free parameter list.
     let mut used_params: HashSet<String> = HashSet::new();
     used_params.insert(THIS_IDENT.to_string());
+    // Lambda parameter names share the same namespace as method parameters in Java (a lambda
+    // parameter cannot shadow a method parameter). Reserve them so we can still compile helper
+    // methods even when the paused frame already has locals like `x` and the stream expression
+    // uses common lambda parameter names like `x -> ...`.
+    used_params.extend(collect_lambda_param_names(stages, terminal).into_iter());
+
+    let array_stream_idents = collect_array_stream_idents(locals, fields, static_fields);
     let mut params: Vec<(String, String)> = Vec::new();
     params.push((this_ty.to_string(), THIS_IDENT.to_string()));
 
@@ -540,6 +547,7 @@ pub fn generate_stream_eval_helper_java_source(
         let stage = stage.trim();
         let stage = stage.strip_suffix(';').unwrap_or(stage).trim();
         let stage = rewrite_this_tokens(stage, THIS_IDENT);
+        let stage = rewrite_array_stream_calls(&stage, &array_stream_idents);
         let stage_is_void = is_known_void_stream_expression(&stage);
 
         out.push_str("  public static ");
@@ -593,6 +601,7 @@ pub fn generate_stream_eval_helper_java_source(
                 .unwrap_or(terminal_expr)
                 .trim();
             let terminal_expr = rewrite_this_tokens(terminal_expr, THIS_IDENT);
+            let terminal_expr = rewrite_array_stream_calls(&terminal_expr, &array_stream_idents);
             let terminal_is_void = is_known_void_stream_expression(&terminal_expr);
 
             out.push_str("  public static ");
@@ -626,6 +635,448 @@ pub fn generate_stream_eval_helper_java_source(
     }
 
     out.push_str("}\n");
+    out
+}
+
+fn collect_lambda_param_names(stages: &[String], terminal: Option<&str>) -> HashSet<String> {
+    let mut out = HashSet::new();
+
+    for stage in stages {
+        out.extend(extract_lambda_param_names(stage));
+    }
+    if let Some(expr) = terminal {
+        out.extend(extract_lambda_param_names(expr));
+    }
+
+    out
+}
+
+fn extract_lambda_param_names(expr: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+
+    let mut chars = expr.char_indices().peekable();
+    let mut in_str = false;
+    let mut in_char = false;
+    let mut escape = false;
+
+    while let Some((idx, ch)) = chars.next() {
+        if escape {
+            escape = false;
+            continue;
+        }
+
+        if in_str {
+            match ch {
+                '\\' => escape = true,
+                '"' => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        if in_char {
+            match ch {
+                '\\' => escape = true,
+                '\'' => in_char = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => {
+                in_str = true;
+                continue;
+            }
+            '\'' => {
+                in_char = true;
+                continue;
+            }
+            '-' => {
+                if chars.peek().is_some_and(|(_, next)| *next == '>') {
+                    // Don't consume the `>`; we only need the index for slicing.
+                    let before = expr[..idx].trim_end();
+                    for name in lambda_params_from_left(before) {
+                        if is_valid_java_identifier_ascii(&name) {
+                            out.insert(name);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    out
+}
+
+fn lambda_params_from_left(left: &str) -> Vec<String> {
+    let left = left.trim_end();
+    if left.is_empty() {
+        return Vec::new();
+    }
+
+    if left.ends_with(')') {
+        let close_idx = left.len().saturating_sub(1);
+        let Some(open_idx) = find_matching_open_paren(left, close_idx) else {
+            return Vec::new();
+        };
+        let inner = &left[open_idx + 1..close_idx];
+        split_top_level_commas(inner)
+            .into_iter()
+            .filter_map(last_identifier_token)
+            .collect()
+    } else {
+        last_identifier_token(left)
+            .into_iter()
+            .collect::<Vec<_>>()
+    }
+}
+
+fn find_matching_open_paren(source: &str, close_idx: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (idx, ch) in source[..=close_idx].char_indices().rev() {
+        match ch {
+            ')' => depth += 1,
+            '(' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_top_level_commas(source: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+
+    let mut depth_paren = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut depth_brace = 0usize;
+    let mut depth_angle = 0usize;
+    let mut in_str = false;
+    let mut in_char = false;
+    let mut escape = false;
+
+    for (idx, ch) in source.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if in_str {
+            match ch {
+                '\\' => escape = true,
+                '"' => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+        if in_char {
+            match ch {
+                '\\' => escape = true,
+                '\'' => in_char = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_str = true,
+            '\'' => in_char = true,
+            '(' => depth_paren += 1,
+            ')' => depth_paren = depth_paren.saturating_sub(1),
+            '[' => depth_bracket += 1,
+            ']' => depth_bracket = depth_bracket.saturating_sub(1),
+            '{' => depth_brace += 1,
+            '}' => depth_brace = depth_brace.saturating_sub(1),
+            '<' => depth_angle += 1,
+            '>' => depth_angle = depth_angle.saturating_sub(1),
+            ',' if depth_paren == 0
+                && depth_bracket == 0
+                && depth_brace == 0
+                && depth_angle == 0 =>
+            {
+                parts.push(source[start..idx].trim());
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+
+    parts.push(source[start..].trim());
+    parts.into_iter().filter(|part| !part.is_empty()).collect()
+}
+
+fn last_identifier_token(source: &str) -> Option<String> {
+    let source = source.trim();
+    if source.is_empty() {
+        return None;
+    }
+
+    let mut end = None::<usize>;
+    let mut start = None::<usize>;
+    for (idx, ch) in source.char_indices().rev() {
+        if end.is_none() {
+            if is_java_identifier_part_ascii(ch) {
+                end = Some(idx + ch.len_utf8());
+                start = Some(idx);
+            }
+            continue;
+        }
+
+        if is_java_identifier_part_ascii(ch) {
+            start = Some(idx);
+            continue;
+        }
+
+        break;
+    }
+
+    let (Some(start), Some(end)) = (start, end) else {
+        return None;
+    };
+    let ident = &source[start..end];
+    if !is_valid_java_identifier_ascii(ident) {
+        return None;
+    }
+    Some(ident.to_string())
+}
+
+fn is_valid_java_identifier_ascii(ident: &str) -> bool {
+    let mut chars = ident.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !is_java_identifier_start_ascii(first) {
+        return false;
+    }
+    if chars.any(|ch| !is_java_identifier_part_ascii(ch)) {
+        return false;
+    }
+    if is_java_keyword(ident) {
+        return false;
+    }
+    true
+}
+
+fn collect_array_stream_idents(
+    locals: &[(String, String)],
+    fields: &[(String, String)],
+    static_fields: &[(String, String)],
+) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for (name, ty) in locals
+        .iter()
+        .chain(fields.iter())
+        .chain(static_fields.iter())
+    {
+        let name = name.trim();
+        if name.is_empty() || name == "this" {
+            continue;
+        }
+
+        let ty = ty.trim();
+        if !ty.ends_with("[]") {
+            continue;
+        }
+
+        let base = ty.trim_end_matches("[]").trim();
+        let is_supported = matches!(base, "int" | "long" | "double")
+            || !matches!(
+                base,
+                "boolean" | "byte" | "char" | "short" | "int" | "long" | "float" | "double"
+            );
+        if is_supported {
+            out.insert(name.to_string());
+        }
+    }
+    out
+}
+
+fn rewrite_array_stream_calls(source: &str, array_idents: &HashSet<String>) -> String {
+    if array_idents.is_empty() {
+        return source.to_string();
+    }
+    if !source.contains(".stream") {
+        return source.to_string();
+    }
+
+    let mut out = String::with_capacity(source.len());
+    let mut chars = source.char_indices().peekable();
+    let mut in_str = false;
+    let mut in_char = false;
+    let mut escape = false;
+    let mut prev_non_ws = None::<char>;
+
+    while let Some((_idx, ch)) = chars.next() {
+        if in_str {
+            out.push(ch);
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_str = false;
+            }
+            if !ch.is_whitespace() {
+                prev_non_ws = Some(ch);
+            }
+            continue;
+        }
+
+        if in_char {
+            out.push(ch);
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '\'' {
+                in_char = false;
+            }
+            if !ch.is_whitespace() {
+                prev_non_ws = Some(ch);
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => {
+                in_str = true;
+                out.push(ch);
+                prev_non_ws = Some(ch);
+                continue;
+            }
+            '\'' => {
+                in_char = true;
+                out.push(ch);
+                prev_non_ws = Some(ch);
+                continue;
+            }
+            _ if is_java_identifier_start_ascii(ch) => {
+                let mut ident = String::new();
+                ident.push(ch);
+                while let Some((_, next_ch)) = chars.peek().copied() {
+                    if is_java_identifier_part_ascii(next_ch) {
+                        ident.push(next_ch);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+
+                let should_rewrite =
+                    prev_non_ws != Some('.') && array_idents.contains(ident.as_str());
+                if !should_rewrite {
+                    out.push_str(&ident);
+                    prev_non_ws = ident.chars().last();
+                    continue;
+                }
+
+                // Look ahead for `.stream()` with no args.
+                let mut lookahead = chars.clone();
+                while let Some((_, next_ch)) = lookahead.peek().copied() {
+                    if next_ch.is_whitespace() {
+                        lookahead.next();
+                        continue;
+                    }
+                    break;
+                }
+                let Some((_, next_ch)) = lookahead.peek().copied() else {
+                    out.push_str(&ident);
+                    prev_non_ws = ident.chars().last();
+                    continue;
+                };
+                if next_ch != '.' {
+                    out.push_str(&ident);
+                    prev_non_ws = ident.chars().last();
+                    continue;
+                }
+                lookahead.next(); // consume '.'
+
+                while let Some((_, next_ch)) = lookahead.peek().copied() {
+                    if next_ch.is_whitespace() {
+                        lookahead.next();
+                        continue;
+                    }
+                    break;
+                }
+
+                let mut method = String::new();
+                while let Some((_, next_ch)) = lookahead.peek().copied() {
+                    if is_java_identifier_part_ascii(next_ch) {
+                        method.push(next_ch);
+                        lookahead.next();
+                    } else {
+                        break;
+                    }
+                }
+                if method != "stream" {
+                    out.push_str(&ident);
+                    prev_non_ws = ident.chars().last();
+                    continue;
+                }
+
+                while let Some((_, next_ch)) = lookahead.peek().copied() {
+                    if next_ch.is_whitespace() {
+                        lookahead.next();
+                        continue;
+                    }
+                    break;
+                }
+                let Some((_, next_ch)) = lookahead.peek().copied() else {
+                    out.push_str(&ident);
+                    prev_non_ws = ident.chars().last();
+                    continue;
+                };
+                if next_ch != '(' {
+                    out.push_str(&ident);
+                    prev_non_ws = ident.chars().last();
+                    continue;
+                }
+                lookahead.next(); // consume '('
+
+                while let Some((_, next_ch)) = lookahead.peek().copied() {
+                    if next_ch.is_whitespace() {
+                        lookahead.next();
+                        continue;
+                    }
+                    break;
+                }
+                let Some((_, next_ch)) = lookahead.peek().copied() else {
+                    out.push_str(&ident);
+                    prev_non_ws = ident.chars().last();
+                    continue;
+                };
+                if next_ch != ')' {
+                    // `stream(...)` with args; do not rewrite.
+                    out.push_str(&ident);
+                    prev_non_ws = ident.chars().last();
+                    continue;
+                }
+                lookahead.next(); // consume ')'
+
+                // Commit: advance the real iterator to where lookahead ended.
+                chars = lookahead;
+
+                out.push_str("java.util.Arrays.stream(");
+                out.push_str(&ident);
+                out.push(')');
+                prev_non_ws = Some(')');
+                continue;
+            }
+            _ => {}
+        }
+
+        out.push(ch);
+        if !ch.is_whitespace() {
+            prev_non_ws = Some(ch);
+        }
+    }
+
     out
 }
 
@@ -1289,6 +1740,61 @@ mod tests {
         assert!(
             src.contains("return sampleStream(__this.toString(), 3);"),
             "{src}"
+        );
+    }
+
+    #[test]
+    fn java_source_generation_renames_locals_that_collide_with_lambda_parameters() {
+        let src = generate_stream_eval_helper_java_source(
+            "",
+            "__NovaStreamEvalHelper",
+            &[],
+            &[
+                ("this".to_string(), "Object".to_string()),
+                ("list".to_string(), "java.util.List<java.lang.Integer>".to_string()),
+                ("x".to_string(), "int".to_string()),
+            ],
+            &[],
+            &[],
+            &[r#"list.stream().map(x -> x)"#.to_string()],
+            None,
+            3,
+        );
+
+        assert!(
+            src.contains("stage0(Object __this, java.util.List<java.lang.Integer> list, int x_2)"),
+            "expected local `x` to be renamed to avoid colliding with lambda param `x`:\n{src}"
+        );
+        assert!(
+            src.contains(r#"sampleStream(list.stream().map(x -> x), 3)"#),
+            "expected lambda param spelling to be preserved:\n{src}"
+        );
+    }
+
+    #[test]
+    fn java_source_generation_rewrites_array_stream_calls() {
+        let src = generate_stream_eval_helper_java_source(
+            "",
+            "__NovaStreamEvalHelper",
+            &[],
+            &[
+                ("this".to_string(), "Object".to_string()),
+                ("arr".to_string(), "int[]".to_string()),
+            ],
+            &[],
+            &[],
+            &["arr.stream()".to_string()],
+            None,
+            2,
+        );
+
+        assert!(
+            src.contains("stage0(Object __this, int[] arr)"),
+            "expected array local to be preserved in signature:\n{src}"
+        );
+        assert!(
+            src.contains("sampleStream(java.util.Arrays.stream(arr), 2)"),
+            "expected `arr.stream()` to be rewritten to `java.util.Arrays.stream(arr)`:\n{src}"
         );
     }
 
