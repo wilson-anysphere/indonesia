@@ -2139,6 +2139,14 @@ struct CliJsonError {
     message: String,
 }
 
+impl CliJsonError {
+    fn new(kind: impl Into<String>, message: &str, contains_serde_json: bool) -> Self {
+        let kind = kind.into();
+        let message = nova_core::sanitize_error_message_text(message, contains_serde_json);
+        Self { kind, message }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct CliJsonOutput {
     ok: bool,
@@ -2735,46 +2743,46 @@ fn handle_rename(args: RenameArgs) -> Result<i32> {
     ) {
         Ok(edit) => edit,
         Err(SemanticRefactorError::Conflicts(conflicts)) => {
-            let conflicts = conflicts_to_json(&file_texts, conflicts);
-            let output = CliJsonOutput {
-                ok: false,
-                files_changed: Vec::new(),
-                edits: Vec::new(),
-                file_ops: Vec::new(),
-                conflicts,
-                error: Some(CliJsonError {
-                    kind: "Conflicts".to_string(),
-                    message: "refactoring has conflicts".to_string(),
-                }),
-            };
-            if args.json {
-                print_cli_json(&output)?;
-            } else {
+             let conflicts = conflicts_to_json(&file_texts, conflicts);
+             let output = CliJsonOutput {
+                 ok: false,
+                 files_changed: Vec::new(),
+                 edits: Vec::new(),
+                 file_ops: Vec::new(),
+                 conflicts,
+                 error: Some(CliJsonError::new(
+                     "Conflicts",
+                     "refactoring has conflicts",
+                     false,
+                 )),
+             };
+             if args.json {
+                 print_cli_json(&output)?;
+             } else {
                 eprintln!("refactoring has conflicts");
             }
             return Ok(1);
-        }
-        Err(err @ SemanticRefactorError::RenameNotSupported { .. }) => {
-            let output = CliJsonOutput {
-                ok: false,
-                files_changed: Vec::new(),
-                edits: Vec::new(),
-                file_ops: Vec::new(),
-                conflicts: Vec::new(),
-                error: Some(CliJsonError {
-                    kind: "RenameNotSupported".to_string(),
-                    message: err.to_string(),
-                }),
-            };
-            if args.json {
-                print_cli_json(&output)?;
-            } else {
-                eprintln!("{err}");
-            }
-            return Ok(1);
-        }
-        Err(err) => return Err(anyhow::anyhow!(err)),
-    };
+         }
+         Err(err @ SemanticRefactorError::RenameNotSupported { .. }) => {
+             let message = err.to_string();
+             let error = CliJsonError::new("RenameNotSupported", &message, false);
+             let output = CliJsonOutput {
+                 ok: false,
+                 files_changed: Vec::new(),
+                 edits: Vec::new(),
+                 file_ops: Vec::new(),
+                 conflicts: Vec::new(),
+                 error: Some(error.clone()),
+             };
+             if args.json {
+                 print_cli_json(&output)?;
+             } else {
+                 eprintln!("{}", error.message);
+             }
+             return Ok(1);
+         }
+         Err(err) => return Err(anyhow::anyhow!(err)),
+     };
 
     let mut normalized_edit = edit.clone();
     normalized_edit
@@ -2895,6 +2903,7 @@ fn handle_rename(args: RenameArgs) -> Result<i32> {
 }
 
 fn rename_error(json: bool, message: String) -> Result<i32> {
+    let error = CliJsonError::new("SymbolResolutionFailed", &message, false);
     if json {
         let output = CliJsonOutput {
             ok: false,
@@ -2902,14 +2911,11 @@ fn rename_error(json: bool, message: String) -> Result<i32> {
             edits: Vec::new(),
             file_ops: Vec::new(),
             conflicts: Vec::new(),
-            error: Some(CliJsonError {
-                kind: "SymbolResolutionFailed".to_string(),
-                message,
-            }),
+            error: Some(error),
         };
         print_cli_json(&output)?;
     } else {
-        eprintln!("{message}");
+        eprintln!("{}", error.message);
     }
     Ok(1)
 }
@@ -3792,6 +3798,44 @@ mod json_error_sanitization_tests {
         assert!(
             sanitized.contains("<redacted>"),
             "expected sanitized anyhow error message to include redaction marker: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn cli_json_error_sanitizes_toml_snippet_blocks() {
+        let secret_suffix = "nova-cli-json-error-toml-snippet-secret";
+        let message = format!(
+            "TOML parse error at line 1, column 10\n1 | api_key = \"{secret_suffix}\"\n  |          ^\ninvalid type: string \"{secret_suffix}\", expected boolean"
+        );
+
+        let err = CliJsonError::new("Test", &message, false);
+        assert!(
+            !err.message.contains(secret_suffix),
+            "expected cli json error message to omit TOML snippet contents: {err:?}"
+        );
+        assert!(
+            !err.message.contains("api_key ="),
+            "expected cli json error message to strip snippet source lines: {err:?}"
+        );
+        assert!(
+            err.message.contains("<redacted>"),
+            "expected cli json error message to include redaction marker: {err:?}"
+        );
+    }
+
+    #[test]
+    fn cli_json_error_forces_json_sanitization_when_chain_contains_serde_json() {
+        let secret_suffix = "nova-cli-json-error-force-serde-json-secret";
+        let message = format!("failed to decode payload \"{secret_suffix}\"");
+
+        let err = CliJsonError::new("Test", &message, true);
+        assert!(
+            !err.message.contains(secret_suffix),
+            "expected forced json sanitization to omit quoted values: {err:?}"
+        );
+        assert!(
+            err.message.contains("<redacted>"),
+            "expected forced json sanitization to include redaction marker: {err:?}"
         );
     }
 }
