@@ -7327,21 +7327,31 @@ fn html_fragment_after_emitted_ampersand_decoded_is_path_separator(bytes: &[u8],
     let bytes = &decoded[..len];
     let mut start = 0usize;
 
-    for _ in 0..8 {
-        if bytes
+    // Handle nested `&amp;...` fragments where the `&` itself was emitted via an escape. Allow
+    // deeper nesting than the basic fast-paths because adversarial selections can stack many HTML
+    // escaping layers (e.g. `&amp;amp;amp;...`) and we want to fail closed (skip semantic search)
+    // rather than leak path segments.
+    let mut nested_amp_layers = 0usize;
+    while nested_amp_layers < 64
+        && bytes
             .get(start..start + 3)
             .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
-        {
-            start += 3;
-            if bytes.get(start).is_some_and(|b| *b == b';') {
-                start += 1;
-            }
-            if start >= bytes.len() {
-                return false;
-            }
-            continue;
+    {
+        start += 3;
+        if bytes.get(start).is_some_and(|b| *b == b';') {
+            start += 1;
         }
-        break;
+        if start >= bytes.len() {
+            return false;
+        }
+        nested_amp_layers += 1;
+    }
+    if nested_amp_layers == 64
+        && bytes
+            .get(start..start + 3)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+    {
+        return true;
     }
 
     if bytes

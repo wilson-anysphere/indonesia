@@ -3802,6 +3802,10 @@ fn related_code_query_skips_hex_emitted_html_entity_path_only_selections() {
         r"x26\163\157\154;homex26\163\157\154;userx26\163\157\154;secretx26\163\157\154;credentials",
         r"x26\04347;homex26\04347;userx26\04347;secretx26\04347;credentials",
         r"x26\23x2F;homex26\23x2F;userx26\23x2F;secretx26\23x2F;credentials",
+        // Extremely nested `&amp;...` chains should still be treated as path-only (fail closed).
+        "x26amp;amp;amp;amp;amp;amp;amp;amp;amp;sol;home",
+        // Larger nesting depth: `amp;` repeated 17 times.
+        "x26amp;amp;amp;amp;amp;amp;amp;amp;amp;amp;amp;amp;amp;amp;amp;amp;amp;sol;home",
         // Embedded form (e.g. from stripped `\\x26` sequences).
         "homex26sol;user",
         "homex{26}sol;user",
