@@ -5154,6 +5154,10 @@ async fn send_response(
     if !success {
         nova_metrics::MetricsRegistry::global().record_error(&request.command);
     }
+    // DAP response `message` values can surface stringified serde/toml errors (including scalar
+    // echoes like `invalid type: string "..."` or TOML snippet blocks). Sanitize before emitting so
+    // we don't reflect user-controlled values (potentially secrets) back to clients or logs.
+    let message = message.map(|message| nova_core::sanitize_error_message_text(&message, false));
     let s = seq.fetch_add(1, Ordering::Relaxed);
     let resp = make_response(s, request, success, body, message);
     let value = serde_json::to_value(resp).unwrap_or_else(|_| json!({}));
@@ -5798,6 +5802,59 @@ mod tests {
                 return msg;
             }
         }
+    }
+
+    #[tokio::test]
+    async fn send_response_sanitizes_message_strings() {
+        let (shutdown_tx, _shutdown_rx) = mpsc::channel::<Value>(1);
+        let (hi_tx, mut hi_rx) = mpsc::channel::<Value>(1);
+        let (lo_tx, _lo_rx) = mpsc::channel::<Value>(1);
+        let tx = OutgoingSender::new(shutdown_tx, hi_tx, lo_tx);
+        let seq = Arc::new(AtomicI64::new(1));
+
+        let request = Request {
+            seq: 1,
+            message_type: "request".to_string(),
+            command: "customCommand".to_string(),
+            arguments: json!({}),
+        };
+
+        let secret_suffix = "nova-dap-wire-response-secret-token";
+        let secret = format!("prefix\\\"{secret_suffix}");
+        let raw_message = format!(
+            "invalid type: string \"{secret}\", expected boolean"
+        );
+        assert!(
+            raw_message.contains(secret_suffix),
+            "expected raw message to include secret so this test catches leaks: {raw_message}"
+        );
+
+        send_response(
+            &tx,
+            &seq,
+            &request,
+            false,
+            None,
+            Some(raw_message),
+        )
+        .await;
+
+        let resp = timeout(Duration::from_secs(2), hi_rx.recv())
+            .await
+            .expect("timed out waiting for DAP response")
+            .expect("response channel closed");
+        let message = resp
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            !message.contains(secret_suffix),
+            "expected response message to omit string scalar values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected response message to include redaction marker: {message}"
+        );
     }
 
     #[tokio::test]
