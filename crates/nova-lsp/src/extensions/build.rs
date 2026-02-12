@@ -1740,6 +1740,13 @@ impl BuildStatusGuard {
     }
 
     pub(super) fn mark_failure(&mut self, error: Option<String>) {
+        // `BuildStatusGuard` failures are surfaced via `nova/build/status`, and the recorded
+        // `lastError` is user-facing (and can end up in logs/bug reports). Some upstream error
+        // messages (notably `toml`/`serde` parse errors) can embed user-controlled scalar values or
+        // source snippets (e.g. `api_key = "..."`).
+        //
+        // Best-effort: sanitize any error strings before storing them in the global registry.
+        let error = error.map(|message| nova_core::sanitize_error_message_text(&message, false));
         self.outcome = Some(BuildInvocationOutcome::Failure(error));
     }
 
@@ -2492,6 +2499,42 @@ mod tests {
         {
             let mut status_guard = BuildStatusGuard::new(&root);
             status_guard.finish_from_result(&result);
+        }
+
+        let (status, last_error) = build_status_snapshot_for_project_root(&root);
+        assert_eq!(status, BuildStatus::Failed);
+        let last_error = last_error.expect("expected build status to record last error");
+        assert!(
+            !last_error.contains(secret_suffix),
+            "expected build status to omit TOML snippet contents and scalar values: {last_error}"
+        );
+        assert!(
+            !last_error.contains("api_key ="),
+            "expected build status to strip snippet source lines: {last_error}"
+        );
+        assert!(
+            last_error.contains("<redacted>"),
+            "expected build status to include redaction marker: {last_error}"
+        );
+    }
+
+    #[test]
+    fn build_status_guard_mark_failure_sanitizes_error_messages() {
+        let secret_suffix = "nova-lsp-build-status-mark-failure-secret-token";
+        let message = format!(
+            "TOML parse error at line 1, column 10\n1 | api_key = \"{secret_suffix}\"\n  |          ^\ninvalid type: string \"{secret_suffix}\", expected boolean"
+        );
+        assert!(
+            message.contains(secret_suffix),
+            "expected raw error message to include secret so this test catches leaks: {message}"
+        );
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        {
+            let mut status_guard = BuildStatusGuard::new(&root);
+            status_guard.mark_failure(Some(message));
         }
 
         let (status, last_error) = build_status_snapshot_for_project_root(&root);
