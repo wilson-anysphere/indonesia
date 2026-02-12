@@ -41,6 +41,11 @@ fn sanitize_anyhow_error_message(err: &anyhow::Error) -> String {
     nova_core::sanitize_error_message_text(&message, err.chain().any(contains_serde_json_error))
 }
 
+fn sanitize_error_message(err: &(dyn std::error::Error + 'static)) -> String {
+    let message = err.to_string();
+    nova_core::sanitize_error_message_text(&message, contains_serde_json_error(err))
+}
+
 fn contains_serde_json_error(err: &(dyn std::error::Error + 'static)) -> bool {
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
     while let Some(err) = current {
@@ -424,7 +429,7 @@ impl<C: JdwpClient> DapServer<C> {
                             bp.resolved_line,
                         ) {
                             verified = false;
-                            message = Some(err.to_string());
+                            message = Some(sanitize_error_message(&err));
                         } else {
                             installed_breakpoints.push(key);
                         }
@@ -689,7 +694,7 @@ impl<C: JdwpClient> DapServer<C> {
             Err(err) => self.simple_ok(
                 request,
                 Some(json!({
-                    "result": err.to_string(),
+                    "result": sanitize_error_message(&err),
                     "variablesReference": 0,
                 })),
             ),
@@ -723,7 +728,7 @@ impl<C: JdwpClient> DapServer<C> {
             cfg,
         ) {
             Ok(body) => self.simple_ok(request, Some(serde_json::to_value(body)?)),
-            Err(err) => self.simple_ok(request, Some(json!({ "error": err.to_string() }))),
+            Err(err) => self.simple_ok(request, Some(json!({ "error": sanitize_error_message(&err) }))),
         }
     }
 
@@ -1068,7 +1073,7 @@ impl<C: JdwpClient> DapServer<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nova_jdwp::{JdwpError, StackFrameInfo, ThreadInfo};
+    use nova_jdwp::{JdwpError, JdwpValue, StackFrameInfo, ThreadInfo};
     use serde_json::Value;
     use tempfile::TempDir;
 
@@ -1118,6 +1123,65 @@ mod tests {
 
         fn pause(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
             Ok(())
+        }
+    }
+
+    struct ErrorJdwp {
+        message: String,
+    }
+
+    impl ErrorJdwp {
+        fn new(message: impl Into<String>) -> Self {
+            Self {
+                message: message.into(),
+            }
+        }
+    }
+
+    impl JdwpClient for ErrorJdwp {
+        fn connect(&mut self, _host: &str, _port: u16) -> Result<(), JdwpError> {
+            Ok(())
+        }
+
+        fn set_line_breakpoint(
+            &mut self,
+            _class: &str,
+            _method: Option<&str>,
+            _line: u32,
+        ) -> Result<(), JdwpError> {
+            Err(JdwpError::Protocol(self.message.clone()))
+        }
+
+        fn threads(&mut self) -> Result<Vec<ThreadInfo>, JdwpError> {
+            Ok(Vec::new())
+        }
+
+        fn stack_frames(&mut self, _thread_id: u64) -> Result<Vec<StackFrameInfo>, JdwpError> {
+            Ok(Vec::new())
+        }
+
+        fn r#continue(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
+            Ok(())
+        }
+
+        fn next(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
+            Ok(())
+        }
+
+        fn step_in(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
+            Ok(())
+        }
+
+        fn step_out(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
+            Ok(())
+        }
+
+        fn pause(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
+            Ok(())
+        }
+
+        fn evaluate(&mut self, _expression: &str, _frame_id: u64) -> Result<JdwpValue, JdwpError> {
+            Err(JdwpError::Protocol(self.message.clone()))
         }
     }
 
@@ -1301,6 +1365,128 @@ mod tests {
         assert!(
             sanitized.contains("<redacted>"),
             "expected sanitized anyhow error to include redaction marker: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn dap_server_evaluate_body_errors_do_not_echo_string_values() {
+        let secret_suffix = "nova-dap-legacy-evaluate-secret-token";
+        let secret = format!("prefix\\\"{secret_suffix}");
+        let jdwp_message =
+            format!("invalid type: string \"{secret}\", expected boolean");
+        assert!(
+            jdwp_message.contains(secret_suffix),
+            "expected raw jdwp error message to include secret so this test catches leaks: {jdwp_message}"
+        );
+
+        let mut server = DapServer::new(ErrorJdwp::new(jdwp_message));
+        server.frame_ids.insert(1, 123);
+
+        let evaluate_req = Request {
+            seq: 1,
+            type_: "request".into(),
+            command: "evaluate".into(),
+            arguments: Some(json!({ "expression": "x", "frameId": 1 })),
+        };
+        let outgoing = server.handle_request(&evaluate_req).unwrap();
+        let result = response_body(&outgoing.messages[0]).unwrap()["result"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            !result.contains(secret_suffix),
+            "expected evaluate error result to omit string scalar values: {result}"
+        );
+        assert!(
+            result.contains("<redacted>"),
+            "expected evaluate error result to include redaction marker: {result}"
+        );
+    }
+
+    #[test]
+    fn dap_server_stream_debug_body_errors_do_not_echo_string_values() {
+        let secret_suffix = "nova-dap-legacy-stream-debug-secret-token";
+        let secret = format!("prefix\\\"{secret_suffix}");
+        let jdwp_message =
+            format!("invalid type: string \"{secret}\", expected boolean");
+        assert!(
+            jdwp_message.contains(secret_suffix),
+            "expected raw jdwp error message to include secret so this test catches leaks: {jdwp_message}"
+        );
+
+        let mut server = DapServer::new(ErrorJdwp::new(jdwp_message));
+        server.frame_ids.insert(1, 123);
+
+        let stream_req = Request {
+            seq: 1,
+            type_: "request".into(),
+            command: STREAM_DEBUG_COMMAND.into(),
+            arguments: Some(json!({ "expression": "list.stream().count()", "frameId": 1 })),
+        };
+        let outgoing = server.handle_request(&stream_req).unwrap();
+        let err = response_body(&outgoing.messages[0]).unwrap()["error"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            !err.contains(secret_suffix),
+            "expected streamDebug error to omit string scalar values: {err}"
+        );
+        assert!(
+            err.contains("<redacted>"),
+            "expected streamDebug error to include redaction marker: {err}"
+        );
+    }
+
+    #[test]
+    fn dap_server_set_breakpoints_body_errors_do_not_echo_string_values() {
+        let secret_suffix = "nova-dap-legacy-set-breakpoints-secret-token";
+        let secret = format!("prefix\\\"{secret_suffix}");
+        let jdwp_message =
+            format!("invalid type: string \"{secret}\", expected boolean");
+        assert!(
+            jdwp_message.contains(secret_suffix),
+            "expected raw jdwp error message to include secret so this test catches leaks: {jdwp_message}"
+        );
+
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        let file_path = root.join("Main.java");
+        std::fs::write(
+            &file_path,
+            r#"public class Main {
+  void m() {
+    int x = 0;
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let mut server = DapServer::new(ErrorJdwp::new(jdwp_message));
+        let set_bps = Request {
+            seq: 1,
+            type_: "request".into(),
+            command: "setBreakpoints".into(),
+            arguments: Some(json!({
+                "source": { "path": file_path.to_string_lossy() },
+                "breakpoints": [
+                    { "line": 3 },
+                ],
+            })),
+        };
+        let outgoing = server.handle_request(&set_bps).unwrap();
+        let breakpoints = response_body(&outgoing.messages[0]).unwrap()["breakpoints"]
+            .as_array()
+            .unwrap();
+        assert_eq!(breakpoints.len(), 1);
+        assert_eq!(breakpoints[0]["verified"], false);
+        let message = breakpoints[0]["message"].as_str().unwrap_or_default();
+        assert!(
+            !message.contains(secret_suffix),
+            "expected breakpoint error message to omit string scalar values: {message}"
+        );
+        assert!(
+            message.contains("<redacted>"),
+            "expected breakpoint error message to include redaction marker: {message}"
         );
     }
 
