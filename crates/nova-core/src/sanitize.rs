@@ -98,6 +98,63 @@ pub fn sanitize_json_error_message(message: &str) -> String {
     out
 }
 
+fn contains_escaped_toml_snippet_block(message: &str) -> bool {
+    // When `toml::de::Error` values are formatted via `Debug` (for example via `?err` in
+    // `tracing`), embedded newlines are escaped as `\n`. If that stringified form includes TOML's
+    // `Display` output (which contains the raw source snippet), we can end up with a single-line
+    // string containing `\n1 | key = ...` style snippet markers.
+    //
+    // Detect those cases so we can treat the escaped newlines as real ones and strip snippet lines
+    // without relying on callers to normalize formatting.
+    if !message.contains("\\n") {
+        return false;
+    }
+
+    // Snippet blocks always contain `|` lines (and often `-->`), so bail out early to avoid work on
+    // unrelated strings that happen to contain `\n` escape sequences.
+    if !message.contains('|') && !message.contains("-->") {
+        return false;
+    }
+
+    let bytes = message.as_bytes();
+    let mut i = 0usize;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'\\' && bytes[i + 1] == b'n' {
+            let mut j = i + 2;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j >= bytes.len() {
+                break;
+            }
+
+            if bytes[j] == b'|' {
+                return true;
+            }
+
+            if j + 2 < bytes.len() && bytes[j] == b'-' && bytes[j + 1] == b'-' && bytes[j + 2] == b'>'
+            {
+                return true;
+            }
+
+            if bytes[j].is_ascii_digit() {
+                while j < bytes.len() && bytes[j].is_ascii_digit() {
+                    j += 1;
+                }
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j] == b'|' {
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    false
+}
+
 /// Best-effort sanitizer for `toml` error messages.
 ///
 /// `toml::de::Error::message()` avoids the default `Display` output (which includes an offending
@@ -117,66 +174,6 @@ pub fn sanitize_json_error_message(message: &str) -> String {
 /// This is intentionally string-based so callers can use it without depending on `toml`.
 #[must_use]
 pub fn sanitize_toml_error_message(message: &str) -> String {
-    fn contains_escaped_snippet_block(message: &str) -> bool {
-        // When `toml::de::Error` values are formatted via `Debug` (for example via `?err` in
-        // `tracing`), embedded newlines are escaped as `\n`. If the `Debug` representation includes
-        // the `Display` output (which contains the raw source snippet), we can end up with a
-        // single-line string containing `\n1 | key = ...` style snippet markers.
-        //
-        // Detect those cases so we can treat the escaped newlines as real ones and strip snippet
-        // lines without relying on callers to normalize formatting.
-        if !message.contains("\\n") {
-            return false;
-        }
-
-        // Snippet blocks always contain `|` lines (and often `-->`), so bail out early to avoid
-        // work on unrelated strings that happen to contain `\n` escape sequences.
-        if !message.contains('|') && !message.contains("-->") {
-            return false;
-        }
-
-        let bytes = message.as_bytes();
-        let mut i = 0usize;
-        while i + 1 < bytes.len() {
-            if bytes[i] == b'\\' && bytes[i + 1] == b'n' {
-                let mut j = i + 2;
-                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                if j >= bytes.len() {
-                    break;
-                }
-
-                if bytes[j] == b'|' {
-                    return true;
-                }
-
-                if j + 2 < bytes.len()
-                    && bytes[j] == b'-'
-                    && bytes[j + 1] == b'-'
-                    && bytes[j + 2] == b'>'
-                {
-                    return true;
-                }
-
-                if bytes[j].is_ascii_digit() {
-                    while j < bytes.len() && bytes[j].is_ascii_digit() {
-                        j += 1;
-                    }
-                    while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                        j += 1;
-                    }
-                    if j < bytes.len() && bytes[j] == b'|' {
-                        return true;
-                    }
-                }
-            }
-            i += 1;
-        }
-
-        false
-    }
-
     fn sanitize_inner(message: &str) -> String {
     fn looks_like_snippet_line(line: &str) -> bool {
         let trimmed = line.trim_start();
@@ -456,7 +453,7 @@ pub fn sanitize_toml_error_message(message: &str) -> String {
         return sanitized;
     }
 
-    if !message.contains('\n') && contains_escaped_snippet_block(message) {
+    if !message.contains('\n') && contains_escaped_toml_snippet_block(message) {
         // Preserve the original single-line formatting by re-escaping any newlines introduced by
         // unescaping and stripping snippet blocks.
         let unescaped = message.replace("\\r\\n", "\n").replace("\\n", "\n");
@@ -512,8 +509,9 @@ fn looks_like_toml_error_message(message: &str) -> bool {
         }
     }
 
-    // Best-effort: escaped newline snippet blocks (e.g. from debug output).
-    if message.contains("\\n") && (message.contains("\\n|") || message.contains("\\n1 |")) {
+    // Best-effort: escaped newline snippet blocks (e.g. when a multi-line TOML `Display` snippet
+    // is embedded in a debug-formatted string).
+    if contains_escaped_toml_snippet_block(message) {
         return true;
     }
 
@@ -863,6 +861,50 @@ mod tests {
         assert!(
             !sanitized.contains('\n'),
             "expected TOML sanitizer not to inject actual newlines when input used escapes: {sanitized:?}"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_message_text_detects_escaped_toml_snippet_blocks_with_multi_digit_line_numbers()
+    {
+        let secret_suffix = "nova-core-error-text-escaped-snippet-secret";
+        let secret_number = 12_345_678u64;
+        let message = format!(
+            "TOML parse error at line 12, column 10\\n  |\\n12 | api_key = \"{secret_suffix}\"\\n13 | enabled = {secret_number}\\n   |          ^\\ninvalid type: string \"{secret_suffix}\", expected boolean"
+        );
+        assert!(
+            message.contains(secret_suffix),
+            "expected raw message to include secret so this test catches leaks: {message}"
+        );
+        assert!(
+            message.contains(&secret_number.to_string()),
+            "expected raw message to include numeric value so this test catches leaks: {message}"
+        );
+
+        let sanitized = sanitize_error_message_text(&message, false);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected combined sanitizer to omit escaped TOML snippet contents: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains(&secret_number.to_string()),
+            "expected combined sanitizer to omit numeric values from escaped TOML snippet blocks: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains("api_key ="),
+            "expected combined sanitizer to strip escaped snippet source lines: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected combined sanitizer to include redaction marker: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("\\n"),
+            "expected combined sanitizer to preserve escaped newline formatting: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains('\n'),
+            "expected combined sanitizer not to inject actual newlines when input used escapes: {sanitized:?}"
         );
     }
 
