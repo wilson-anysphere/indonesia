@@ -48,11 +48,9 @@ fn contains_serde_json_error(err: &(dyn std::error::Error + 'static)) -> bool {
 }
 
 fn sanitize_build_error_message(err: &(dyn std::error::Error + 'static)) -> String {
-    if contains_serde_json_error(err) {
-        crate::cache::sanitize_json_error_message(&err.to_string())
-    } else {
-        err.to_string()
-    }
+    let contains_serde_json = contains_serde_json_error(err);
+    let message = err.to_string();
+    nova_core::sanitize_error_message_text(&message, contains_serde_json)
 }
 
 /// High-level state for Nova's background build orchestration.

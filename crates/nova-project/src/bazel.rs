@@ -16,6 +16,7 @@ use crate::{JavaVersion, ModuleConfig, WorkspaceModel};
 #[cfg(feature = "bazel")]
 use nova_build_bazel::{BazelWorkspace, CommandRunner, DefaultCommandRunner, JavaCompileInfo};
 
+#[cfg(feature = "bazel")]
 fn contains_serde_json_error(err: &(dyn std::error::Error + 'static)) -> bool {
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
     while let Some(err) = current {
@@ -388,12 +389,9 @@ pub fn load_bazel_workspace_model_with_runner<R: CommandRunner>(
     let mut workspace = BazelWorkspace::new(root.to_path_buf(), runner)
         .and_then(|ws| ws.with_cache_path(cache_path))
         .map_err(|err| {
+            let contains_serde_json = err.chain().any(contains_serde_json_error);
             let message = err.to_string();
-            let message = if err.chain().any(contains_serde_json_error) {
-                crate::discover::sanitize_json_error_message(&message)
-            } else {
-                message
-            };
+            let message = nova_core::sanitize_error_message_text(&message, contains_serde_json);
             ProjectError::Bazel { message }
         })?;
 
@@ -407,12 +405,9 @@ pub fn load_bazel_workspace_model_with_runner<R: CommandRunner>(
     }
     .map_err(|err| ProjectError::Bazel {
         message: {
+            let contains_serde_json = err.chain().any(contains_serde_json_error);
             let message = err.to_string();
-            if err.chain().any(contains_serde_json_error) {
-                crate::discover::sanitize_json_error_message(&message)
-            } else {
-                message
-            }
+            nova_core::sanitize_error_message_text(&message, contains_serde_json)
         },
     })?;
     targets.sort();
@@ -434,12 +429,9 @@ pub fn load_bazel_workspace_model_with_runner<R: CommandRunner>(
             Err(err) => {
                 return Err(ProjectError::Bazel {
                     message: {
+                        let contains_serde_json = err.chain().any(contains_serde_json_error);
                         let message = err.to_string();
-                        if err.chain().any(contains_serde_json_error) {
-                            crate::discover::sanitize_json_error_message(&message)
-                        } else {
-                            message
-                        }
+                        nova_core::sanitize_error_message_text(&message, contains_serde_json)
                     },
                 })
             }

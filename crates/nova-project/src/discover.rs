@@ -43,10 +43,6 @@ fn error_chain_contains_serde_json(err: &(dyn std::error::Error + 'static)) -> b
     false
 }
 
-pub(crate) fn sanitize_json_error_message(message: &str) -> String {
-    nova_core::sanitize_json_error_message(message)
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct LoadOptions {
     /// Additional classpath entries (directories or jars) to include.
