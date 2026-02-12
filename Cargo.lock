@@ -4562,7 +4562,9 @@ name = "nova-remote-rpc"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "nova-core",
  "nova-remote-proto",
+ "serde_cbor",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

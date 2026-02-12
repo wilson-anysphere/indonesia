@@ -27,6 +27,13 @@ use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
 
 pub type RequestId = u64;
 
+fn sanitize_transport_error_message(message: &str) -> String {
+    // `serde`-derived error messages (including `serde_cbor` used by the remote protocol) can echo
+    // user-controlled scalar values, for example `invalid type: string "..."`. Since these errors
+    // can be surfaced to end users or included in bug report logs, redact those scalar values.
+    nova_core::sanitize_error_message_text(message, false)
+}
+
 /// Result of a router-side handshake admission hook.
 #[derive(Debug, Clone)]
 pub enum RouterAdmission {
@@ -98,8 +105,9 @@ pub enum RpcTransportError {
 
 impl From<std::io::Error> for RpcTransportError {
     fn from(err: std::io::Error) -> Self {
+        let message = err.to_string();
         RpcTransportError::Io {
-            message: err.to_string(),
+            message: sanitize_transport_error_message(&message),
         }
     }
 }
@@ -370,7 +378,7 @@ impl RpcConnection {
                     }
                 }
                 return Err(RpcTransportError::DecodeError {
-                    message: v3_err.to_string(),
+                    message: sanitize_transport_error_message(&v3_err.to_string()),
                 });
             }
         };
@@ -443,9 +451,10 @@ impl RpcConnection {
             match negotiate_capabilities(&cfg.capabilities, &hello.capabilities) {
                 Ok(caps) => caps,
                 Err(err) => {
+                    let message = err.to_string();
                     let reject = HandshakeReject {
                         code: RejectCode::InvalidRequest,
-                        message: err.to_string(),
+                        message: sanitize_transport_error_message(&message),
                     };
                     let _ = write_wire_frame(
                         &mut stream,
@@ -913,7 +922,7 @@ async fn write_wire_frame(
     frame: &WireFrame,
 ) -> Result<(), RpcTransportError> {
     let payload = v3::encode_wire_frame(frame).map_err(|err| RpcTransportError::EncodeError {
-        message: err.to_string(),
+        message: sanitize_transport_error_message(&err.to_string()),
     })?;
     write_frame_payload(stream, max_frame_len, &payload).await
 }
@@ -949,7 +958,7 @@ async fn read_wire_frame(
 ) -> Result<WireFrame, RpcTransportError> {
     let buf = read_frame_payload(stream, max_frame_len).await?;
     v3::decode_wire_frame(&buf).map_err(|err| RpcTransportError::DecodeError {
-        message: err.to_string(),
+        message: sanitize_transport_error_message(&err.to_string()),
     })
 }
 
@@ -971,7 +980,7 @@ async fn read_frame_payload(
         // attacker-controlled buffer for the length prefix alone.
         let err = v3::decode_wire_frame(&[]).unwrap_err();
         return Err(RpcTransportError::DecodeError {
-            message: err.to_string(),
+            message: sanitize_transport_error_message(&err.to_string()),
         });
     }
 
@@ -1247,7 +1256,7 @@ async fn process_packet(
     let decoded = maybe_decompress(&inner.capabilities, compression, &data)?;
     let payload =
         v3::decode_rpc_payload(&decoded).map_err(|err| RpcTransportError::DecodeError {
-            message: err.to_string(),
+            message: sanitize_transport_error_message(&err.to_string()),
         })?;
     handle_payload(inner.clone(), request_id, payload).await
 }
@@ -1428,7 +1437,7 @@ async fn send_rpc_payload(
 
     let uncompressed =
         v3::encode_rpc_payload(&payload).map_err(|err| RpcTransportError::EncodeError {
-            message: err.to_string(),
+            message: sanitize_transport_error_message(&err.to_string()),
         })?;
     let max_packet_len = inner.capabilities.max_packet_len as usize;
     if uncompressed.len() > max_packet_len {
@@ -1459,7 +1468,7 @@ async fn send_rpc_payload(
     };
     let encoded_packet =
         v3::encode_wire_frame(&packet_frame).map_err(|err| RpcTransportError::EncodeError {
-            message: err.to_string(),
+            message: sanitize_transport_error_message(&err.to_string()),
         })?;
 
     if encoded_packet.len() <= inner.capabilities.max_frame_len as usize {
@@ -1505,7 +1514,7 @@ async fn send_rpc_payload(
             };
             let encoded =
                 v3::encode_wire_frame(&frame).map_err(|err| RpcTransportError::EncodeError {
-                    message: err.to_string(),
+                    message: sanitize_transport_error_message(&err.to_string()),
                 })?;
             if encoded.len() <= max_frame_len {
                 break encoded;
@@ -1908,6 +1917,115 @@ mod tests {
             );
 
             drop(tx);
+        });
+    }
+
+    #[test]
+    fn read_wire_frame_decode_errors_do_not_echo_string_values() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+
+        rt.block_on(async {
+            use serde_cbor::Value;
+            use tokio::io::AsyncWriteExt as _;
+
+            let secret_suffix = "nova-remote-rpc-secret-string";
+            let secret = format!("prefix-{secret_suffix}");
+
+            fn map(entries: Vec<(Value, Value)>) -> Value {
+                Value::Map(entries.into_iter().collect())
+            }
+
+            let payload = map(vec![
+                (Value::Text("type".into()), Value::Text("hello".into())),
+                (
+                    Value::Text("body".into()),
+                    map(vec![
+                        // `WorkerHello.shard_id` is a u32; provide a string to trigger a serde type
+                        // mismatch error that would normally echo the string scalar value.
+                        (Value::Text("shard_id".into()), Value::Text(secret)),
+                        (Value::Text("auth_token".into()), Value::Null),
+                        (
+                            Value::Text("supported_versions".into()),
+                            map(vec![
+                                (
+                                    Value::Text("min".into()),
+                                    map(vec![
+                                        (Value::Text("major".into()), Value::Integer(3.into())),
+                                        (Value::Text("minor".into()), Value::Integer(0.into())),
+                                    ]),
+                                ),
+                                (
+                                    Value::Text("max".into()),
+                                    map(vec![
+                                        (Value::Text("major".into()), Value::Integer(3.into())),
+                                        (Value::Text("minor".into()), Value::Integer(0.into())),
+                                    ]),
+                                ),
+                            ]),
+                        ),
+                        (
+                            Value::Text("capabilities".into()),
+                            map(vec![
+                                (
+                                    Value::Text("max_frame_len".into()),
+                                    Value::Integer(64_u64.into()),
+                                ),
+                                (
+                                    Value::Text("max_packet_len".into()),
+                                    Value::Integer(64_u64.into()),
+                                ),
+                                (
+                                    Value::Text("supported_compression".into()),
+                                    Value::Array(vec![Value::Text("none".into())]),
+                                ),
+                                (Value::Text("supports_cancel".into()), Value::Bool(false)),
+                                (Value::Text("supports_chunking".into()), Value::Bool(false)),
+                            ]),
+                        ),
+                        (Value::Text("cached_index_info".into()), Value::Null),
+                        (Value::Text("worker_build".into()), Value::Null),
+                    ]),
+                ),
+            ]);
+
+            let payload_bytes = serde_cbor::to_vec(&payload).expect("encode invalid hello payload");
+
+            let raw = v3::decode_wire_frame(&payload_bytes)
+                .expect_err("expected invalid hello payload to fail decoding")
+                .to_string();
+            assert!(
+                raw.contains(secret_suffix),
+                "expected raw decode error to include the secret so this test catches leaks: {raw}"
+            );
+
+            let len: u32 = payload_bytes.len().try_into().unwrap();
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&len.to_le_bytes());
+            bytes.extend_from_slice(&payload_bytes);
+
+            let (mut tx, mut rx) = tokio::io::duplex(bytes.len());
+            tx.write_all(&bytes).await.expect("write payload");
+            drop(tx);
+
+            let err = read_wire_frame(&mut rx, u32::MAX)
+                .await
+                .expect_err("expected read_wire_frame to fail decoding");
+            match err {
+                RpcTransportError::DecodeError { message } => {
+                    assert!(
+                        !message.contains(secret_suffix),
+                        "expected sanitized decode error message to omit string scalars: {message}"
+                    );
+                    assert!(
+                        message.contains("<redacted>"),
+                        "expected sanitized decode error message to include redaction marker: {message}"
+                    );
+                }
+                other => panic!("expected RpcTransportError::DecodeError, got {other:?}"),
+            }
         });
     }
 }

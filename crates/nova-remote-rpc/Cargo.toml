@@ -9,6 +9,7 @@ zstd = ["dep:zstd"]
 
 [dependencies]
 bytes = "1"
+nova-core = { path = "../nova-core" }
 nova-remote-proto = { path = "../nova-remote-proto" }
 thiserror.workspace = true
 tokio.workspace = true
@@ -17,4 +18,5 @@ tracing.workspace = true
 zstd = { version = "0.13", optional = true }
 
 [dev-dependencies]
+serde_cbor = "0.11"
 tokio = { workspace = true, features = ["test-util"] }
