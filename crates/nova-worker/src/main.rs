@@ -241,7 +241,7 @@ fn sanitize_anyhow_error_message(err: &anyhow::Error) -> String {
     // `invalid type: string "..."`). Avoid echoing those values to stderr in the worker's
     // top-level error report.
     let message = format!("{err:#}");
-    sanitize_error_message_text(&message, err.chain().any(contains_serde_json_error))
+    nova_core::sanitize_error_message_text(&message, err.chain().any(contains_serde_json_error))
 }
 
 fn contains_serde_json_error(err: &(dyn std::error::Error + 'static)) -> bool {
@@ -264,77 +264,6 @@ fn contains_serde_json_error(err: &(dyn std::error::Error + 'static)) -> bool {
     }
 
     false
-}
-
-fn sanitize_json_error_message(message: &str) -> String {
-    nova_core::sanitize_json_error_message(message)
-}
-
-fn sanitize_toml_error_message(message: &str) -> String {
-    nova_core::sanitize_toml_error_message(message)
-}
-
-fn looks_like_serde_json_error_message(message: &str) -> bool {
-    message.contains("invalid type:")
-        || message.contains("invalid value:")
-        || message.contains("unknown field")
-        || message.contains("unknown variant")
-}
-
-fn looks_like_toml_error_message(message: &str) -> bool {
-    if message.contains("TOML parse error") {
-        return true;
-    }
-
-    if message.contains("TomlError {") && message.contains("raw: Some(") {
-        return true;
-    }
-
-    if message.contains("invalid semver version") || message.contains("unknown capability") {
-        return true;
-    }
-
-    if message.contains('|') || message.contains("-->") {
-        for line in message.lines() {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("-->") || trimmed.starts_with('|') {
-                return true;
-            }
-
-            let mut chars = trimmed.chars();
-            let mut saw_digit = false;
-            while let Some(ch) = chars.next() {
-                if ch.is_ascii_digit() {
-                    saw_digit = true;
-                    continue;
-                }
-                if saw_digit && ch.is_whitespace() {
-                    continue;
-                }
-                if saw_digit && ch == '|' {
-                    return true;
-                }
-                break;
-            }
-        }
-    }
-
-    // Best-effort: escaped newline snippet blocks (e.g. from debug output).
-    if message.contains("\\n") && (message.contains("\\n|") || message.contains("\\n1 |")) {
-        return true;
-    }
-
-    false
-}
-
-fn sanitize_error_message_text(message: &str, contains_serde_json: bool) -> String {
-    if looks_like_toml_error_message(message) {
-        sanitize_toml_error_message(message)
-    } else if contains_serde_json || looks_like_serde_json_error_message(message) {
-        sanitize_json_error_message(message)
-    } else {
-        message.to_owned()
-    }
 }
 
 async fn handle_request(
@@ -473,9 +402,12 @@ fn internal_error(err: anyhow::Error) -> ProtoRpcError {
     let details = format!("{err:#}");
     ProtoRpcError {
         code: RpcErrorCode::Internal,
-        message: sanitize_error_message_text(&message, contains_serde_json),
+        message: nova_core::sanitize_error_message_text(&message, contains_serde_json),
         retryable: false,
-        details: Some(sanitize_error_message_text(&details, contains_serde_json)),
+        details: Some(nova_core::sanitize_error_message_text(
+            &details,
+            contains_serde_json,
+        )),
     }
 }
 

@@ -467,6 +467,77 @@ pub fn sanitize_toml_error_message(message: &str) -> String {
     sanitize_inner(message)
 }
 
+fn looks_like_serde_json_error_message(message: &str) -> bool {
+    message.contains("invalid type:")
+        || message.contains("invalid value:")
+        || message.contains("unknown field")
+        || message.contains("unknown variant")
+}
+
+fn looks_like_toml_error_message(message: &str) -> bool {
+    if message.contains("TOML parse error") {
+        return true;
+    }
+
+    if message.contains("TomlError {") && message.contains("raw: Some(") {
+        return true;
+    }
+
+    if message.contains("invalid semver version") || message.contains("unknown capability") {
+        return true;
+    }
+
+    if message.contains('|') || message.contains("-->") {
+        for line in message.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("-->") || trimmed.starts_with('|') {
+                return true;
+            }
+
+            let mut chars = trimmed.chars();
+            let mut saw_digit = false;
+            while let Some(ch) = chars.next() {
+                if ch.is_ascii_digit() {
+                    saw_digit = true;
+                    continue;
+                }
+                if saw_digit && ch.is_whitespace() {
+                    continue;
+                }
+                if saw_digit && ch == '|' {
+                    return true;
+                }
+                break;
+            }
+        }
+    }
+
+    // Best-effort: escaped newline snippet blocks (e.g. from debug output).
+    if message.contains("\\n") && (message.contains("\\n|") || message.contains("\\n1 |")) {
+        return true;
+    }
+
+    false
+}
+
+/// Best-effort sanitizer for stringified error messages that may include user-controlled scalar
+/// values.
+///
+/// This is designed for user-facing diagnostics printed to stderr or returned over protocol error
+/// channels. Callers can optionally pass whether the underlying error chain contains a typed
+/// `serde_json::Error` to force JSON sanitization even when the final message doesn't match common
+/// serde-json patterns.
+#[must_use]
+pub fn sanitize_error_message_text(message: &str, contains_serde_json: bool) -> String {
+    if looks_like_toml_error_message(message) {
+        sanitize_toml_error_message(message)
+    } else if contains_serde_json || looks_like_serde_json_error_message(message) {
+        sanitize_json_error_message(message)
+    } else {
+        message.to_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,6 +660,79 @@ mod tests {
         assert!(
             sanitized.contains("<redacted>"),
             "expected TOML sanitizer to include redaction marker: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_message_text_prefers_toml_sanitization_for_snippet_blocks() {
+        let secret_suffix = "nova-core-error-text-snippet-secret";
+        let secret_number = 42_424_242u64;
+        let message = format!(
+            "TOML parse error at line 1, column 10\n1 | api_key = \"{secret_suffix}\"\n2 | enabled = {secret_number}\n  |          ^\ninvalid type: string \"{secret_suffix}\", expected boolean"
+        );
+        assert!(
+            message.contains(secret_suffix),
+            "expected raw message to include secret so this test catches leaks: {message}"
+        );
+        assert!(
+            message.contains(&secret_number.to_string()),
+            "expected raw message to include numeric value so this test catches leaks: {message}"
+        );
+
+        let sanitized = sanitize_error_message_text(&message, false);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected combined sanitizer to omit TOML snippet contents: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains(&secret_number.to_string()),
+            "expected combined sanitizer to omit numeric values from TOML snippet blocks: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected combined sanitizer to include redaction marker: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_message_text_sanitizes_serde_json_like_messages() {
+        let secret_suffix = "nova-core-error-text-json-secret";
+        let message = format!(
+            r#"invalid type: string "prefix\"{secret_suffix}", expected boolean"#,
+        );
+        assert!(
+            message.contains(secret_suffix),
+            "expected raw message to include secret so this test catches leaks: {message}"
+        );
+
+        let sanitized = sanitize_error_message_text(&message, false);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected combined sanitizer to omit json scalar values: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected combined sanitizer to include redaction marker: {sanitized}"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_message_text_sanitizes_toml_single_quoted_values() {
+        let secret_suffix = "nova-core-error-text-toml-single-quote-secret";
+        let message = format!("invalid semver version 'prefix\\'{secret_suffix}', expected 1.2.3");
+        assert!(
+            message.contains(secret_suffix),
+            "expected raw message to include secret so this test catches leaks: {message}"
+        );
+
+        let sanitized = sanitize_error_message_text(&message, false);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected combined sanitizer to omit single-quoted toml scalar values: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected combined sanitizer to include redaction marker: {sanitized}"
         );
     }
 
