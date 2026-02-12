@@ -8003,6 +8003,34 @@ fn token_contains_octal_escaped_path_separator(tok: &str) -> bool {
         significant > 0 && html_entity_codepoint_is_path_separator(value)
     }
 
+    fn emitted_prefix_starts_nested_escape(tok: &str, start: usize, value: u32) -> bool {
+        if start > tok.len() {
+            return false;
+        }
+        let suffix = &tok[start..];
+        if suffix.is_empty() {
+            return false;
+        }
+
+        match value {
+            0x55 | 0x75 => {
+                let prefix = if value == 0x55 { 'U' } else { 'u' };
+                let mut nested = String::with_capacity(1 + suffix.len());
+                nested.push(prefix);
+                nested.push_str(suffix);
+                token_contains_unicode_escaped_path_separator(&nested)
+            }
+            0x58 | 0x78 => {
+                let prefix = if value == 0x58 { 'X' } else { 'x' };
+                let mut nested = String::with_capacity(1 + suffix.len());
+                nested.push(prefix);
+                nested.push_str(suffix);
+                token_contains_hex_escaped_path_separator(&nested)
+            }
+            _ => false,
+        }
+    }
+
     let mut i = 0usize;
     while i + 1 < bytes.len() {
         if bytes[i] != b'\\' {
@@ -8030,6 +8058,9 @@ fn token_contains_octal_escaped_path_separator(tok: &str) -> bool {
                 return true;
             }
             if value == 38 && html_fragment_after_emitted_ampersand_is_path_separator(bytes, j) {
+                return true;
+            }
+            if emitted_prefix_starts_nested_escape(tok, j, value) {
                 return true;
             }
         }
@@ -8155,6 +8186,34 @@ fn token_contains_backslash_hex_escaped_path_separator(tok: &str) -> bool {
         significant > 0 && html_entity_codepoint_is_path_separator(value)
     }
 
+    fn emitted_prefix_starts_nested_escape(tok: &str, start: usize, value: u32) -> bool {
+        if start > tok.len() {
+            return false;
+        }
+        let suffix = &tok[start..];
+        if suffix.is_empty() {
+            return false;
+        }
+
+        match value {
+            0x55 | 0x75 => {
+                let prefix = if value == 0x55 { 'U' } else { 'u' };
+                let mut nested = String::with_capacity(1 + suffix.len());
+                nested.push(prefix);
+                nested.push_str(suffix);
+                token_contains_unicode_escaped_path_separator(&nested)
+            }
+            0x58 | 0x78 => {
+                let prefix = if value == 0x58 { 'X' } else { 'x' };
+                let mut nested = String::with_capacity(1 + suffix.len());
+                nested.push(prefix);
+                nested.push_str(suffix);
+                token_contains_hex_escaped_path_separator(&nested)
+            }
+            _ => false,
+        }
+    }
+
     let mut i = 0usize;
     while i + 1 < bytes.len() {
         if bytes[i] != b'\\' {
@@ -8179,6 +8238,9 @@ fn token_contains_backslash_hex_escaped_path_separator(tok: &str) -> bool {
                 return true;
             }
             if value == 38 && html_fragment_after_emitted_ampersand_is_path_separator(bytes, j) {
+                return true;
+            }
+            if emitted_prefix_starts_nested_escape(tok, j, value) {
                 return true;
             }
         }

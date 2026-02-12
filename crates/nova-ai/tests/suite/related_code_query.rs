@@ -3845,6 +3845,72 @@ fn related_code_query_skips_backslash_hex_emitted_html_entity_path_only_selectio
 }
 
 #[test]
+fn related_code_query_skips_octal_emitted_unicode_escape_path_only_selections() {
+    struct PanicSearch<'a> {
+        focal_code: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for path-only selections where an octal escape emits a unicode/hex escape prefix; focal_code={}; got query={query}",
+                self.focal_code
+            );
+        }
+    }
+
+    // `\\165` decodes to `u` and `\\170` decodes to `x`, yielding `u002F...` / `x002F...` and then
+    // `/...` across multiple decode passes.
+    for focal_code in [
+        r"\165002Fhome\165002Fuser\165002Fsecret\165002Fcredentials",
+        r"\170002Fhome\170002Fuser\170002Fsecret\170002Fcredentials",
+        // Brace-delimited forms ensure the path segments remain identifier candidates even though
+        // the escape prefix itself is emitted via octal.
+        r"\165{002F}home\165{002F}user\165{002F}secret\165{002F}credentials",
+        r"\170{002F}home\170{002F}user\170{002F}secret\170{002F}credentials",
+    ] {
+        let search = PanicSearch { focal_code };
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for octal-emitted unicode/hex-escape path-only focal code"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_backslash_hex_emitted_unicode_escape_path_only_selections() {
+    struct PanicSearch<'a> {
+        focal_code: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for path-only selections where a backslash-hex escape emits a unicode/hex escape prefix; focal_code={}; got query={query}",
+                self.focal_code
+            );
+        }
+    }
+
+    // `\\000075` decodes to `u` and `\\000078` decodes to `x`, yielding `u002F...` / `x002F...`
+    // across multiple decode passes.
+    for focal_code in [
+        r"\000075002Fhome\000075002Fuser\000075002Fsecret\000075002Fcredentials",
+        r"\000078002Fhome\000078002Fuser\000078002Fsecret\000078002Fcredentials",
+        r"\000075{002F}home\000075{002F}user\000075{002F}secret\000075{002F}credentials",
+        r"\000078{002F}home\000078{002F}user\000078{002F}secret\000078{002F}credentials",
+    ] {
+        let search = PanicSearch { focal_code };
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for backslash-hex-emitted unicode/hex-escape path-only focal code"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_obfuscated_html_entity_path_only_selections_with_digit_entities() {
     struct PanicSearch<'a> {
         sep: &'a str,
