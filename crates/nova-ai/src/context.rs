@@ -7147,10 +7147,109 @@ fn html_fragment_after_emitted_ampersand_decoded_is_path_separator(bytes: &[u8],
         Some((value as u8, cursor))
     }
 
+    fn ascii_from_backslash_escape(bytes: &[u8], idx: usize) -> Option<(u8, usize)> {
+        if bytes.get(idx) != Some(&b'\\') {
+            return None;
+        }
+        let next = idx + 1;
+        if next >= bytes.len() {
+            return None;
+        }
+
+        // C-style `\uXXXX`, `\UXXXXXXXX` and `\xNN` escapes commonly show up in logs and can be
+        // combined with the emitted-ampersand patterns we're trying to catch.
+        if bytes.get(next).is_some_and(|b| *b == b'u' || *b == b'U') {
+            return ascii_from_unicode_escape(bytes, next);
+        }
+        if bytes.get(next).is_some_and(|b| *b == b'x' || *b == b'X') {
+            return ascii_from_hex_escape(bytes, next);
+        }
+
+        // Backslash-digit escapes can be interpreted as either octal (`\046`) or hex (`\26`)
+        // depending on the upstream encoding. To avoid missing separator entities like `\04347`
+        // (octal `#47`) or `\23x2F` (hex `#x2F`), compute both interpretations and prefer:
+        // - octal when it yields `#` or `&`
+        // - fixed-width 2-digit hex when it yields printable ASCII
+        // - variable-width hex when it yields printable ASCII (to handle `\000075` style padding)
+        // - otherwise any ASCII decoding
+        let octal_value = {
+            let mut cursor = next;
+            let mut value = 0u32;
+            let mut digits = 0usize;
+            while cursor < bytes.len() && digits < 3 {
+                let b = bytes[cursor];
+                if !(b'0'..=b'7').contains(&b) {
+                    break;
+                }
+                value = (value << 3) | (b - b'0') as u32;
+                digits += 1;
+                cursor += 1;
+            }
+            (digits > 0 && value <= 0x7F).then(|| (value as u8, cursor))
+        };
+
+        let hex_two = if next + 1 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_value(bytes[next]), hex_value(bytes[next + 1])) {
+                let value = ((hi as u32) << 4) | (lo as u32);
+                (value <= 0x7F).then(|| (value as u8, next + 2))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let hex_var = {
+            let mut cursor = next;
+            let mut value = 0u32;
+            let mut digits = 0usize;
+            while cursor < bytes.len() && digits < 6 {
+                let Some(hex) = hex_value(bytes[cursor]) else {
+                    break;
+                };
+                value = (value << 4) | hex as u32;
+                digits += 1;
+                cursor += 1;
+                if value > 0x7F {
+                    value = u32::MAX;
+                    break;
+                }
+            }
+            (digits > 0 && value <= 0x7F).then(|| (value as u8, cursor))
+        };
+
+        if let Some((ch, cursor)) = octal_value {
+            if ch == b'#' || ch == b'&' {
+                return Some((ch, cursor));
+            }
+        }
+
+        if let Some((ch, cursor)) = hex_two {
+            if ch.is_ascii_graphic() {
+                return Some((ch, cursor));
+            }
+        }
+
+        if let Some((ch, cursor)) = hex_var {
+            if ch.is_ascii_graphic() {
+                return Some((ch, cursor));
+            }
+        }
+
+        if let Some((ch, cursor)) = octal_value {
+            if ch.is_ascii_graphic() {
+                return Some((ch, cursor));
+            }
+        }
+
+        hex_two.or(hex_var).or(octal_value)
+    }
+
     fn next_ascii_byte(bytes: &[u8], idx: usize) -> Option<(u8, usize)> {
         ascii_from_unicode_escape(bytes, idx)
             .or_else(|| ascii_from_hex_escape(bytes, idx))
             .or_else(|| ascii_from_html_numeric_entity(bytes, idx))
+            .or_else(|| ascii_from_backslash_escape(bytes, idx))
     }
 
     if start >= bytes.len() {
@@ -7161,6 +7260,24 @@ fn html_fragment_after_emitted_ampersand_decoded_is_path_separator(bytes: &[u8],
     let mut len = 0usize;
     let mut cursor = start;
     while cursor < bytes.len() && len < decoded.len() {
+        // In HTML numeric entities the `x` after `#` is a base marker (`#x2F`), not a hex-escape
+        // prefix. Avoid decoding `x2F` into `/` and losing the numeric entity structure.
+        if len > 0 && decoded[len - 1] == b'#' && matches!(bytes[cursor], b'x' | b'X') {
+            if let Some((ch, next)) = ascii_from_hex_escape(bytes, cursor) {
+                if ch == b'x' || ch == b'X' {
+                    decoded[len] = ch;
+                    len += 1;
+                    cursor = next;
+                    continue;
+                }
+            }
+
+            decoded[len] = bytes[cursor];
+            len += 1;
+            cursor += 1;
+            continue;
+        }
+
         if let Some((ch, next)) = next_ascii_byte(bytes, cursor) {
             decoded[len] = ch;
             len += 1;

@@ -3751,6 +3751,12 @@ fn related_code_query_skips_unicode_emitted_html_entity_path_only_selections() {
         // Obfuscate the numeric entity prefix itself via unicode escapes (`u0023` == '#').
         "u0026u0023u0034u0037;homeu0026u0023u0034u0037;useru0026u0023u0034u0037;secretu0026u0023u0034u0037;credentials",
         "u0026u0023u0078u0032u0046;homeu0026u0023u0078u0032u0046;useru0026u0023u0078u0032u0046;secretu0026u0023u0078u0032u0046;credentials",
+        // Obfuscate entity fragments via backslash escapes (`\163` == 's', `\043` == '#', etc).
+        r"u0026\163\157\154;homeu0026\163\157\154;useru0026\163\157\154;secretu0026\163\157\154;credentials",
+        r"u0026\141\155\160;sol;homeu0026\141\155\160;sol;useru0026\141\155\160;sol;secretu0026\141\155\160;sol;credentials",
+        r"u0026\04347;homeu0026\04347;useru0026\04347;secretu0026\04347;credentials",
+        r"u0026\23x2F;homeu0026\23x2F;useru0026\23x2F;secretu0026\23x2F;credentials",
+        r"u0026\u0073\u006F\u006C;homeu0026\u0073\u006F\u006C;useru0026\u0073\u006F\u006C;secretu0026\u0073\u006F\u006C;credentials",
     ] {
         let search = PanicSearch { focal_code };
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
@@ -3783,6 +3789,9 @@ fn related_code_query_skips_hex_emitted_html_entity_path_only_selections() {
         "x26#xu0032u0046;homex26#xu0032u0046;userx26#xu0032u0046;secretx26#xu0032u0046;credentials",
         "x26u0073u006Fu006C;homex26u0073u006Fu006C;userx26u0073u006Fu006C;secretx26u0073u006Fu006C;credentials",
         "x26u0023u0034u0037;homex26u0023u0034u0037;userx26u0023u0034u0037;secretx26u0023u0034u0037;credentials",
+        r"x26\163\157\154;homex26\163\157\154;userx26\163\157\154;secretx26\163\157\154;credentials",
+        r"x26\04347;homex26\04347;userx26\04347;secretx26\04347;credentials",
+        r"x26\23x2F;homex26\23x2F;userx26\23x2F;secretx26\23x2F;credentials",
         // Embedded form (e.g. from stripped `\\x26` sequences).
         "homex26sol;user",
         "homex{26}sol;user",
@@ -3792,6 +3801,9 @@ fn related_code_query_skips_hex_emitted_html_entity_path_only_selections() {
         "homex26#xu0032u0046;user",
         "homex26u0073u006Fu006C;user",
         "homex26u0023u0034u0037;user",
+        r"homex26\163\157\154;user",
+        r"homex26\04347;user",
+        r"homex26\23x2F;user",
     ] {
         let search = PanicSearch { focal_code };
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
@@ -3826,6 +3838,10 @@ fn related_code_query_skips_octal_emitted_html_entity_path_only_selections() {
         r"\046#xu0032u0046;home\046#xu0032u0046;user\046#xu0032u0046;secret\046#xu0032u0046;credentials",
         r"\046u0073u006Fu006C;home\046u0073u006Fu006C;user\046u0073u006Fu006C;secret\046u0073u006Fu006C;credentials",
         r"\046u0023u0034u0037;home\046u0023u0034u0037;user\046u0023u0034u0037;secret\046u0023u0034u0037;credentials",
+        r"\046\163\157\154;home\046\163\157\154;user\046\163\157\154;secret\046\163\157\154;credentials",
+        r"\046\141\155\160;sol;home\046\141\155\160;sol;user\046\141\155\160;sol;secret\046\141\155\160;sol;credentials",
+        r"\046\04347;home\046\04347;user\046\04347;secret\046\04347;credentials",
+        r"\046\23x2F;home\046\23x2F;user\046\23x2F;secret\046\23x2F;credentials",
     ] {
         let search = PanicSearch { focal_code };
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
@@ -3860,6 +3876,10 @@ fn related_code_query_skips_backslash_hex_emitted_html_entity_path_only_selectio
         r"\26#xu0032u0046;home\26#xu0032u0046;user\26#xu0032u0046;secret\26#xu0032u0046;credentials",
         r"\26u0073u006Fu006C;home\26u0073u006Fu006C;user\26u0073u006Fu006C;secret\26u0073u006Fu006C;credentials",
         r"\26u0023u0034u0037;home\26u0023u0034u0037;user\26u0023u0034u0037;secret\26u0023u0034u0037;credentials",
+        r"\26\73\6F\6C;home\26\73\6F\6C;user\26\73\6F\6C;secret\26\73\6F\6C;credentials",
+        r"\26\141\155\160;sol;home\26\141\155\160;sol;user\26\141\155\160;sol;secret\26\141\155\160;sol;credentials",
+        r"\26\04347;home\26\04347;user\26\04347;secret\26\04347;credentials",
+        r"\26\23x2F;home\26\23x2F;user\26\23x2F;secret\26\23x2F;credentials",
     ] {
         let search = PanicSearch { focal_code };
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
