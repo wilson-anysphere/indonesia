@@ -6965,7 +6965,16 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
         return false;
     }
 
-    fn escape_after_prefix(bytes: &[u8], mut cursor: usize, upper: bool) -> bool {
+    fn escape_after_prefix(bytes: &[u8], cursor: usize, upper: bool) -> bool {
+        escape_after_prefix_with_depth(bytes, cursor, upper, 4)
+    }
+
+    fn escape_after_prefix_with_depth(
+        bytes: &[u8],
+        mut cursor: usize,
+        upper: bool,
+        depth: u8,
+    ) -> bool {
         if cursor >= bytes.len() {
             return false;
         }
@@ -7014,6 +7023,17 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
                     {
                         return true;
                     }
+
+                    // Unicode escapes can also be nested by first emitting the escape prefix via
+                    // another unicode escape (e.g. `u0075002F` == `u002F` across multiple decode
+                    // passes). Treat these as path-like so path-only selections cannot leak path
+                    // segments into semantic-search queries.
+                    if depth > 0 && matches!(value, 0x55 | 0x75) {
+                        let upper = value == 0x55;
+                        if escape_after_prefix_with_depth(bytes, cursor + 1, upper, depth - 1) {
+                            return true;
+                        }
+                    }
                 }
                 return false;
             }
@@ -7032,6 +7052,12 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
             if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, cursor).is_some() {
                 return true;
             }
+            if depth > 0 && matches!(value, 0x55 | 0x75) {
+                let upper = value == 0x55;
+                if escape_after_prefix_with_depth(bytes, cursor, upper, depth - 1) {
+                    return true;
+                }
+            }
             return false;
         }
 
@@ -7044,8 +7070,18 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
             value = (value << 4) | digit as u32;
             cursor = next;
         }
-        html_entity_codepoint_is_path_separator(value)
+        if html_entity_codepoint_is_path_separator(value)
             || (value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, cursor).is_some())
+        {
+            return true;
+        }
+        if depth > 0 && matches!(value, 0x55 | 0x75) {
+            let upper = value == 0x55;
+            if escape_after_prefix_with_depth(bytes, cursor, upper, depth - 1) {
+                return true;
+            }
+        }
+        false
     }
 
     let mut i = 0usize;

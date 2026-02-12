@@ -2133,6 +2133,55 @@ fn related_code_query_skips_hex_escape_path_only_selections_with_entity_prefix()
 }
 
 #[test]
+fn related_code_query_skips_nested_unicode_escape_path_only_selections() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for nested unicode-escaped path selections; got query={query}"
+            );
+        }
+    }
+
+    let search = PanicSearch;
+    // `u0075` decodes to `u`, yielding `u002F...` and then `/...` across multiple decode passes.
+    let sep = "u0075002F";
+    let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+    let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for nested unicode-escaped path-only focal code"
+    );
+}
+
+#[test]
+fn related_code_query_skips_nested_unicode_escape_path_only_selections_short_paths() {
+    struct PanicSearch<'a> {
+        focal_code: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for nested unicode-escaped path-only short selections; focal_code={}; got query={query}",
+                self.focal_code
+            );
+        }
+    }
+
+    // `u0075` decodes to `u`, yielding `u002F...` and then `/...` across multiple decode passes.
+    for focal_code in ["u0075002Fsrc", "u0075002Fsrcu0075002Fmain"] {
+        let search = PanicSearch { focal_code };
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for nested unicode-escaped path-only short focal code"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_escaped_percent_encoded_path_only_selections() {
     struct PanicSearch;
 
