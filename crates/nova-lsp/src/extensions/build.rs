@@ -1746,7 +1746,7 @@ impl BuildStatusGuard {
     pub(super) fn finish_from_result<T>(&mut self, result: &Result<T>) {
         match result {
             Ok(_) => self.mark_success(),
-            Err(err) => self.mark_failure(Some(err.to_string())),
+            Err(err) => self.mark_failure(Some(crate::sanitize_error_message(err))),
         }
     }
 }
@@ -2471,6 +2471,43 @@ mod tests {
                 .unwrap_or_default()
                 .contains("boom"),
             "expected lastError to include the runner error: {resp:?}"
+        );
+    }
+
+    #[test]
+    fn build_status_guard_finish_from_result_sanitizes_error_messages() {
+        let secret_suffix = "nova-lsp-build-status-guard-secret-token";
+        let message = format!(
+            "TOML parse error at line 1, column 10\n1 | api_key = \"{secret_suffix}\"\n  |          ^\ninvalid type: string \"{secret_suffix}\", expected boolean"
+        );
+        assert!(
+            message.contains(secret_suffix),
+            "expected raw error message to include secret so this test catches leaks: {message}"
+        );
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        let result: Result<()> = Err(NovaLspError::Internal(message));
+        {
+            let mut status_guard = BuildStatusGuard::new(&root);
+            status_guard.finish_from_result(&result);
+        }
+
+        let (status, last_error) = build_status_snapshot_for_project_root(&root);
+        assert_eq!(status, BuildStatus::Failed);
+        let last_error = last_error.expect("expected build status to record last error");
+        assert!(
+            !last_error.contains(secret_suffix),
+            "expected build status to omit TOML snippet contents and scalar values: {last_error}"
+        );
+        assert!(
+            !last_error.contains("api_key ="),
+            "expected build status to strip snippet source lines: {last_error}"
+        );
+        assert!(
+            last_error.contains("<redacted>"),
+            "expected build status to include redaction marker: {last_error}"
         );
     }
 

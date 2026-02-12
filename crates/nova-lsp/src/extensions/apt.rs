@@ -144,7 +144,7 @@ pub fn handle_generated_sources(
                 status_guard.mark_success();
             }
         }
-        Err(err) => status_guard.mark_failure(Some(err.to_string())),
+        Err(err) => status_guard.mark_failure(Some(crate::sanitize_error_message(err))),
     }
     let mut status = status_result?.status;
 
