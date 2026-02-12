@@ -2208,6 +2208,32 @@ fn related_code_query_skips_unicode_emitted_hex_escape_path_only_selections_shor
 }
 
 #[test]
+fn related_code_query_skips_hex_emitted_unicode_escape_path_only_selections_short_paths() {
+    struct PanicSearch<'a> {
+        focal_code: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for path-only selections where a hex escape emits a unicode-escape prefix; focal_code={}; got query={query}",
+                self.focal_code
+            );
+        }
+    }
+
+    // `x{75}` decodes to `u`, yielding `u002F...` and then `/...` across multiple decode passes.
+    for focal_code in ["x{75}002Fsrc", "x{75}002Fsrcx{75}002Fmain"] {
+        let search = PanicSearch { focal_code };
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for hex-emitted unicode-escape prefix in short path-only focal code"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_escaped_percent_encoded_path_only_selections() {
     struct PanicSearch;
 

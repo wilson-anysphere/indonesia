@@ -7320,7 +7320,132 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
         return false;
     }
 
-    fn escape_after_prefix(bytes: &[u8], mut cursor: usize) -> bool {
+    fn escape_after_prefix(bytes: &[u8], cursor: usize) -> bool {
+        escape_after_prefix_with_depth(bytes, cursor, 4)
+    }
+
+    fn unicode_escape_after_prefix_with_depth(
+        bytes: &[u8],
+        mut cursor: usize,
+        upper: bool,
+        depth: u8,
+    ) -> bool {
+        if cursor >= bytes.len() {
+            return false;
+        }
+
+        if !upper {
+            // Like `token_contains_unicode_escaped_path_separator`, treat multiple `u` characters
+            // as a unicode-escape prefix so obfuscated paths can't leak segments.
+            while cursor < bytes.len() && bytes[cursor] == b'u' {
+                cursor += 1;
+            }
+            if cursor >= bytes.len() {
+                return false;
+            }
+
+            if bytes.get(cursor).is_some_and(|b| *b == b'{') {
+                let mut value = 0u32;
+                let mut significant = 0usize;
+                cursor += 1;
+                let scan_end = (cursor + 1024).min(bytes.len());
+                while cursor < scan_end && significant < 8 {
+                    if bytes[cursor] == b'}' {
+                        break;
+                    }
+                    let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
+                        break;
+                    };
+                    if significant == 0 && digit == 0 {
+                        cursor = next;
+                        continue;
+                    }
+                    value = (value << 4) | digit as u32;
+                    significant += 1;
+                    cursor = next;
+                }
+
+                if significant > 0 && cursor < bytes.len() && bytes[cursor] == b'}' {
+                    if html_entity_codepoint_is_path_separator(value) {
+                        return true;
+                    }
+                    if value == 37
+                        && percent_encoded_byte_after_obfuscated_digits(bytes, cursor + 1).is_some()
+                    {
+                        return true;
+                    }
+                    if depth > 0 && matches!(value, 0x55 | 0x75) {
+                        let upper = value == 0x55;
+                        if unicode_escape_after_prefix_with_depth(bytes, cursor + 1, upper, depth - 1) {
+                            return true;
+                        }
+                    }
+                    if depth > 0 && matches!(value, 0x58 | 0x78) {
+                        if escape_after_prefix_with_depth(bytes, cursor + 1, depth - 1) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }
+
+            let mut value = 0u32;
+            for _ in 0..4 {
+                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
+                    return false;
+                };
+                value = (value << 4) | digit as u32;
+                cursor = next;
+            }
+            if html_entity_codepoint_is_path_separator(value) {
+                return true;
+            }
+            if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, cursor).is_some() {
+                return true;
+            }
+            if depth > 0 && matches!(value, 0x55 | 0x75) {
+                let upper = value == 0x55;
+                if unicode_escape_after_prefix_with_depth(bytes, cursor, upper, depth - 1) {
+                    return true;
+                }
+            }
+            if depth > 0 && matches!(value, 0x58 | 0x78) {
+                if escape_after_prefix_with_depth(bytes, cursor, depth - 1) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // 8-digit escapes after an emitted `U` prefix (`U0000002F`).
+        let mut value = 0u32;
+        for _ in 0..8 {
+            let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
+                return false;
+            };
+            value = (value << 4) | digit as u32;
+            cursor = next;
+        }
+        if html_entity_codepoint_is_path_separator(value)
+            || (value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, cursor).is_some())
+        {
+            return true;
+        }
+        if depth > 0 && matches!(value, 0x55 | 0x75) {
+            let upper = value == 0x55;
+            if unicode_escape_after_prefix_with_depth(bytes, cursor, upper, depth - 1) {
+                return true;
+            }
+        }
+        if depth > 0 && matches!(value, 0x58 | 0x78) {
+            if escape_after_prefix_with_depth(bytes, cursor, depth - 1) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn escape_after_prefix_with_depth(bytes: &[u8], mut cursor: usize, depth: u8) -> bool {
         if cursor >= bytes.len() {
             return false;
         }
@@ -7349,10 +7474,22 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
                 if html_entity_codepoint_is_path_separator(value) {
                     return true;
                 }
-                if value == 37
-                    && percent_encoded_byte_after_obfuscated_digits(bytes, cursor + 1).is_some()
+                if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, cursor + 1).is_some()
                 {
                     return true;
+                }
+                // Hex escapes can emit unicode-escape prefixes, e.g. `x{75}002F` == `u002F`.
+                if depth > 0 && matches!(value, 0x55 | 0x75) {
+                    let upper = value == 0x55;
+                    if unicode_escape_after_prefix_with_depth(bytes, cursor + 1, upper, depth - 1) {
+                        return true;
+                    }
+                }
+                // Nested prefix emission: `x{78}2F` == `x2F`.
+                if depth > 0 && matches!(value, 0x58 | 0x78) {
+                    if escape_after_prefix_with_depth(bytes, cursor + 1, depth - 1) {
+                        return true;
+                    }
                 }
             }
             return false;
@@ -7376,6 +7513,19 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
             {
                 return true;
             }
+            // Nested prefix emission: treat fixed-width `x75` as emitting `u` and scan for a
+            // unicode escape that resolves to a separator.
+            if depth > 0 && matches!(value, 0x55 | 0x75) {
+                let upper = value == 0x55;
+                if unicode_escape_after_prefix_with_depth(bytes, cursor, upper, depth - 1) {
+                    return true;
+                }
+            }
+            if depth > 0 && matches!(value, 0x58 | 0x78) {
+                if escape_after_prefix_with_depth(bytes, cursor, depth - 1) {
+                    return true;
+                }
+            }
         }
 
         false
@@ -7397,87 +7547,13 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
         }
 
         let embedded = i > 0 && bytes[i - 1].is_ascii_alphanumeric();
-
-        if bytes.get(i + 1).is_some_and(|b| *b == b'{') {
-            let mut value = 0u32;
-            let mut significant = 0usize;
-            let mut cursor = i + 2;
-            let scan_end = (cursor + 1024).min(bytes.len());
-            while cursor < scan_end && significant < 8 {
-                if bytes[cursor] == b'}' {
-                    break;
-                }
-                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
-                    break;
-                };
-                if significant == 0 && digit == 0 {
-                    cursor = next;
-                    continue;
-                }
-                value = (value << 4) | digit as u32;
-                significant += 1;
-                cursor = next;
+        if escape_after_prefix(bytes, i + 1) {
+            if !embedded {
+                return true;
             }
-
-            if significant > 0 && cursor < bytes.len() && bytes[cursor] == b'}' {
-                if html_entity_codepoint_is_path_separator(value) {
-                    if !embedded {
-                        return true;
-                    }
-                    embedded_separator_count += 1;
-                    if embedded_separator_count >= 2 {
-                        return true;
-                    }
-                }
-                if value == 37
-                    && percent_encoded_byte_after_obfuscated_digits(bytes, cursor + 1).is_some()
-                {
-                    if !embedded {
-                        return true;
-                    }
-                    embedded_separator_count += 1;
-                    if embedded_separator_count >= 2 {
-                        return true;
-                    }
-                }
-            }
-        } else {
-            let mut value = 0u32;
-            let mut significant = 0usize;
-            let mut cursor = i + 1;
-            while cursor < bytes.len() && significant < 8 {
-                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
-                    break;
-                };
-                if significant == 0 && digit == 0 {
-                    cursor = next;
-                    continue;
-                }
-                value = (value << 4) | digit as u32;
-                significant += 1;
-                cursor = next;
-                if html_entity_codepoint_is_path_separator(value) {
-                    if !embedded {
-                        return true;
-                    }
-                    embedded_separator_count += 1;
-                    if embedded_separator_count >= 2 {
-                        return true;
-                    }
-                    break;
-                }
-                if value == 37
-                    && percent_encoded_byte_after_obfuscated_digits(bytes, cursor).is_some()
-                {
-                    if !embedded {
-                        return true;
-                    }
-                    embedded_separator_count += 1;
-                    if embedded_separator_count >= 2 {
-                        return true;
-                    }
-                    break;
-                }
+            embedded_separator_count += 1;
+            if embedded_separator_count >= 2 {
+                return true;
             }
         }
 
