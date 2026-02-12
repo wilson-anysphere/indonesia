@@ -3721,6 +3721,70 @@ fn related_code_query_skips_html_entity_path_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_unicode_emitted_html_entity_path_only_selections() {
+    struct PanicSearch<'a> {
+        focal_code: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for path-only selections where a unicode escape emits an HTML entity separator; focal_code={}; got query={query}",
+                self.focal_code
+            );
+        }
+    }
+
+    // `u0026` decodes to `&`, yielding entities like `&sol;` and `&#47;` across decode passes.
+    for focal_code in [
+        "u0026sol;homeu0026sol;useru0026sol;secretu0026sol;credentials",
+        "u0026bsol;homeu0026bsol;useru0026bsol;secretu0026bsol;credentials",
+        "u0026#47;homeu0026#47;useru0026#47;secretu0026#47;credentials",
+        "u0026#x2F;homeu0026#x2F;useru0026#x2F;secretu0026#x2F;credentials",
+    ] {
+        let search = PanicSearch { focal_code };
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for unicode-emitted HTML-entity path-only focal code"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_hex_emitted_html_entity_path_only_selections() {
+    struct PanicSearch<'a> {
+        focal_code: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for path-only selections where a hex escape emits an HTML entity separator; focal_code={}; got query={query}",
+                self.focal_code
+            );
+        }
+    }
+
+    // `x26` decodes to `&`, yielding entities like `&sol;` and `&#47;` across decode passes.
+    for focal_code in [
+        "x26sol;homex26sol;userx26sol;secretx26sol;credentials",
+        // Embedded form (e.g. from stripped `\\x26` sequences).
+        "homex26sol;user",
+        "homex{26}sol;user",
+        "homex26#47;user",
+        "homex26#x2F;user",
+    ] {
+        let search = PanicSearch { focal_code };
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for hex-emitted HTML-entity path-only focal code"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_obfuscated_html_entity_path_only_selections_with_digit_entities() {
     struct PanicSearch<'a> {
         sep: &'a str,
