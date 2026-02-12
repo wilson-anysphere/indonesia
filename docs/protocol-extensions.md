@@ -2543,6 +2543,20 @@ Same as `nova.ai.generateMethodBody`.
 
 ## Internal (debug/test-only)
 
+### `nova/testSerdeJsonArgs`
+
+- **Kind:** request
+- **Stability:** internal (debug-only)
+- **Implemented in:** `crates/nova-lsp/src/lib.rs` (debug builds only)
+
+Debug/test-only endpoint used by Nova’s integration tests to validate that JSON-RPC invalid-params
+errors (notably `serde_json` unknown-field/variant messages) are sanitized before being returned to
+clients.
+
+Release builds do not implement this endpoint.
+
+---
+
 ### `nova/internal/interruptibleWork`
 
 - **Kind:** request
