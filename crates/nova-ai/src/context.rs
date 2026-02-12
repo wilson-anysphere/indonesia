@@ -7075,6 +7075,21 @@ fn html_fragment_after_emitted_ampersand_decoded_is_path_separator(bytes: &[u8],
             return None;
         }
 
+        // Prefer fixed-width `xNN` decoding when it yields ASCII. This avoids greedily consuming
+        // adjacent escape sequences that also begin with hex digits (e.g. `x70x65...` should be
+        // interpreted as `p` + `e`, not as one large hex escape that overflows the ASCII range).
+        if let Some((hi, next)) = parse_obfuscated_hex_digit(bytes, cursor) {
+            if let Some((lo, next)) = parse_obfuscated_hex_digit(bytes, next) {
+                let value = ((hi as u32) << 4) | (lo as u32);
+                if value <= 0x7F {
+                    let value = value as u8;
+                    if value != 0 || parse_obfuscated_hex_digit(bytes, next).is_none() {
+                        return Some((value, next));
+                    }
+                }
+            }
+        }
+
         let mut value = 0u32;
         let mut significant = 0usize;
         while cursor < bytes.len() && significant < 8 {
@@ -7090,6 +7105,13 @@ fn html_fragment_after_emitted_ampersand_decoded_is_path_separator(bytes: &[u8],
             cursor = next;
             if value > 0x7F {
                 return None;
+            }
+            // ASCII codepoints are at most two significant hex digits. Once we've decoded two
+            // digits (after skipping any leading zeros), stop rather than greedily consuming
+            // following characters/escapes that also decode to hex digits (e.g. `x70x65...` or
+            // `x00x37x30ercnt`).
+            if significant >= 2 {
+                return Some((value as u8, cursor));
             }
         }
         if significant > 0 && value <= 0x7F {
@@ -7348,6 +7370,16 @@ fn html_fragment_after_emitted_ampersand_decoded_is_path_separator(bytes: &[u8],
         || bytes
             .get(start..start + 6)
             .is_some_and(|frag| frag.eq_ignore_ascii_case(b"ssetmn"))
+        // Percent-sign entities (`&percnt;` / `&percent;`) commonly prefix percent-encoded paths
+        // once `&` is emitted via an escape. Treat them as path-like so path-only selections don't
+        // leak segments into semantic search (e.g. `x26x70x65x72x63x6ex74x3b2f...` -> `&percnt;2f`
+        // -> `%2f` -> `/` across decode passes).
+        || bytes
+            .get(start..start + 6)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percnt"))
+        || bytes
+            .get(start..start + 7)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"percent"))
     {
         return true;
     }

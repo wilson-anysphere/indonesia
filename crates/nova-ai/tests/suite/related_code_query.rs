@@ -3221,9 +3221,15 @@ fn related_code_query_skips_html_entity_percent_encoded_path_only_selections_wit
         "u0026percntu{0032}u{0046}",   // %2F
         "u0026percntu0035u0043",       // %5C
         "u0026percntu{0035}u{0043}",   // %5C
+        // Obfuscate the percent-entity name itself via unicode escapes (`u0070` == 'p', etc),
+        // including an escaped semicolon terminator (`u003B` == ';').
+        "u0026u0070u0065u0072u0063u006eu0074u003Bu0032u0046", // &percnt;2F
+        "u0026u0070u0065u0072u0063u0065u006eu0074u003Bu0032u0046", // &percent;2F
         "u{0026}percntu0032u0046",     // %2F (braced ampersand)
         "x26percntu0032u0046",         // %2F (hex escape ampersand)
         "x{26}percntu{0032}u{0046}",   // %2F (braced hex ampersand + braced digits)
+        // Same as above, but with C-style backslash unicode escapes inside the percent-entity name.
+        r"u0026\u0070\u0065\u0072\u0063\u006e\u0074\u003Bu0032u0046", // &percnt;2F
         // Unicode-escaped ampersand followed by a numeric percent entity (`#37`), missing its `&`.
         "u0026#37u0032u0046",          // %2F
         // Unicode-escaped ampersand + unicode-escaped number sign (`u0023`) building numeric percent
@@ -4837,6 +4843,73 @@ fn related_code_query_skips_mac_address_only_selections() {
         assert!(
             req.related_code.is_empty(),
             "expected no related code for mac-only focal code"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_obfuscated_percent_entity_name_short_paths() {
+    struct PanicSearch<'a> {
+        focal_code: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for short path-only selections with obfuscated percent-entity names; focal_code={}; got query={query}",
+                self.focal_code
+            );
+        }
+    }
+
+    for focal_code in [
+        // `u0026` emits `&` and the percent entity name is itself encoded via unicode escapes,
+        // yielding `&percnt;`/`&percent;` across decode passes.
+        "u0026u0070u0065u0072u0063u006eu0074u003Bu0032u0046src", // &percnt;2Fsrc -> %2Fsrc -> /src
+        "u0026u0070u0065u0072u0063u0065u006eu0074u003Bu0032u0046src", // &percent;2Fsrc -> /src
+        // Same, but using C-style backslash unicode escapes for the percent entity letters.
+        r"u0026\u0070\u0065\u0072\u0063\u006e\u0074\u003Bu0032u0046src", // &percnt;2Fsrc -> /src
+    ] {
+        let search = PanicSearch { focal_code };
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for short path-only focal code with obfuscated percent-entity names"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_hex_escaped_percent_entity_name_short_paths() {
+    struct PanicSearch<'a> {
+        focal_code: &'a str,
+    }
+
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for short path-only selections where hex escapes build a percent-entity name; focal_code={}; got query={query}",
+                self.focal_code
+            );
+        }
+    }
+
+    // These sequences decode to `&percnt;2Fsrc` (aka `%2Fsrc`) across multiple decode passes, but
+    // can be short enough to avoid the high-entropy guard.
+    for focal_code in [
+        "x26x70x65x72x63x6ex74x3b2fsrc", // &percnt;2Fsrc -> /src
+        "x26x70x65x72x63x65x6ex74x3b2fsrc", // &percent;2Fsrc -> /src
+        // Obfuscate the first character of the percent-entity name by encoding the hex digits
+        // themselves as nested `xNN` escapes. Without careful fixed-width decoding this can be
+        // misinterpreted as `\0` + `7` + `0` rather than `p` (`0x70`).
+        "x26x00x37x30ercntx3b2fsrc", // &percnt;2Fsrc -> /src
+        "x26x00x37x30ercentx3b2fsrc", // &percent;2Fsrc -> /src
+    ] {
+        let search = PanicSearch { focal_code };
+        let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for short path-only focal code with hex-escaped percent-entity name"
         );
     }
 }
