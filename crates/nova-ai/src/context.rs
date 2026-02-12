@@ -6959,6 +6959,326 @@ fn token_contains_obfuscated_percent_marker_path_separator(tok: &str) -> bool {
     false
 }
 
+fn html_fragment_after_emitted_ampersand_decoded_is_path_separator(bytes: &[u8], start: usize) -> bool {
+    fn hex_value(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    fn ascii_from_unicode_escape(bytes: &[u8], idx: usize) -> Option<(u8, usize)> {
+        if idx >= bytes.len() {
+            return None;
+        }
+        let b = bytes[idx];
+        if b == b'U' {
+            let mut cursor = idx + 1;
+            let mut value = 0u32;
+            for _ in 0..8 {
+                let (digit, next) = parse_obfuscated_hex_digit(bytes, cursor)?;
+                value = (value << 4) | digit as u32;
+                cursor = next;
+            }
+            if value <= 0x7F {
+                return Some((value as u8, cursor));
+            }
+            return None;
+        }
+
+        if b != b'u' {
+            return None;
+        }
+
+        let mut cursor = idx + 1;
+        while cursor < bytes.len() && bytes[cursor] == b'u' {
+            cursor += 1;
+        }
+        if cursor >= bytes.len() {
+            return None;
+        }
+
+        if bytes[cursor] == b'{' {
+            cursor += 1;
+            let scan_end = (cursor + 1024).min(bytes.len());
+            let mut value = 0u32;
+            let mut significant = 0usize;
+            while cursor < scan_end && significant < 8 {
+                if bytes[cursor] == b'}' {
+                    break;
+                }
+                let (digit, next) = parse_obfuscated_hex_digit(bytes, cursor)?;
+                if significant == 0 && digit == 0 {
+                    cursor = next;
+                    continue;
+                }
+                value = (value << 4) | digit as u32;
+                significant += 1;
+                cursor = next;
+            }
+            if significant > 0 && cursor < bytes.len() && bytes[cursor] == b'}' && value <= 0x7F {
+                return Some((value as u8, cursor + 1));
+            }
+            return None;
+        }
+
+        let mut value = 0u32;
+        for _ in 0..4 {
+            let (digit, next) = parse_obfuscated_hex_digit(bytes, cursor)?;
+            value = (value << 4) | digit as u32;
+            cursor = next;
+        }
+        if value <= 0x7F {
+            Some((value as u8, cursor))
+        } else {
+            None
+        }
+    }
+
+    fn ascii_from_hex_escape(bytes: &[u8], idx: usize) -> Option<(u8, usize)> {
+        if idx >= bytes.len() {
+            return None;
+        }
+        let b = bytes[idx];
+        if b != b'x' && b != b'X' {
+            return None;
+        }
+
+        let mut cursor = idx + 1;
+        if cursor >= bytes.len() {
+            return None;
+        }
+
+        if bytes[cursor] == b'{' {
+            cursor += 1;
+            let scan_end = (cursor + 1024).min(bytes.len());
+            let mut value = 0u32;
+            let mut significant = 0usize;
+            while cursor < scan_end && significant < 8 {
+                if bytes[cursor] == b'}' {
+                    break;
+                }
+                let (digit, next) = parse_obfuscated_hex_digit(bytes, cursor)?;
+                if significant == 0 && digit == 0 {
+                    cursor = next;
+                    continue;
+                }
+                value = (value << 4) | digit as u32;
+                significant += 1;
+                cursor = next;
+            }
+            if significant > 0 && cursor < bytes.len() && bytes[cursor] == b'}' && value <= 0x7F {
+                return Some((value as u8, cursor + 1));
+            }
+            return None;
+        }
+
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        while cursor < bytes.len() && significant < 8 {
+            let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
+                break;
+            };
+            if significant == 0 && digit == 0 {
+                cursor = next;
+                continue;
+            }
+            value = (value << 4) | digit as u32;
+            significant += 1;
+            cursor = next;
+            if value > 0x7F {
+                return None;
+            }
+        }
+        if significant > 0 && value <= 0x7F {
+            Some((value as u8, cursor))
+        } else {
+            None
+        }
+    }
+
+    fn ascii_from_html_numeric_entity(bytes: &[u8], idx: usize) -> Option<(u8, usize)> {
+        if bytes.get(idx) != Some(&b'&') || bytes.get(idx + 1) != Some(&b'#') {
+            return None;
+        }
+
+        let mut cursor = idx + 2;
+        let base = match bytes.get(cursor) {
+            Some(b'x') | Some(b'X') => {
+                cursor += 1;
+                16u32
+            }
+            _ => 10u32,
+        };
+        if cursor >= bytes.len() {
+            return None;
+        }
+
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        while cursor < bytes.len() && significant < 8 {
+            let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
+                break;
+            };
+            if base == 10 && digit >= 10 {
+                break;
+            }
+            let digit = digit as u32;
+            if significant == 0 && digit == 0 {
+                cursor = next;
+                continue;
+            }
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+            significant += 1;
+            cursor = next;
+        }
+        if significant == 0 || value > 0x7F {
+            return None;
+        }
+
+        if bytes.get(cursor) == Some(&b';') {
+            cursor += 1;
+        }
+        Some((value as u8, cursor))
+    }
+
+    fn next_ascii_byte(bytes: &[u8], idx: usize) -> Option<(u8, usize)> {
+        ascii_from_unicode_escape(bytes, idx)
+            .or_else(|| ascii_from_hex_escape(bytes, idx))
+            .or_else(|| ascii_from_html_numeric_entity(bytes, idx))
+    }
+
+    if start >= bytes.len() {
+        return false;
+    }
+
+    let mut decoded = [0u8; 128];
+    let mut len = 0usize;
+    let mut cursor = start;
+    while cursor < bytes.len() && len < decoded.len() {
+        if let Some((ch, next)) = next_ascii_byte(bytes, cursor) {
+            decoded[len] = ch;
+            len += 1;
+            cursor = next;
+            continue;
+        }
+
+        let b = bytes[cursor];
+        if !b.is_ascii() {
+            break;
+        }
+        decoded[len] = b;
+        len += 1;
+        cursor += 1;
+    }
+
+    if len == 0 {
+        return false;
+    }
+
+    let bytes = &decoded[..len];
+    let mut start = 0usize;
+
+    for _ in 0..8 {
+        if bytes
+            .get(start..start + 3)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+        {
+            start += 3;
+            if bytes.get(start).is_some_and(|b| *b == b';') {
+                start += 1;
+            }
+            if start >= bytes.len() {
+                return false;
+            }
+            continue;
+        }
+        break;
+    }
+
+    if bytes
+        .get(start..start + 3)
+        .is_some_and(|frag| frag.eq_ignore_ascii_case(b"sol"))
+        || bytes
+            .get(start..start + 5)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"slash"))
+        || bytes
+            .get(start..start + 4)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"dsol"))
+        || bytes
+            .get(start..start + 4)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"bsol"))
+        || bytes
+            .get(start..start + 9)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"backslash"))
+        || bytes
+            .get(start..start + 5)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"frasl"))
+        || bytes
+            .get(start..start + 8)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"setminus"))
+        || bytes
+            .get(start..start + 5)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"setmn"))
+        || bytes
+            .get(start..start + 13)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"smallsetminus"))
+        || bytes
+            .get(start..start + 6)
+            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"ssetmn"))
+    {
+        return true;
+    }
+
+    if bytes.get(start) != Some(&b'#') {
+        return false;
+    }
+    let mut j = start + 1;
+    let base = match bytes.get(j) {
+        Some(b'x') | Some(b'X') => {
+            j += 1;
+            16u32
+        }
+        _ => 10u32,
+    };
+    if j >= bytes.len() {
+        return false;
+    }
+
+    let mut value = 0u32;
+    let mut significant = 0usize;
+    while j < bytes.len() && significant < 8 {
+        let b = bytes[j];
+        let digit = if base == 16 {
+            let Some(v) = hex_value(b) else {
+                break;
+            };
+            v as u32
+        } else if b.is_ascii_digit() {
+            (b - b'0') as u32
+        } else {
+            break;
+        };
+        if significant == 0 && digit == 0 {
+            j += 1;
+            continue;
+        }
+        value = value
+            .checked_mul(base)
+            .and_then(|v| v.checked_add(digit))
+            .unwrap_or(u32::MAX);
+        significant += 1;
+        j += 1;
+    }
+
+    significant > 0 && html_entity_codepoint_is_path_separator(value)
+}
+
 fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
     let bytes = tok.as_bytes();
     if bytes.len() < 5 {
@@ -7025,7 +7345,7 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
 
         // Numeric HTML entities (`#47`, `#x2F`, etc), including semicolon-less fragments.
         if bytes.get(start) != Some(&b'#') {
-            return false;
+            return html_fragment_after_emitted_ampersand_decoded_is_path_separator(bytes, start);
         }
         let mut j = start + 1;
         let base = match bytes.get(j) {
@@ -7061,7 +7381,11 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
             j = next;
         }
 
-        significant > 0 && html_entity_codepoint_is_path_separator(value)
+        if significant > 0 && html_entity_codepoint_is_path_separator(value) {
+            return true;
+        }
+
+        html_fragment_after_emitted_ampersand_decoded_is_path_separator(bytes, start)
     }
 
     fn escape_after_prefix(bytes: &[u8], cursor: usize, upper: bool) -> bool {
@@ -7493,7 +7817,7 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
 
         // Numeric entities (`#47`, `#x2F`, etc).
         if bytes.get(start) != Some(&b'#') {
-            return false;
+            return html_fragment_after_emitted_ampersand_decoded_is_path_separator(bytes, start);
         }
 
         let mut j = start + 1;
@@ -7530,7 +7854,11 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
             j = next;
         }
 
-        significant > 0 && html_entity_codepoint_is_path_separator(value)
+        if significant > 0 && html_entity_codepoint_is_path_separator(value) {
+            return true;
+        }
+
+        html_fragment_after_emitted_ampersand_decoded_is_path_separator(bytes, start)
     }
 
     fn escape_after_prefix(bytes: &[u8], cursor: usize) -> bool {
@@ -7925,7 +8253,7 @@ fn token_contains_octal_escaped_path_separator(tok: &str) -> bool {
         }
 
         if bytes.get(start) != Some(&b'#') {
-            return false;
+            return html_fragment_after_emitted_ampersand_decoded_is_path_separator(bytes, start);
         }
         let mut j = start + 1;
         let base = match bytes.get(j) {
@@ -7961,7 +8289,11 @@ fn token_contains_octal_escaped_path_separator(tok: &str) -> bool {
             j = next;
         }
 
-        significant > 0 && html_entity_codepoint_is_path_separator(value)
+        if significant > 0 && html_entity_codepoint_is_path_separator(value) {
+            return true;
+        }
+
+        html_fragment_after_emitted_ampersand_decoded_is_path_separator(bytes, start)
     }
 
     fn emitted_prefix_starts_nested_escape(tok: &str, start: usize, value: u32) -> bool {
@@ -8095,7 +8427,7 @@ fn token_contains_backslash_hex_escaped_path_separator(tok: &str) -> bool {
         }
 
         if bytes.get(start) != Some(&b'#') {
-            return false;
+            return html_fragment_after_emitted_ampersand_decoded_is_path_separator(bytes, start);
         }
         let mut j = start + 1;
         let base = match bytes.get(j) {
@@ -8131,7 +8463,11 @@ fn token_contains_backslash_hex_escaped_path_separator(tok: &str) -> bool {
             j = next;
         }
 
-        significant > 0 && html_entity_codepoint_is_path_separator(value)
+        if significant > 0 && html_entity_codepoint_is_path_separator(value) {
+            return true;
+        }
+
+        html_fragment_after_emitted_ampersand_decoded_is_path_separator(bytes, start)
     }
 
     fn emitted_prefix_starts_nested_escape(tok: &str, start: usize, value: u32) -> bool {

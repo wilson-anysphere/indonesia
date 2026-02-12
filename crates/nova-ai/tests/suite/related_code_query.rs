@@ -3745,6 +3745,12 @@ fn related_code_query_skips_unicode_emitted_html_entity_path_only_selections() {
         "u0026#u0034u0037;homeu0026#u0034u0037;useru0026#u0034u0037;secretu0026#u0034u0037;credentials",
         // Obfuscate the hex digits via unicode escapes (`u0032` == '2', `u0046` == 'F').
         "u0026#xu0032u0046;homeu0026#xu0032u0046;useru0026#xu0032u0046;secretu0026#xu0032u0046;credentials",
+        // Obfuscate the named HTML entity itself via unicode escapes (`u0073` == 's', ...).
+        "u0026u0073u006Fu006C;homeu0026u0073u006Fu006C;useru0026u0073u006Fu006C;secretu0026u0073u006Fu006C;credentials",
+        "u0026u0062u0073u006Fu006C;homeu0026u0062u0073u006Fu006C;useru0026u0062u0073u006Fu006C;secretu0026u0062u0073u006Fu006C;credentials",
+        // Obfuscate the numeric entity prefix itself via unicode escapes (`u0023` == '#').
+        "u0026u0023u0034u0037;homeu0026u0023u0034u0037;useru0026u0023u0034u0037;secretu0026u0023u0034u0037;credentials",
+        "u0026u0023u0078u0032u0046;homeu0026u0023u0078u0032u0046;useru0026u0023u0078u0032u0046;secretu0026u0023u0078u0032u0046;credentials",
     ] {
         let search = PanicSearch { focal_code };
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
@@ -3775,6 +3781,8 @@ fn related_code_query_skips_hex_emitted_html_entity_path_only_selections() {
         "x26sol;homex26sol;userx26sol;secretx26sol;credentials",
         "x26#u0034u0037;homex26#u0034u0037;userx26#u0034u0037;secretx26#u0034u0037;credentials",
         "x26#xu0032u0046;homex26#xu0032u0046;userx26#xu0032u0046;secretx26#xu0032u0046;credentials",
+        "x26u0073u006Fu006C;homex26u0073u006Fu006C;userx26u0073u006Fu006C;secretx26u0073u006Fu006C;credentials",
+        "x26u0023u0034u0037;homex26u0023u0034u0037;userx26u0023u0034u0037;secretx26u0023u0034u0037;credentials",
         // Embedded form (e.g. from stripped `\\x26` sequences).
         "homex26sol;user",
         "homex{26}sol;user",
@@ -3782,6 +3790,8 @@ fn related_code_query_skips_hex_emitted_html_entity_path_only_selections() {
         "homex26#x2F;user",
         "homex26#u0034u0037;user",
         "homex26#xu0032u0046;user",
+        "homex26u0073u006Fu006C;user",
+        "homex26u0023u0034u0037;user",
     ] {
         let search = PanicSearch { focal_code };
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
@@ -3814,6 +3824,8 @@ fn related_code_query_skips_octal_emitted_html_entity_path_only_selections() {
         r"\046#x2F;home\046#x2F;user\046#x2F;secret\046#x2F;credentials",
         r"\046#u0034u0037;home\046#u0034u0037;user\046#u0034u0037;secret\046#u0034u0037;credentials",
         r"\046#xu0032u0046;home\046#xu0032u0046;user\046#xu0032u0046;secret\046#xu0032u0046;credentials",
+        r"\046u0073u006Fu006C;home\046u0073u006Fu006C;user\046u0073u006Fu006C;secret\046u0073u006Fu006C;credentials",
+        r"\046u0023u0034u0037;home\046u0023u0034u0037;user\046u0023u0034u0037;secret\046u0023u0034u0037;credentials",
     ] {
         let search = PanicSearch { focal_code };
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
@@ -3846,6 +3858,8 @@ fn related_code_query_skips_backslash_hex_emitted_html_entity_path_only_selectio
         r"\26#x2F;home\26#x2F;user\26#x2F;secret\26#x2F;credentials",
         r"\26#u0034u0037;home\26#u0034u0037;user\26#u0034u0037;secret\26#u0034u0037;credentials",
         r"\26#xu0032u0046;home\26#xu0032u0046;user\26#xu0032u0046;secret\26#xu0032u0046;credentials",
+        r"\26u0073u006Fu006C;home\26u0073u006Fu006C;user\26u0073u006Fu006C;secret\26u0073u006Fu006C;credentials",
+        r"\26u0023u0034u0037;home\26u0023u0034u0037;user\26u0023u0034u0037;secret\26u0023u0034u0037;credentials",
     ] {
         let search = PanicSearch { focal_code };
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
