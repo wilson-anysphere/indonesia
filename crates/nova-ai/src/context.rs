@@ -6969,6 +6969,109 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
         escape_after_prefix_with_depth(bytes, cursor, upper, 4)
     }
 
+    fn hex_escape_after_prefix_with_depth(bytes: &[u8], cursor: usize, depth: u8) -> bool {
+        if cursor >= bytes.len() {
+            return false;
+        }
+
+        fn nested_unicode_escape_after_prefix(
+            bytes: &[u8],
+            cursor: usize,
+            value: u32,
+            depth: u8,
+        ) -> bool {
+            if depth == 0 || !matches!(value, 0x55 | 0x75) {
+                return false;
+            }
+            let upper = value == 0x55;
+            escape_after_prefix_with_depth(bytes, cursor, upper, depth - 1)
+        }
+
+        fn nested_hex_escape_after_prefix(bytes: &[u8], cursor: usize, value: u32, depth: u8) -> bool {
+            if depth == 0 || !matches!(value, 0x58 | 0x78) {
+                return false;
+            }
+            hex_escape_after_prefix_with_depth(bytes, cursor, depth - 1)
+        }
+
+        // Braced hex escapes (`x{2F}`).
+        if bytes.get(cursor).is_some_and(|b| *b == b'{') {
+            let mut value = 0u32;
+            let mut significant = 0usize;
+            let mut cursor = cursor + 1;
+            let scan_end = (cursor + 1024).min(bytes.len());
+            while cursor < scan_end && significant < 8 {
+                if bytes[cursor] == b'}' {
+                    break;
+                }
+                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
+                    break;
+                };
+                if significant == 0 && digit == 0 {
+                    cursor = next;
+                    continue;
+                }
+                value = (value << 4) | digit as u32;
+                significant += 1;
+                cursor = next;
+            }
+            if significant > 0 && cursor < bytes.len() && bytes[cursor] == b'}' {
+                if html_entity_codepoint_is_path_separator(value) {
+                    return true;
+                }
+                if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, cursor + 1).is_some()
+                {
+                    return true;
+                }
+                // Nested prefix emission: `x{75}002F` (== `u002F`).
+                if nested_unicode_escape_after_prefix(bytes, cursor + 1, value, depth) {
+                    return true;
+                }
+                // Nested prefix emission: `x{78}2F` (== `x2F`).
+                if nested_hex_escape_after_prefix(bytes, cursor + 1, value, depth) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // Unbraced hex escapes (`x2F`, `x002F`, etc). As with the standalone hex-escape detector,
+        // parse up to 8 significant digits, skipping leading zeros, and treat any prefix-emission
+        // escapes as nested.
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        let mut cursor = cursor;
+        while cursor < bytes.len() && significant < 8 {
+            let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
+                break;
+            };
+            if significant == 0 && digit == 0 {
+                cursor = next;
+                continue;
+            }
+            value = (value << 4) | digit as u32;
+            significant += 1;
+            cursor = next;
+            if html_entity_codepoint_is_path_separator(value)
+                || (value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, cursor).is_some())
+            {
+                return true;
+            }
+            // Nested prefix emission: treat `x75...` as emitting `u` and scan for a unicode escape
+            // that resolves to a separator (fail closed: some languages treat `\x` escapes as
+            // fixed-width).
+            if nested_unicode_escape_after_prefix(bytes, cursor, value, depth) {
+                return true;
+            }
+            // Nested prefix emission: `x78...` emitting `x`.
+            if nested_hex_escape_after_prefix(bytes, cursor, value, depth) {
+                return true;
+            }
+        }
+
+        false
+    }
+
     fn escape_after_prefix_with_depth(
         bytes: &[u8],
         mut cursor: usize,
@@ -7034,6 +7137,14 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
                             return true;
                         }
                     }
+                    // Unicode escapes can also emit hex-escape prefixes (e.g. `u0078002F` == `x002F`
+                    // across decode passes). Treat these as path-like so path-only selections cannot
+                    // leak segments into semantic-search queries.
+                    if depth > 0 && matches!(value, 0x58 | 0x78) {
+                        if hex_escape_after_prefix_with_depth(bytes, cursor + 1, depth - 1) {
+                            return true;
+                        }
+                    }
                 }
                 return false;
             }
@@ -7058,6 +7169,11 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
                     return true;
                 }
             }
+            if depth > 0 && matches!(value, 0x58 | 0x78) {
+                if hex_escape_after_prefix_with_depth(bytes, cursor, depth - 1) {
+                    return true;
+                }
+            }
             return false;
         }
 
@@ -7078,6 +7194,11 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
         if depth > 0 && matches!(value, 0x55 | 0x75) {
             let upper = value == 0x55;
             if escape_after_prefix_with_depth(bytes, cursor, upper, depth - 1) {
+                return true;
+            }
+        }
+        if depth > 0 && matches!(value, 0x58 | 0x78) {
+            if hex_escape_after_prefix_with_depth(bytes, cursor, depth - 1) {
                 return true;
             }
         }
