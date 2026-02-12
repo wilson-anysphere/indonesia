@@ -2093,7 +2093,13 @@ fn sanitize_json_log_line(line: &str) -> String {
 
     let value: serde_json::Value = match serde_json::from_str(line) {
         Ok(value) => value,
-        Err(_) => return sanitize_json_error_message(line),
+        Err(_) => {
+            // If the line isn't valid JSON, we can't preserve JSON validity anyway. Still apply the
+            // most conservative sanitization logic we have (TOML-first, then serde-json) so we
+            // don't leak scalar values from embedded diagnostics (notably TOML snippet blocks,
+            // which can include unquoted numeric literals).
+            return nova_core::sanitize_error_message_text(line, log_line_contains_serde_json_error(line));
+        }
     };
     let sanitized = sanitize_json_log_value(value);
     serde_json::to_string(&sanitized).unwrap_or_else(|_| sanitize_json_error_message(line))
@@ -2404,6 +2410,50 @@ mod bugreport_log_sanitization_tests {
         );
         serde_json::from_str::<serde_json::Value>(&sanitized)
             .expect("expected sanitized bugreport log line to remain valid JSON");
+    }
+
+    #[test]
+    fn sanitize_bugreport_log_line_sanitizes_toml_snippet_blocks_even_when_json_parse_fails() {
+        let secret_suffix = "nova-config-invalid-json-escaped-snippet-secret";
+        let secret_number = 12_345_678u64;
+        let secret_number_text = secret_number.to_string();
+        let line = format!(
+            "{{not-json}} TOML parse error at line 12, column 10\\n12 | api_key = \"{secret_suffix}\"\\n13 | enabled = {secret_number}\\n  |          ^\\ninvalid type: string \"{secret_suffix}\", expected boolean"
+        );
+        assert!(
+            line.contains(secret_suffix),
+            "expected raw message to include the secret so this test catches leaks: {line}"
+        );
+        assert!(
+            line.contains(&secret_number_text),
+            "expected raw message to include the numeric value so this test catches leaks: {line}"
+        );
+
+        let sanitized = sanitize_bugreport_log_line(&line);
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected bugreport log sanitizer to omit escaped TOML snippet contents even when JSON parsing fails: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains(&secret_number_text),
+            "expected bugreport log sanitizer to omit numeric values from escaped TOML snippet blocks even when JSON parsing fails: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains("api_key ="),
+            "expected bugreport log sanitizer to strip snippet source lines even when JSON parsing fails: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected bugreport log sanitizer to include redaction marker: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("\\n"),
+            "expected bugreport log sanitizer to preserve escaped newline formatting: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains('\n'),
+            "expected bugreport log sanitizer not to inject actual newlines when input used escapes: {sanitized:?}"
+        );
     }
 
     #[test]
