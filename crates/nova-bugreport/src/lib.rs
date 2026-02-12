@@ -50,13 +50,10 @@ impl std::fmt::Display for BugReportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BugReportError::Io(err) => {
+                let contains_serde_json = contains_serde_json_error(err);
                 let message = err.to_string();
-                if contains_serde_json_error(err) {
-                    let message = sanitize_json_error_message(&message);
-                    write!(f, "io error: {message}")
-                } else {
-                    write!(f, "io error: {message}")
-                }
+                let message = nova_core::sanitize_error_message_text(&message, contains_serde_json);
+                write!(f, "io error: {message}")
             }
             BugReportError::Json { message } => write!(f, "json error: {message}"),
         }
@@ -1324,6 +1321,44 @@ mod tests {
         assert!(
             std::error::Error::source(&bug_err).is_some(),
             "expected BugReportError Io variant to expose its source error"
+        );
+    }
+
+    #[test]
+    fn bug_report_error_io_does_not_echo_toml_snippet_blocks() {
+        let secret_suffix = "nova-bugreport-toml-snippet-secret";
+        let secret_number = 12_345_678u64;
+        let message = format!(
+            "TOML parse error at line 12, column 10\n12 | api_key = \"{secret_suffix}\"\n13 | enabled = {secret_number}\n   |          ^\ninvalid type: string \"{secret_suffix}\", expected boolean"
+        );
+        assert!(
+            message.contains(secret_suffix),
+            "expected raw message to include secret so this test catches leaks: {message}"
+        );
+        assert!(
+            message.contains(&secret_number.to_string()),
+            "expected raw message to include numeric value so this test catches leaks: {message}"
+        );
+
+        let io_err = std::io::Error::other(message);
+        let bug_err = BugReportError::from(io_err);
+        let sanitized = bug_err.to_string();
+
+        assert!(
+            !sanitized.contains(secret_suffix),
+            "expected BugReportError io message to omit TOML snippet contents: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains(&secret_number.to_string()),
+            "expected BugReportError io message to omit numeric values from TOML snippets: {sanitized}"
+        );
+        assert!(
+            !sanitized.contains("api_key ="),
+            "expected BugReportError io message to strip snippet source lines: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("<redacted>"),
+            "expected BugReportError io message to include redaction marker: {sanitized}"
         );
     }
 }
