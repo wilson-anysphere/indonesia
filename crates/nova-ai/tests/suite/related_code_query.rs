@@ -4904,6 +4904,9 @@ fn related_code_query_skips_hex_escaped_percent_entity_name_short_paths() {
         // misinterpreted as `\0` + `7` + `0` rather than `p` (`0x70`).
         "x26x00x37x30ercntx3b2fsrc", // &percnt;2Fsrc -> /src
         "x26x00x37x30ercentx3b2fsrc", // &percent;2Fsrc -> /src
+        // Leading-zero nibble variants (still should decode to `p` == `0x70`).
+        "x26x0x37x30ercntx3b2fsrc", // &percnt;2Fsrc -> /src
+        "x26x0x37x30ercentx3b2fsrc", // &percent;2Fsrc -> /src
     ] {
         let search = PanicSearch { focal_code };
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);

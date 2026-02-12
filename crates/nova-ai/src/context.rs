@@ -7075,21 +7075,6 @@ fn html_fragment_after_emitted_ampersand_decoded_is_path_separator(bytes: &[u8],
             return None;
         }
 
-        // Prefer fixed-width `xNN` decoding when it yields ASCII. This avoids greedily consuming
-        // adjacent escape sequences that also begin with hex digits (e.g. `x70x65...` should be
-        // interpreted as `p` + `e`, not as one large hex escape that overflows the ASCII range).
-        if let Some((hi, next)) = parse_obfuscated_hex_digit(bytes, cursor) {
-            if let Some((lo, next)) = parse_obfuscated_hex_digit(bytes, next) {
-                let value = ((hi as u32) << 4) | (lo as u32);
-                if value <= 0x7F {
-                    let value = value as u8;
-                    if value != 0 || parse_obfuscated_hex_digit(bytes, next).is_none() {
-                        return Some((value, next));
-                    }
-                }
-            }
-        }
-
         let mut value = 0u32;
         let mut significant = 0usize;
         while cursor < bytes.len() && significant < 8 {
