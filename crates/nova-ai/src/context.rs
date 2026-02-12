@@ -1682,28 +1682,27 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 }
 
                 fn fragment_is_separator(mut fragment: &[u8]) -> bool {
-                    for _ in 0..8 {
-                        if fragment.len() >= 4
-                            && fragment[..3].eq_ignore_ascii_case(b"amp")
-                            && fragment[3] == b';'
-                        {
-                            fragment = &fragment[4..];
-                            if fragment.is_empty() {
-                                return false;
-                            }
-                            continue;
+                    let mut nested_amp_layers = 0usize;
+                    while nested_amp_layers < 64
+                        && fragment
+                            .get(..3)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+                    {
+                        fragment = &fragment[3..];
+                        if fragment.first().is_some_and(|b| *b == b';') {
+                            fragment = &fragment[1..];
                         }
-                        if fragment.len() > 3 && fragment[..3].eq_ignore_ascii_case(b"amp") {
-                            fragment = &fragment[3..];
-                            if fragment.first().is_some_and(|b| *b == b';') {
-                                fragment = &fragment[1..];
-                            }
-                            if fragment.is_empty() {
-                                return false;
-                            }
-                            continue;
+                        if fragment.is_empty() {
+                            return false;
                         }
-                        break;
+                        nested_amp_layers += 1;
+                    }
+                    if nested_amp_layers == 64
+                        && fragment
+                            .get(..3)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+                    {
+                        return true;
                     }
 
                     fragment_starts_with_named_separator(fragment)
@@ -1906,20 +1905,27 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
                 }
 
                 fn html_fragment_is_path_separator(bytes: &[u8], mut start: usize) -> bool {
-                    for _ in 0..8 {
-                        if start + 2 < bytes.len()
-                            && bytes[start..start + 3].eq_ignore_ascii_case(b"amp")
-                        {
-                            start += 3;
-                            if start < bytes.len() && bytes[start] == b';' {
-                                start += 1;
-                            }
-                            if start >= bytes.len() {
-                                return false;
-                            }
-                            continue;
+                    let mut nested_amp_layers = 0usize;
+                    while nested_amp_layers < 64
+                        && bytes
+                            .get(start..start + 3)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+                    {
+                        start += 3;
+                        if bytes.get(start).is_some_and(|b| *b == b';') {
+                            start += 1;
                         }
-                        break;
+                        if start >= bytes.len() {
+                            return false;
+                        }
+                        nested_amp_layers += 1;
+                    }
+                    if nested_amp_layers == 64
+                        && bytes
+                            .get(start..start + 3)
+                            .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+                    {
+                        return true;
                     }
 
                     html_numeric_fragment_is_path_separator(bytes, start)
@@ -2663,25 +2669,27 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
             return true;
         }
 
-        for _ in 0..8 {
-            if fragment.len() >= 4 && fragment[..3].eq_ignore_ascii_case(b"amp") && fragment[3] == b';' {
-                fragment = &fragment[4..];
-                if fragment.is_empty() {
-                    return false;
-                }
-                continue;
+        let mut nested_amp_layers = 0usize;
+        while nested_amp_layers < 64
+            && fragment
+                .get(..3)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+        {
+            fragment = &fragment[3..];
+            if fragment.first().is_some_and(|b| *b == b';') {
+                fragment = &fragment[1..];
             }
-            if fragment.len() > 3 && fragment[..3].eq_ignore_ascii_case(b"amp") {
-                fragment = &fragment[3..];
-                if fragment.first().is_some_and(|b| *b == b';') {
-                    fragment = &fragment[1..];
-                }
-                if fragment.is_empty() {
-                    return false;
-                }
-                continue;
+            if fragment.is_empty() {
+                return false;
             }
-            break;
+            nested_amp_layers += 1;
+        }
+        if nested_amp_layers == 64
+            && fragment
+                .get(..3)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+        {
+            return true;
         }
 
         is_named_separator(fragment)
@@ -2792,19 +2800,26 @@ fn html_entity_is_path_separator(bytes: &[u8], end_semicolon: usize) -> bool {
         //
         // We also support multiple layers (e.g. `&amp;amp;#47;`) by stripping a few `amp;` prefixes.
         let mut rest = name;
-        let mut stripped = false;
-        for _ in 0..8 {
-            if rest.len() >= 4
-                && rest[..3].eq_ignore_ascii_case(b"amp")
-                && rest[3] == b';'
-            {
-                rest = &rest[4..];
-                stripped = true;
-                continue;
+        let mut nested_amp_layers = 0usize;
+        while nested_amp_layers < 64
+            && rest
+                .get(..3)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+        {
+            rest = &rest[3..];
+            if rest.first().is_some_and(|b| *b == b';') {
+                rest = &rest[1..];
             }
-            break;
+            nested_amp_layers += 1;
         }
-        if stripped && !rest.is_empty() {
+        if nested_amp_layers == 64
+            && rest
+                .get(..3)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+        {
+            return true;
+        }
+        if nested_amp_layers > 0 && !rest.is_empty() {
             if rest.eq_ignore_ascii_case(b"sol")
                 || rest.eq_ignore_ascii_case(b"slash")
                 || rest.eq_ignore_ascii_case(b"dsol")
@@ -8846,28 +8861,30 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
     }
 
     fn html_fragment_is_path_separator(bytes: &[u8], mut start: usize) -> bool {
-        for _ in 0..8 {
-            if start + 3 < bytes.len()
-                && bytes[start..start + 3].eq_ignore_ascii_case(b"amp")
-                && bytes[start + 3] == b';'
-            {
-                start += 4;
-                if start >= bytes.len() {
-                    return false;
-                }
-                continue;
+        // Nested `&amp;...` chains can be arbitrarily deep when selections are already HTML-escaped
+        // multiple times. Allow deeper nesting and fail closed (treat as path-like) rather than
+        // leaking path fragments into semantic search.
+        let mut nested_amp_layers = 0usize;
+        while nested_amp_layers < 64
+            && bytes
+                .get(start..start + 3)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+        {
+            start += 3;
+            if bytes.get(start).is_some_and(|b| *b == b';') {
+                start += 1;
             }
-            if start + 2 < bytes.len() && bytes[start..start + 3].eq_ignore_ascii_case(b"amp") {
-                start += 3;
-                if start < bytes.len() && bytes[start] == b';' {
-                    start += 1;
-                }
-                if start >= bytes.len() {
-                    return false;
-                }
-                continue;
+            if start >= bytes.len() {
+                return false;
             }
-            break;
+            nested_amp_layers += 1;
+        }
+        if nested_amp_layers == 64
+            && bytes
+                .get(start..start + 3)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+        {
+            return true;
         }
 
         html_named_fragment_is_path_separator(bytes, start)
@@ -9011,15 +9028,24 @@ fn token_contains_html_entity_path_separator(tok: &str) -> bool {
         }
 
         let mut j = i + 1;
-        for _ in 0..8 {
-            if j + 2 < bytes.len() && bytes[j..j + 3].eq_ignore_ascii_case(b"amp") {
-                j += 3;
-                if bytes.get(j).is_some_and(|b| *b == b';') {
-                    j += 1;
-                }
-                continue;
+        let mut nested_amp_layers = 0usize;
+        while nested_amp_layers < 64
+            && bytes
+                .get(j..j + 3)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+        {
+            j += 3;
+            if bytes.get(j).is_some_and(|b| *b == b';') {
+                j += 1;
             }
-            break;
+            nested_amp_layers += 1;
+        }
+        if nested_amp_layers == 64
+            && bytes
+                .get(j..j + 3)
+                .is_some_and(|frag| frag.eq_ignore_ascii_case(b"amp"))
+        {
+            return true;
         }
 
         if html_named_fragment_is_path_separator(bytes, j) {

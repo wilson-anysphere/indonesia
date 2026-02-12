@@ -4502,15 +4502,19 @@ fn related_code_query_skips_named_html_entity_path_only_selections_without_semic
 
 #[test]
 fn related_code_query_skips_double_escaped_html_entity_path_only_selections() {
-    struct PanicSearch;
+    struct PanicSearch<'a> {
+        focal_code: &'a str,
+    }
 
-    impl SemanticSearch for PanicSearch {
-        fn search(&self, _query: &str) -> Vec<SearchResult> {
-            panic!("search should not be called for double-escaped HTML entity path selections");
+    impl SemanticSearch for PanicSearch<'_> {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for double-escaped HTML entity path selections; focal_code={}; got query={query}",
+                self.focal_code
+            );
         }
     }
 
-    let search = PanicSearch;
     for focal_code in [
         "&amp;#47;home&amp;#47;user&amp;#47;secret&amp;#47;credentials",
         "&amp;#x2F;home&amp;#x2F;user&amp;#x2F;secret&amp;#x2F;credentials",
@@ -4528,7 +4532,12 @@ fn related_code_query_skips_double_escaped_html_entity_path_only_selections() {
         "&amp;amp;bsol;home&amp;amp;bsol;user&amp;amp;bsol;secret&amp;amp;bsol;credentials",
         "&amp;amp;Backslash;home&amp;amp;Backslash;user&amp;amp;Backslash;secret&amp;amp;Backslash;credentials",
         "&amp;amp;amp;amp;sol;home&amp;amp;amp;amp;sol;user&amp;amp;amp;amp;sol;secret&amp;amp;amp;amp;sol;credentials",
+        // Extremely nested `&amp;amp;...` prefix chains should still be treated as path-only (fail closed).
+        "&amp;amp;amp;amp;amp;amp;amp;amp;amp;sol;home",
+        // Larger nesting depth: `amp;` repeated 17 times.
+        "&amp;amp;amp;amp;amp;amp;amp;amp;amp;amp;amp;amp;amp;amp;amp;amp;amp;sol;home",
     ] {
+        let search = PanicSearch { focal_code };
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
         assert!(
             req.related_code.is_empty(),
