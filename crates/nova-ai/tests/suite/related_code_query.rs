@@ -3741,6 +3741,10 @@ fn related_code_query_skips_unicode_emitted_html_entity_path_only_selections() {
         "u0026bsol;homeu0026bsol;useru0026bsol;secretu0026bsol;credentials",
         "u0026#47;homeu0026#47;useru0026#47;secretu0026#47;credentials",
         "u0026#x2F;homeu0026#x2F;useru0026#x2F;secretu0026#x2F;credentials",
+        // Obfuscate the numeric entity digits via unicode escapes (`u0034` == '4', `u0037` == '7').
+        "u0026#u0034u0037;homeu0026#u0034u0037;useru0026#u0034u0037;secretu0026#u0034u0037;credentials",
+        // Obfuscate the hex digits via unicode escapes (`u0032` == '2', `u0046` == 'F').
+        "u0026#xu0032u0046;homeu0026#xu0032u0046;useru0026#xu0032u0046;secretu0026#xu0032u0046;credentials",
     ] {
         let search = PanicSearch { focal_code };
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
@@ -3769,11 +3773,15 @@ fn related_code_query_skips_hex_emitted_html_entity_path_only_selections() {
     // `x26` decodes to `&`, yielding entities like `&sol;` and `&#47;` across decode passes.
     for focal_code in [
         "x26sol;homex26sol;userx26sol;secretx26sol;credentials",
+        "x26#u0034u0037;homex26#u0034u0037;userx26#u0034u0037;secretx26#u0034u0037;credentials",
+        "x26#xu0032u0046;homex26#xu0032u0046;userx26#xu0032u0046;secretx26#xu0032u0046;credentials",
         // Embedded form (e.g. from stripped `\\x26` sequences).
         "homex26sol;user",
         "homex{26}sol;user",
         "homex26#47;user",
         "homex26#x2F;user",
+        "homex26#u0034u0037;user",
+        "homex26#xu0032u0046;user",
     ] {
         let search = PanicSearch { focal_code };
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
@@ -3804,6 +3812,8 @@ fn related_code_query_skips_octal_emitted_html_entity_path_only_selections() {
         r"\046sol;home\046sol;user\046sol;secret\046sol;credentials",
         r"\046#47;home\046#47;user\046#47;secret\046#47;credentials",
         r"\046#x2F;home\046#x2F;user\046#x2F;secret\046#x2F;credentials",
+        r"\046#u0034u0037;home\046#u0034u0037;user\046#u0034u0037;secret\046#u0034u0037;credentials",
+        r"\046#xu0032u0046;home\046#xu0032u0046;user\046#xu0032u0046;secret\046#xu0032u0046;credentials",
     ] {
         let search = PanicSearch { focal_code };
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
@@ -3834,6 +3844,8 @@ fn related_code_query_skips_backslash_hex_emitted_html_entity_path_only_selectio
         r"\26sol;home\26sol;user\26sol;secret\26sol;credentials",
         r"\26#47;home\26#47;user\26#47;secret\26#47;credentials",
         r"\26#x2F;home\26#x2F;user\26#x2F;secret\26#x2F;credentials",
+        r"\26#u0034u0037;home\26#u0034u0037;user\26#u0034u0037;secret\26#u0034u0037;credentials",
+        r"\26#xu0032u0046;home\26#xu0032u0046;user\26#xu0032u0046;secret\26#xu0032u0046;credentials",
     ] {
         let search = PanicSearch { focal_code };
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);

@@ -6966,15 +6966,6 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
     }
 
     fn html_fragment_after_emitted_ampersand_is_path_separator(bytes: &[u8], mut start: usize) -> bool {
-        fn hex_value(b: u8) -> Option<u8> {
-            match b {
-                b'0'..=b'9' => Some(b - b'0'),
-                b'a'..=b'f' => Some(b - b'a' + 10),
-                b'A'..=b'F' => Some(b - b'A' + 10),
-                _ => None,
-            }
-        }
-
         if start >= bytes.len() {
             return false;
         }
@@ -7051,19 +7042,15 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
         let mut value = 0u32;
         let mut significant = 0usize;
         while j < bytes.len() && significant < 8 {
-            let b = bytes[j];
-            let digit = if base == 16 {
-                let Some(v) = hex_value(b) else {
-                    break;
-                };
-                v as u32
-            } else if b.is_ascii_digit() {
-                (b - b'0') as u32
-            } else {
+            let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, j) else {
                 break;
             };
+            if base == 10 && digit >= 10 {
+                break;
+            }
+            let digit = digit as u32;
             if significant == 0 && digit == 0 {
-                j += 1;
+                j = next;
                 continue;
             }
             value = value
@@ -7071,7 +7058,7 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
                 .and_then(|v| v.checked_add(digit))
                 .unwrap_or(u32::MAX);
             significant += 1;
-            j += 1;
+            j = next;
         }
 
         significant > 0 && html_entity_codepoint_is_path_separator(value)
@@ -7447,15 +7434,6 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
     }
 
     fn html_fragment_after_emitted_ampersand_is_path_separator(bytes: &[u8], mut start: usize) -> bool {
-        fn hex_value(b: u8) -> Option<u8> {
-            match b {
-                b'0'..=b'9' => Some(b - b'0'),
-                b'a'..=b'f' => Some(b - b'a' + 10),
-                b'A'..=b'F' => Some(b - b'A' + 10),
-                _ => None,
-            }
-        }
-
         if start >= bytes.len() {
             return false;
         }
@@ -7533,19 +7511,15 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
         let mut value = 0u32;
         let mut significant = 0usize;
         while j < bytes.len() && significant < 8 {
-            let b = bytes[j];
-            let digit = if base == 16 {
-                let Some(v) = hex_value(b) else {
-                    break;
-                };
-                v as u32
-            } else if b.is_ascii_digit() {
-                (b - b'0') as u32
-            } else {
+            let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, j) else {
                 break;
             };
+            if base == 10 && digit >= 10 {
+                break;
+            }
+            let digit = digit as u32;
             if significant == 0 && digit == 0 {
-                j += 1;
+                j = next;
                 continue;
             }
             value = value
@@ -7553,7 +7527,7 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
                 .and_then(|v| v.checked_add(digit))
                 .unwrap_or(u32::MAX);
             significant += 1;
-            j += 1;
+            j = next;
         }
 
         significant > 0 && html_entity_codepoint_is_path_separator(value)
@@ -7895,15 +7869,6 @@ fn token_contains_octal_escaped_path_separator(tok: &str) -> bool {
     }
 
     fn html_fragment_after_emitted_ampersand_is_path_separator(bytes: &[u8], mut start: usize) -> bool {
-        fn hex_value(b: u8) -> Option<u8> {
-            match b {
-                b'0'..=b'9' => Some(b - b'0'),
-                b'a'..=b'f' => Some(b - b'a' + 10),
-                b'A'..=b'F' => Some(b - b'A' + 10),
-                _ => None,
-            }
-        }
-
         if start >= bytes.len() {
             return false;
         }
@@ -7977,19 +7942,15 @@ fn token_contains_octal_escaped_path_separator(tok: &str) -> bool {
         let mut value = 0u32;
         let mut significant = 0usize;
         while j < bytes.len() && significant < 8 {
-            let b = bytes[j];
-            let digit = if base == 16 {
-                let Some(v) = hex_value(b) else {
-                    break;
-                };
-                v as u32
-            } else if b.is_ascii_digit() {
-                (b - b'0') as u32
-            } else {
+            let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, j) else {
                 break;
             };
+            if base == 10 && digit >= 10 {
+                break;
+            }
+            let digit = digit as u32;
             if significant == 0 && digit == 0 {
-                j += 1;
+                j = next;
                 continue;
             }
             value = value
@@ -7997,7 +7958,7 @@ fn token_contains_octal_escaped_path_separator(tok: &str) -> bool {
                 .and_then(|v| v.checked_add(digit))
                 .unwrap_or(u32::MAX);
             significant += 1;
-            j += 1;
+            j = next;
         }
 
         significant > 0 && html_entity_codepoint_is_path_separator(value)
@@ -8078,15 +8039,6 @@ fn token_contains_backslash_hex_escaped_path_separator(tok: &str) -> bool {
     }
 
     fn html_fragment_after_emitted_ampersand_is_path_separator(bytes: &[u8], mut start: usize) -> bool {
-        fn hex_value(b: u8) -> Option<u8> {
-            match b {
-                b'0'..=b'9' => Some(b - b'0'),
-                b'a'..=b'f' => Some(b - b'a' + 10),
-                b'A'..=b'F' => Some(b - b'A' + 10),
-                _ => None,
-            }
-        }
-
         if start >= bytes.len() {
             return false;
         }
@@ -8160,19 +8112,15 @@ fn token_contains_backslash_hex_escaped_path_separator(tok: &str) -> bool {
         let mut value = 0u32;
         let mut significant = 0usize;
         while j < bytes.len() && significant < 8 {
-            let b = bytes[j];
-            let digit = if base == 16 {
-                let Some(v) = hex_value(b) else {
-                    break;
-                };
-                v as u32
-            } else if b.is_ascii_digit() {
-                (b - b'0') as u32
-            } else {
+            let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, j) else {
                 break;
             };
+            if base == 10 && digit >= 10 {
+                break;
+            }
+            let digit = digit as u32;
             if significant == 0 && digit == 0 {
-                j += 1;
+                j = next;
                 continue;
             }
             value = value
@@ -8180,7 +8128,7 @@ fn token_contains_backslash_hex_escaped_path_separator(tok: &str) -> bool {
                 .and_then(|v| v.checked_add(digit))
                 .unwrap_or(u32::MAX);
             significant += 1;
-            j += 1;
+            j = next;
         }
 
         significant > 0 && html_entity_codepoint_is_path_separator(value)
