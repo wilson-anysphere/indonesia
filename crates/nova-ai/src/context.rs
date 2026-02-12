@@ -6965,6 +6965,89 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
         return false;
     }
 
+    fn escape_after_prefix(bytes: &[u8], mut cursor: usize, upper: bool) -> bool {
+        if cursor >= bytes.len() {
+            return false;
+        }
+
+        if !upper {
+            // Some languages (notably Java) allow multiple `u` characters in a unicode escape
+            // (e.g. `\uu002F`). Treat these as escape sequences so obfuscated paths cannot leak
+            // into semantic-search queries.
+            while cursor < bytes.len() && bytes[cursor] == b'u' {
+                cursor += 1;
+            }
+            if cursor >= bytes.len() {
+                return false;
+            }
+
+            if bytes.get(cursor).is_some_and(|b| *b == b'{') {
+                let mut value = 0u32;
+                let mut significant = 0usize;
+                cursor += 1;
+                let scan_end = (cursor + 1024).min(bytes.len());
+                while cursor < scan_end && significant < 8 {
+                    if bytes[cursor] == b'}' {
+                        break;
+                    }
+                    let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
+                        break;
+                    };
+                    if significant == 0 && digit == 0 {
+                        cursor = next;
+                        continue;
+                    }
+                    value = (value << 4) | digit as u32;
+                    significant += 1;
+                    cursor = next;
+                }
+
+                if significant > 0 && cursor < bytes.len() && bytes[cursor] == b'}' {
+                    if html_entity_codepoint_is_path_separator(value) {
+                        return true;
+                    }
+                    // Percent-encoded separators can hide the `%` via unicode escapes (e.g.
+                    // `\u00252Fhome` → `%2Fhome`). Treat these as path-like so segments do not leak
+                    // into semantic-search queries.
+                    if value == 37
+                        && percent_encoded_byte_after_obfuscated_digits(bytes, cursor + 1).is_some()
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            let mut value = 0u32;
+            for _ in 0..4 {
+                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
+                    return false;
+                };
+                value = (value << 4) | digit as u32;
+                cursor = next;
+            }
+            if html_entity_codepoint_is_path_separator(value) {
+                return true;
+            }
+            if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, cursor).is_some() {
+                return true;
+            }
+            return false;
+        }
+
+        // 8-digit escapes like `\U0000002F` (common in some languages) also decode to separators.
+        let mut value = 0u32;
+        for _ in 0..8 {
+            let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
+                return false;
+            };
+            value = (value << 4) | digit as u32;
+            cursor = next;
+        }
+        html_entity_codepoint_is_path_separator(value)
+            || (value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, cursor).is_some())
+    }
+
     let mut i = 0usize;
     while i + 4 < bytes.len() {
         let b = bytes[i];
@@ -6973,20 +7056,122 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
             continue;
         }
 
-        let mut j = i + 1;
-        // Some languages (notably Java) allow multiple `u` characters in a unicode escape
-        // (e.g. `\uu002F`). Treat these as escape sequences so obfuscated paths cannot leak into
-        // semantic-search queries.
-        if b == b'u' {
-            while j < bytes.len() && bytes[j] == b'u' {
-                j += 1;
+        if escape_after_prefix(bytes, i + 1, b == b'U') {
+            return true;
+        }
+
+        i += 1;
+    }
+
+    // Unicode escape prefixes (`u`/`U`) can themselves be HTML numeric entities (`&#117;002F` ==
+    // `u002F`). Treat these as path separators so path-only selections don't leak segments.
+    for (idx, b) in bytes.iter().enumerate() {
+        if *b != b';' {
+            continue;
+        }
+        let Some(value) = html_entity_obfuscated_numeric_reference_value(bytes, idx) else {
+            continue;
+        };
+        if value == 0x75 {
+            if escape_after_prefix(bytes, idx + 1, false) {
+                return true;
+            }
+        } else if value == 0x55 {
+            if escape_after_prefix(bytes, idx + 1, true) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
+    fn html_entity_numeric_codepoint_value(bytes: &[u8], end_semicolon: usize) -> Option<u32> {
+        fn hex_value(b: u8) -> Option<u8> {
+            match b {
+                b'0'..=b'9' => Some(b - b'0'),
+                b'a'..=b'f' => Some(b - b'a' + 10),
+                b'A'..=b'F' => Some(b - b'A' + 10),
+                _ => None,
             }
         }
 
-        if bytes.get(j).is_some_and(|b| *b == b'{') {
+        if end_semicolon >= bytes.len() || bytes[end_semicolon] != b';' {
+            return None;
+        }
+
+        let mut amp = None;
+        let mut i = end_semicolon;
+        let mut scanned = 0usize;
+        while i > 0 && scanned < 256 {
+            i -= 1;
+            scanned += 1;
+            if bytes[i] == b'&' {
+                amp = Some(i);
+                break;
+            }
+        }
+        let amp = amp?;
+        if amp + 2 >= end_semicolon || bytes[amp + 1] != b'#' {
+            return None;
+        }
+
+        let mut j = amp + 2;
+        let base = match bytes.get(j) {
+            Some(b'x') | Some(b'X') => {
+                j += 1;
+                16u32
+            }
+            _ => 10u32,
+        };
+        if j >= end_semicolon {
+            return None;
+        }
+
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        while j < end_semicolon && significant < 8 {
+            let digit = if base == 16 {
+                hex_value(bytes[j])? as u32
+            } else if bytes[j].is_ascii_digit() {
+                (bytes[j] - b'0') as u32
+            } else {
+                return None;
+            };
+            if significant == 0 && digit == 0 {
+                j += 1;
+                continue;
+            }
+            value = value
+                .checked_mul(base)
+                .and_then(|v| v.checked_add(digit))
+                .unwrap_or(u32::MAX);
+            significant += 1;
+            j += 1;
+        }
+
+        if j != end_semicolon || significant == 0 {
+            return None;
+        }
+
+        Some(value)
+    }
+
+    let bytes = tok.as_bytes();
+    if bytes.len() < 3 {
+        return false;
+    }
+
+    fn escape_after_prefix(bytes: &[u8], mut cursor: usize) -> bool {
+        if cursor >= bytes.len() {
+            return false;
+        }
+
+        if bytes.get(cursor).is_some_and(|b| *b == b'{') {
             let mut value = 0u32;
             let mut significant = 0usize;
-            let mut cursor = j + 1;
+            cursor += 1;
             let scan_end = (cursor + 1024).min(bytes.len());
             while cursor < scan_end && significant < 8 {
                 if bytes[cursor] == b'}' {
@@ -7003,77 +7188,40 @@ fn token_contains_unicode_escaped_path_separator(tok: &str) -> bool {
                 significant += 1;
                 cursor = next;
             }
-
             if significant > 0 && cursor < bytes.len() && bytes[cursor] == b'}' {
                 if html_entity_codepoint_is_path_separator(value) {
                     return true;
                 }
-                // Percent-encoded separators can hide the `%` via unicode escapes (e.g.
-                // `\u00252Fhome` → `%2Fhome`). Treat these as path-like so segments do not leak into
-                // semantic-search queries.
                 if value == 37
                     && percent_encoded_byte_after_obfuscated_digits(bytes, cursor + 1).is_some()
                 {
                     return true;
                 }
             }
+            return false;
         }
 
-        if b == b'u' {
-            let mut cursor = j;
-            let mut value = 0u32;
-            let mut ok = true;
-            for _ in 0..4 {
-                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
-                    ok = false;
-                    break;
-                };
-                value = (value << 4) | digit as u32;
+        let mut value = 0u32;
+        let mut significant = 0usize;
+        while cursor < bytes.len() && significant < 8 {
+            let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
+                break;
+            };
+            if significant == 0 && digit == 0 {
                 cursor = next;
+                continue;
             }
-            if ok {
-                if html_entity_codepoint_is_path_separator(value) {
-                    return true;
-                }
-                if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, cursor).is_some() {
-                    return true;
-                }
-            }
-        }
-
-        // 8-digit escapes like `\U0000002F` (common in some languages) also decode to separators.
-        if b == b'U' {
-            let mut cursor = i + 1;
-            let mut value = 0u32;
-            let mut ok = true;
-            for _ in 0..8 {
-                let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, cursor) else {
-                    ok = false;
-                    break;
-                };
-                value = (value << 4) | digit as u32;
-                cursor = next;
-            }
-            if ok {
-                if html_entity_codepoint_is_path_separator(value) {
-                    return true;
-                }
-                if value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, cursor).is_some() {
-                    return true;
-                }
+            value = (value << 4) | digit as u32;
+            significant += 1;
+            cursor = next;
+            if html_entity_codepoint_is_path_separator(value)
+                || (value == 37 && percent_encoded_byte_after_obfuscated_digits(bytes, cursor).is_some())
+            {
+                return true;
             }
         }
 
-        i += 1;
-    }
-
-    false
-}
-
-fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
-    let bytes = tok.as_bytes();
-    if bytes.len() < 3 {
-        return false;
+        false
     }
 
     // Hex-escaped path separators sometimes appear in logs without the leading backslash (e.g.
@@ -7177,6 +7325,24 @@ fn token_contains_hex_escaped_path_separator(tok: &str) -> bool {
         }
 
         i += 1;
+    }
+
+    // Hex escape prefixes (`x`/`X`) can themselves be HTML numeric entities (`&#120;2F` == `x2F`).
+    // Treat these as path separators so path-only selections don't leak segments.
+    for (idx, b) in bytes.iter().enumerate() {
+        if *b != b';' {
+            continue;
+        }
+        let Some(value) = html_entity_numeric_codepoint_value(bytes, idx) else {
+            continue;
+        };
+        if !matches!(value, 0x78 | 0x58) {
+            continue;
+        }
+
+        if escape_after_prefix(bytes, idx + 1) {
+            return true;
+        }
     }
 
     false

@@ -2083,6 +2083,56 @@ fn related_code_query_skips_hex_escape_path_only_selections_with_entity_digits()
 }
 
 #[test]
+fn related_code_query_skips_unicode_escape_path_only_selections_with_entity_prefix() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for unicode-escaped path selections with entity-encoded prefixes; got query={query}"
+            );
+        }
+    }
+
+    let search = PanicSearch;
+    // Encode the `u` prefix for `u002F` via an HTML numeric entity (`&#117;` / `&#x75;`), yielding
+    // `u002F` after HTML-decoding and `/` after unicode-escape decoding.
+    for sep in ["&#117;002F", "&#x75;002F"] {
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for unicode-escaped path-only focal code with entity prefix"
+        );
+    }
+}
+
+#[test]
+fn related_code_query_skips_hex_escape_path_only_selections_with_entity_prefix() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for hex-escaped path selections with entity-encoded prefixes; got query={query}"
+            );
+        }
+    }
+
+    let search = PanicSearch;
+    // Encode the `x` prefix for `x2F` via an HTML numeric entity (`&#120;` / `&#x78;`), yielding
+    // `x2F` after HTML-decoding and `/` after hex-escape decoding.
+    for sep in ["&#120;2F", "&#x78;2F"] {
+        let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+        let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+        assert!(
+            req.related_code.is_empty(),
+            "expected no related code for hex-escaped path-only focal code with entity prefix"
+        );
+    }
+}
+
+#[test]
 fn related_code_query_skips_escaped_percent_encoded_path_only_selections() {
     struct PanicSearch;
 
