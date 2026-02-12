@@ -1,3 +1,10 @@
+// Consolidated integration test harness.
+//
+// Each `tests/*.rs` file becomes a separate Cargo integration test binary. Under the agent
+// RLIMIT_AS constraints this is expensive, so `nova-cli` keeps a single root harness
+// (`tests/real_projects.rs`) that `mod`s the rest of the suite.
+mod suite;
+
 use assert_cmd::Command;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -172,4 +179,3 @@ fn maven_resolver_cli_smoke() {
         "src/main/java/org/eclipse/aether/RepositorySystem.java",
     );
 }
-
