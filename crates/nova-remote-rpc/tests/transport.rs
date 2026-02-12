@@ -265,6 +265,76 @@ async fn handshake_allows_router_to_reject_before_welcome() {
 }
 
 #[tokio::test]
+async fn handshake_reject_messages_are_sanitized() {
+    let (router_io, mut worker_io) = tokio::io::duplex(64 * 1024);
+
+    let secret_suffix = "nova-remote-rpc-handshake-reject-secret";
+    let raw_message =
+        format!("invalid type: string \"{secret_suffix}\", expected boolean at line 1 column 1");
+    assert!(
+        raw_message.contains(secret_suffix),
+        "expected raw reject message to include secret so this test catches leaks: {raw_message}"
+    );
+
+    let reject_for_hook = HandshakeReject {
+        code: RejectCode::InvalidRequest,
+        message: raw_message,
+    };
+
+    let router_task = tokio::spawn(async move {
+        RpcConnection::handshake_as_router_with_config_and_admit(
+            router_io,
+            RouterConfig::default(),
+            |_hello| Err(reject_for_hook),
+        )
+        .await
+    });
+
+    // Manual worker handshake so we can inspect the reject frame itself (not just the locally
+    // formatted error message).
+    write_wire_frame(
+        &mut worker_io,
+        &WireFrame::Hello(hello(None)),
+    )
+    .await;
+    let frame = read_wire_frame(&mut worker_io, DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN).await;
+    match frame {
+        WireFrame::Reject(reject) => {
+            assert!(
+                !reject.message.contains(secret_suffix),
+                "expected reject frame message to be sanitized: {:?}",
+                reject.message
+            );
+            assert!(
+                reject.message.contains("<redacted>"),
+                "expected reject frame message to include redaction marker: {:?}",
+                reject.message
+            );
+        }
+        other => panic!("expected reject frame, got {other:?}"),
+    }
+
+    let router_res = router_task.await.unwrap();
+    let err = match router_res {
+        Ok(_) => panic!("expected router handshake to fail"),
+        Err(err) => err,
+    };
+    match err {
+        RpcTransportError::HandshakeFailed { message } => {
+            assert!(
+                !message.contains(secret_suffix),
+                "expected router handshake error message to be sanitized: {message}"
+            );
+            assert!(
+                message.contains("<redacted>"),
+                "expected router handshake error message to include redaction marker: {message}"
+            );
+        }
+        other => panic!("unexpected router error: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn multiplexing_matches_responses_by_id() {
     let (router_io, worker_io) = tokio::io::duplex(64 * 1024);
 

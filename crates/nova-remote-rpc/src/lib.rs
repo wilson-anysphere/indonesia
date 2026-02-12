@@ -475,6 +475,13 @@ impl RpcConnection {
                 cfg.revision = revision;
             }
             RouterAdmission::Reject(reject) => {
+                // The rejection message may be derived from upstream errors (including serde-
+                // derived ones) and can therefore contain user-controlled scalar values.
+                // Sanitize it before sending over the wire and before surfacing it locally.
+                let reject = HandshakeReject {
+                    code: reject.code,
+                    message: sanitize_transport_error_message(&reject.message),
+                };
                 let reject_frame = WireFrame::Reject(reject.clone());
                 let _ =
                     write_wire_frame(&mut stream, cfg.pre_handshake_max_frame_len, &reject_frame)
@@ -556,7 +563,8 @@ impl RpcConnection {
             WireFrame::Reject(reject) => Err(RpcTransportError::HandshakeFailed {
                 message: format!(
                     "handshake rejected (code={:?}): {}",
-                    reject.code, reject.message
+                    reject.code,
+                    sanitize_transport_error_message(&reject.message)
                 ),
             }),
             other => Err(RpcTransportError::HandshakeFailed {
