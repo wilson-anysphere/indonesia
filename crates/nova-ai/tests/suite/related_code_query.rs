@@ -4907,6 +4907,12 @@ fn related_code_query_skips_hex_escaped_percent_entity_name_short_paths() {
         // Leading-zero nibble variants (still should decode to `p` == `0x70`).
         "x26x0x37x30ercntx3b2fsrc", // &percnt;2Fsrc -> /src
         "x26x0x37x30ercentx3b2fsrc", // &percent;2Fsrc -> /src
+        // HTML hex numeric entities can also encode the percent-entity name letters. When the `;`
+        // terminators are missing, nested-entity parsing must not greedily consume the next entity
+        // as an additional digit (e.g. `&#x70&#x65...` should decode to `pe...`, not fail to
+        // decode entirely).
+        "x26&#x70&#x65&#x72&#x63&#x6e&#x74x3b2fsrc", // &percnt;2Fsrc -> /src
+        "x26&#x70&#x65&#x72&#x63&#x65&#x6e&#x74x3b2fsrc", // &percent;2Fsrc -> /src
     ] {
         let search = PanicSearch { focal_code };
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);

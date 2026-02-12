@@ -7143,8 +7143,27 @@ fn html_fragment_after_emitted_ampersand_decoded_is_path_separator(bytes: &[u8],
                 .unwrap_or(u32::MAX);
             significant += 1;
             cursor = next;
+            if value > 0x7F {
+                return None;
+            }
+
+            // ASCII codepoints require at most:
+            // - 2 significant hex digits (`0x7F`)
+            // - 3 significant decimal digits (`127`)
+            //
+            // Prefer stopping once we've decoded the full ASCII range to avoid greedily consuming
+            // adjacent escape sequences that can themselves decode to digits (e.g.
+            // `&#x70&#x65...` should decode to `pe...`, not fail parsing by treating `&#x65` as an
+            // additional digit).
+            if base == 16 && significant >= 2 && !bytes.get(cursor).is_some_and(|b| b.is_ascii_hexdigit())
+            {
+                break;
+            }
+            if base == 10 && significant >= 3 && !bytes.get(cursor).is_some_and(|b| b.is_ascii_digit()) {
+                break;
+            }
         }
-        if significant == 0 || value > 0x7F {
+        if significant == 0 {
             return None;
         }
 
