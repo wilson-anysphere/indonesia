@@ -1265,6 +1265,8 @@ fn identifier_looks_like_path_component(text: &str, start: usize, end: usize, to
             if token_contains_percent_encoded_path_separator(token)
                 || token_contains_unicode_escaped_path_separator(token)
                 || token_contains_hex_escaped_path_separator(token)
+                || token_contains_octal_escaped_path_separator(token)
+                || token_contains_backslash_hex_escaped_path_separator(token)
             {
                 return true;
             }
@@ -7197,13 +7199,15 @@ fn token_contains_octal_escaped_path_separator(tok: &str) -> bool {
         let mut value = 0u32;
         let mut digits = 0usize;
         while j < bytes.len() && digits < 3 {
-            let b = bytes[j];
-            if !(b'0'..=b'7').contains(&b) {
+            let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, j) else {
+                break;
+            };
+            if digit >= 8 {
                 break;
             }
-            value = (value << 3) | (b - b'0') as u32;
+            value = (value << 3) | digit as u32;
             digits += 1;
-            j += 1;
+            j = next;
             if matches!(value, 47 | 92) {
                 return true;
             }
@@ -7219,15 +7223,6 @@ fn token_contains_octal_escaped_path_separator(tok: &str) -> bool {
 }
 
 fn token_contains_backslash_hex_escaped_path_separator(tok: &str) -> bool {
-    fn hex_value(b: u8) -> Option<u8> {
-        match b {
-            b'0'..=b'9' => Some(b - b'0'),
-            b'a'..=b'f' => Some(b - b'a' + 10),
-            b'A'..=b'F' => Some(b - b'A' + 10),
-            _ => None,
-        }
-    }
-
     let bytes = tok.as_bytes();
     if bytes.len() < 2 {
         return false;
@@ -7244,12 +7239,12 @@ fn token_contains_backslash_hex_escaped_path_separator(tok: &str) -> bool {
         let mut value = 0u32;
         let mut digits = 0usize;
         while j < bytes.len() && digits < 6 {
-            let Some(hex) = hex_value(bytes[j]) else {
+            let Some((digit, next)) = parse_obfuscated_hex_digit(bytes, j) else {
                 break;
             };
-            value = (value << 4) | hex as u32;
+            value = (value << 4) | digit as u32;
             digits += 1;
-            j += 1;
+            j = next;
             if html_entity_codepoint_is_path_separator(value) {
                 return true;
             }

@@ -3393,6 +3393,29 @@ fn related_code_query_skips_octal_escaped_path_only_selections() {
 }
 
 #[test]
+fn related_code_query_skips_octal_escaped_path_only_selections_with_entity_digits() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for octal-escaped path selections with entity digits; got query={query}"
+            );
+        }
+    }
+
+    let search = PanicSearch;
+    // `\057` with each digit emitted via an HTML numeric entity.
+    let sep = r"\&#x30;&#x35;&#x37;";
+    let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+    let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for octal-escaped path-only focal code with entity digits"
+    );
+}
+
+#[test]
 fn related_code_query_skips_backslash_hex_escaped_path_only_selections() {
     struct PanicSearch;
 
@@ -3418,6 +3441,29 @@ fn related_code_query_skips_backslash_hex_escaped_path_only_selections() {
             "expected no related code for backslash-hex-escaped path-only focal code"
         );
     }
+}
+
+#[test]
+fn related_code_query_skips_backslash_hex_escaped_path_only_selections_with_entity_digits() {
+    struct PanicSearch;
+
+    impl SemanticSearch for PanicSearch {
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            panic!(
+                "search should not be called for backslash-hex-escaped path selections with entity digits; got query={query}"
+            );
+        }
+    }
+
+    let search = PanicSearch;
+    // `\2F` with each digit emitted via an HTML numeric entity.
+    let sep = r"\&#x32;&#x46;";
+    let focal_code = format!("{sep}home{sep}user{sep}secret{sep}credentials");
+    let req = base_request(&focal_code).with_related_code_from_focal(&search, 3);
+    assert!(
+        req.related_code.is_empty(),
+        "expected no related code for backslash-hex-escaped path-only focal code with entity digits"
+    );
 }
 
 #[test]
