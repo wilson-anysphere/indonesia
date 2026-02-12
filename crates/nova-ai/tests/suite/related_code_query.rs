@@ -3793,6 +3793,10 @@ fn related_code_query_skips_hex_emitted_html_entity_path_only_selections() {
         "x26sol;homex26sol;userx26sol;secretx26sol;credentials",
         "x26#u0034u0037;homex26#u0034u0037;userx26#u0034u0037;secretx26#u0034u0037;credentials",
         "x26#xu0032u0046;homex26#xu0032u0046;userx26#xu0032u0046;secretx26#xu0032u0046;credentials",
+        // When semicolons are missing, ensure nested escapes that decode to hex digits are not
+        // greedily consumed as part of the numeric entity codepoint (e.g. `#x2Fx65...` should be
+        // treated as `#x2F` + `x65...`).
+        "x26#x2Fx65home",
         "x26u0073u006Fu006C;homex26u0073u006Fu006C;userx26u0073u006Fu006C;secretx26u0073u006Fu006C;credentials",
         "x26u0023u0034u0037;homex26u0023u0034u0037;userx26u0023u0034u0037;secretx26u0023u0034u0037;credentials",
         r"x26\163\157\154;homex26\163\157\154;userx26\163\157\154;secretx26\163\157\154;credentials",
