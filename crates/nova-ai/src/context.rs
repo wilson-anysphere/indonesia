@@ -7147,19 +7147,19 @@ fn html_fragment_after_emitted_ampersand_decoded_is_path_separator(bytes: &[u8],
                 return None;
             }
 
-            // ASCII codepoints require at most:
+            // ASCII codepoints are fully determined after:
             // - 2 significant hex digits (`0x7F`)
             // - 3 significant decimal digits (`127`)
             //
-            // Prefer stopping once we've decoded the full ASCII range to avoid greedily consuming
-            // adjacent escape sequences that can themselves decode to digits (e.g.
-            // `&#x70&#x65...` should decode to `pe...`, not fail parsing by treating `&#x65` as an
-            // additional digit).
-            if base == 16 && significant >= 2 && !bytes.get(cursor).is_some_and(|b| b.is_ascii_hexdigit())
-            {
+            // Stop once we've seen enough significant digits so we don't greedily consume adjacent
+            // escape sequences (or literal characters) that can themselves decode to digits. This
+            // is particularly important when semicolons are missing and the next character is a
+            // hex digit (e.g. `&#x70ercnt...` should decode to `p` + `ercnt...`, not fail parsing
+            // by treating the `e` as a third digit).
+            if base == 16 && significant >= 2 {
                 break;
             }
-            if base == 10 && significant >= 3 && !bytes.get(cursor).is_some_and(|b| b.is_ascii_digit()) {
+            if base == 10 && significant >= 3 {
                 break;
             }
         }

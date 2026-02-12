@@ -4913,6 +4913,11 @@ fn related_code_query_skips_hex_escaped_percent_entity_name_short_paths() {
         // decode entirely).
         "x26&#x70&#x65&#x72&#x63&#x6e&#x74x3b2fsrc", // &percnt;2Fsrc -> /src
         "x26&#x70&#x65&#x72&#x63&#x65&#x6e&#x74x3b2fsrc", // &percent;2Fsrc -> /src
+        // Missing semicolons in the letter entities can cause the next literal character (which
+        // may itself be a hex digit, like `e`) to be greedily parsed as part of the numeric
+        // reference. Ensure we still decode `&#x70e...` as `p` + `e...` rather than failing.
+        "x26&#x70ercntx3b2fsrc", // &percnt;2Fsrc -> /src
+        "x26&#x70ercentx3b2fsrc", // &percent;2Fsrc -> /src
     ] {
         let search = PanicSearch { focal_code };
         let req = base_request(focal_code).with_related_code_from_focal(&search, 3);
